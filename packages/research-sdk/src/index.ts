@@ -2,6 +2,7 @@ import type {
   AnalysisIntent,
   AnalysisRun,
   ResearchAnswer,
+  ResearchGenerationMode,
   ResearchProject,
   ResearchSource,
   ResearchWorkflowSnapshot,
@@ -32,6 +33,9 @@ export interface AskResearchQuestionInput {
 export interface CreateResearchWorkflowInput {
   goal: string;
   workflowType: "literature-synthesis";
+  generationMode: ResearchGenerationMode;
+  /** Explicit approval to send the goal when remote model assistance is selected. */
+  remoteDataApproved: boolean;
 }
 
 export interface ApproveResearchWorkflowPlanInput {

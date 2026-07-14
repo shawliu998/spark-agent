@@ -1,9 +1,15 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResearchWorkflowSnapshot } from "@spark/research-domain";
-import { WorkflowWorkspace } from "./WorkflowWorkspace";
+import { WorkflowReviewSummary, WorkflowWorkspace } from "./WorkflowWorkspace";
 
 const handlers = {
+  remoteDestination: {
+    provider: "openai-compatible" as const,
+    endpointHost: "models.example.test",
+    endpointIdentity: `sha256:${"e".repeat(64)}`,
+    model: "provider/model-1",
+  },
   onCreate: vi.fn(async () => {}),
   onApprovePlan: vi.fn(async () => {}),
   onCancel: vi.fn(async () => {}),
@@ -15,6 +21,10 @@ const handlers = {
   onOpenReview: vi.fn(),
   onOpenActivity: vi.fn(),
 };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 function planSnapshot(): ResearchWorkflowSnapshot {
   return {
@@ -48,7 +58,7 @@ function planSnapshot(): ResearchWorkflowSnapshot {
             key: "inspect",
             type: "inspect-sources",
             objective: "Inspect indexed project PDFs",
-            inputs: { sourceKind: "pdf" },
+            inputs: { sourceKind: "pdf", sourceIds: null },
             expectedOutputs: ["sources"],
             acceptanceCriteria: ["at-least-one-ready-pdf"],
           },
@@ -101,6 +111,69 @@ function planSnapshot(): ResearchWorkflowSnapshot {
 }
 
 describe("WorkflowWorkspace", () => {
+  it("defaults to local generation and requires explicit approval before sending a goal remotely", async () => {
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: /Local deterministic/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+      target: { value: "Compare the imported studies" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Model-assisted remote/i }),
+    );
+
+    const start = screen.getByRole("button", { name: "Create plan" });
+    expect(start).toBeDisabled();
+    expect(
+      screen.getByText(/No PDF passage is sent at this step/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("models.example.test")).toBeInTheDocument();
+    expect(screen.getByText("provider/model-1")).toBeInTheDocument();
+    expect(screen.getByText(`sha256:${"e".repeat(64)}`)).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I approve sending this research goal/i,
+      }),
+    );
+    expect(start).toBeEnabled();
+
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+      target: { value: "Compare the imported studies and private notes" },
+    });
+    expect(start).toBeDisabled();
+    expect(
+      screen.getByRole("checkbox", {
+        name: /I approve sending this research goal/i,
+      }),
+    ).not.toBeChecked();
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I approve sending this research goal/i,
+      }),
+    );
+    fireEvent.click(start);
+
+    expect(handlers.onCreate).toHaveBeenCalledWith(
+      "Compare the imported studies and private notes",
+      "remote-model-assisted",
+      true,
+    );
+  });
+
   it("shows the real three-step plan and explicit local-only boundary", () => {
     render(
       <WorkflowWorkspace
@@ -118,8 +191,161 @@ describe("WorkflowWorkspace", () => {
     expect(screen.getByText("Inspect indexed project PDFs")).toBeInTheDocument();
     expect(screen.getByText("Extract verified evidence passages")).toBeInTheDocument();
     expect(screen.getByText("Build atomic evidence-backed claims")).toBeInTheDocument();
+    expect(screen.getByText("findings")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText("4")).toBeInTheDocument();
+    expect(screen.getByText("8")).toBeInTheDocument();
+    expect(screen.getByText("at-least-one-verified-evidence")).toBeInTheDocument();
+    expect(screen.getByText("a".repeat(64))).toBeInTheDocument();
+    expect(
+      screen.getByText(new RegExp(`Approval payload SHA-256: ${"a".repeat(64)}`)),
+    ).toBeInTheDocument();
     expect(screen.getByText("Local only.")).toBeInTheDocument();
+    expect(screen.getByText("local deterministic")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve & run" })).toBeEnabled();
+  });
+
+  it("revokes goal disclosure approval when the remote destination changes", () => {
+    const { rerender } = render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+      target: { value: "Compare the imported studies" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Model-assisted remote/i }));
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /I approve sending this research goal/i,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Create plan" })).toBeEnabled();
+
+    rerender(
+      <WorkflowWorkspace
+        {...handlers}
+        remoteDestination={{
+          ...handlers.remoteDestination,
+          endpointHost: "new-models.example.test",
+          endpointIdentity: `sha256:${"f".repeat(64)}`,
+        }}
+        snapshot={null}
+        sources={[]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart
+      />,
+    );
+
+    expect(screen.getByText("new-models.example.test")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", {
+        name: /I approve sending this research goal/i,
+      }),
+    ).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Create plan" })).toBeDisabled();
+  });
+
+  it("shows model provenance and the exact affected-resource approval scope", () => {
+    const snapshot = planSnapshot();
+    snapshot.workflow.generationMode = "remote-model-assisted";
+    if (!snapshot.plan) throw new Error("plan fixture is missing");
+    snapshot.plan.generator = "remote-model-assisted-v1";
+    snapshot.plan.promptVersion = "remote-plan-v1";
+    snapshot.plan.model = "provider/model-1";
+    const inspectStep = snapshot.plan.spec.steps[0];
+    if (!("sourceKind" in inspectStep.inputs)) throw new Error("inspect fixture is invalid");
+    inspectStep.inputs.frozenSources = [
+      {
+        sourceId: "paper-1",
+        title: "Frozen study at approval",
+        contentHash: "f".repeat(64),
+        pageManifestHash: "d".repeat(64),
+      },
+    ];
+    snapshot.pendingApprovals[0] = {
+      ...snapshot.pendingApprovals[0],
+      riskLevel: "medium",
+      affectedResources: [
+        "project:project-1",
+        "remote-endpoint-host:models.example.test",
+        `remote-endpoint-identity:sha256:${"e".repeat(64)}`,
+        "remote-model:provider/model-1",
+        `source:paper-1:sha256:${"f".repeat(64)}:verified-passages:remote`,
+      ],
+      reason: "Approve sending verified excerpts from these frozen sources.",
+    };
+
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={snapshot}
+        sources={[
+          {
+            id: "paper-1",
+            projectId: "project-1",
+            title: "Frozen study",
+            sourceKind: "pdf",
+            authors: [],
+            doi: null,
+            arxivId: null,
+            localPath: "/tmp/frozen-study.pdf",
+            publicationDate: null,
+            ingestionStatus: "ready",
+            contentHash: "f".repeat(64),
+            pageCount: 2,
+            createdAt: "2026-07-14T08:00:00Z",
+          },
+        ]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+      />,
+    );
+
+    expect(screen.getByText("remote model-assisted")).toBeInTheDocument();
+    expect(screen.getByText("remote-model-assisted-v1")).toBeInTheDocument();
+    expect(screen.getByText("remote-plan-v1")).toBeInTheDocument();
+    expect(screen.getByText("provider/model-1")).toBeInTheDocument();
+    expect(screen.getByText("project:project-1")).toBeInTheDocument();
+    expect(screen.getByText("remote-endpoint-host:models.example.test")).toBeInTheDocument();
+    expect(
+      screen.getByText(`remote-endpoint-identity:sha256:${"e".repeat(64)}`),
+    ).toBeInTheDocument();
+    expect(screen.getByText("remote-model:provider/model-1")).toBeInTheDocument();
+    expect(screen.getByText(/Frozen study at approval/)).toBeInTheDocument();
+    expect(screen.getAllByText(/paper-1/)).toHaveLength(2);
+    expect(screen.getByText(new RegExp(`File SHA-256: ${"f".repeat(64)}`))).toBeInTheDocument();
+    expect(
+      screen.getByText(new RegExp(`Parsed-page manifest SHA-256: ${"d".repeat(64)}`)),
+    ).toBeInTheDocument();
+    expect(screen.getByText("findings")).toBeInTheDocument();
+    expect(screen.getByText("every-claim-has-verified-evidence")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `source:paper-1:sha256:${"f".repeat(64)}:verified-passages:remote`,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("medium risk")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approving this plan permits only verified passages/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Only entries marked verified-passages:remote/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Local only.")).not.toBeInTheDocument();
   });
 
   it("uses review support words instead of foregrounding model confidence", () => {
@@ -131,6 +357,10 @@ describe("WorkflowWorkspace", () => {
     snapshot.result = {
       answerId: "answer-1",
       summary: "The imported studies report a consistent directional finding.",
+      generator: "local-extractive-v1",
+      model: null,
+      promptVersion: "local-extractive-v1",
+      integrityStatus: "verified-frozen-v2",
       claims: [
         {
           id: "claim-1",
@@ -141,6 +371,9 @@ describe("WorkflowWorkspace", () => {
             {
               evidenceId: "evidence-1",
               sourceId: "source-1",
+              sourceTitle: "Frozen imported study",
+              sourceContentHash: "c".repeat(64),
+              sourcePageManifestHash: "e".repeat(64),
               pageIndex: 3,
               pageLabel: "4",
               text: "The measured outcome decreased after the intervention.",
@@ -159,15 +392,17 @@ describe("WorkflowWorkspace", () => {
     };
     snapshot.latestReview = {
       id: "review-1",
-      reviewType: "deterministic-claims-v1",
+      reviewType: "deterministic-claims-v2",
       verdict: "passed",
       inputSha256: "d".repeat(64),
       result: {
-        schemaVersion: "1",
+        schemaVersion: "2",
         verdict: "passed",
         checks: [],
         claimResults: [],
         requiredRevisions: [],
+        resultSnapshotSha256: "f".repeat(64),
+        resultSnapshot: snapshot.result,
       },
       createdAt: "2026-07-14T08:00:10Z",
     };
@@ -180,7 +415,7 @@ describe("WorkflowWorkspace", () => {
           {
             id: "source-1",
             projectId: "project-1",
-            title: "Imported study",
+            title: "Changed live title",
             sourceKind: "pdf",
             authors: [],
             doi: null,
@@ -200,11 +435,15 @@ describe("WorkflowWorkspace", () => {
         canStart
       />,
     );
+    render(<WorkflowReviewSummary review={snapshot.latestReview} />);
 
     expect(screen.getByText("supported")).toBeInTheDocument();
     expect(screen.getByText("Evidence-integrity review passed")).toBeInTheDocument();
+    expect(screen.getByText(/Frozen result SHA-256/i)).toBeInTheDocument();
+    expect(screen.getByText(/does not establish the scientific correctness/i)).toBeInTheDocument();
     expect(screen.queryByText(/73%/)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Imported study, page 4/i }));
+    expect(screen.queryByText("Changed live title")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Frozen imported study, page 4/i }));
     expect(handlers.onSelectEvidence).toHaveBeenCalledWith(
       expect.objectContaining({ evidenceId: "evidence-1" }),
     );
@@ -218,7 +457,19 @@ describe("WorkflowWorkspace", () => {
     snapshot.result = {
       answerId: "answer-1",
       summary: "A provisional evidence map exists while review is running.",
-      claims: [],
+      generator: "local-extractive-v1",
+      model: null,
+      promptVersion: null,
+      integrityStatus: "unfrozen",
+      claims: [
+        {
+          id: "claim-pending",
+          statement: "This extractive claim is waiting for deterministic review.",
+          supportStatus: "pending-review",
+          confidence: 1,
+          evidence: [],
+        },
+      ],
       unresolvedQuestions: [],
     };
 
@@ -236,6 +487,48 @@ describe("WorkflowWorkspace", () => {
     );
 
     expect(screen.getByText("Provisional evidence map — review pending")).toBeInTheDocument();
+    expect(screen.getByText("pending review")).toBeInTheDocument();
+    expect(screen.getByText(/Unfrozen result/i)).toBeInTheDocument();
     expect(screen.queryByText("Evidence-integrity review passed")).not.toBeInTheDocument();
+  });
+
+  it("labels remote model output as provenance without presenting confidence as evidence", () => {
+    const snapshot = planSnapshot();
+    snapshot.workflow.status = "reviewing";
+    snapshot.workflow.generationMode = "remote-model-assisted";
+    snapshot.pendingApprovals = [];
+    snapshot.allowedActions = ["cancel"];
+    snapshot.result = {
+      answerId: "answer-remote",
+      summary: "A model-assisted synthesis awaiting deterministic review.",
+      generator: "remote-model-assisted-v1",
+      model: "provider/model-1",
+      promptVersion: "remote-extractive-synthesis-v1",
+      integrityStatus: "unfrozen",
+      claims: [],
+      unresolvedQuestions: [],
+    };
+
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={snapshot}
+        sources={[]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+      />,
+    );
+
+    expect(screen.getByText("Model-assisted synthesis.")).toBeInTheDocument();
+    expect(screen.getByText("remote-model-assisted-v1")).toBeInTheDocument();
+    expect(screen.getByText("provider/model-1")).toBeInTheDocument();
+    expect(screen.getByText("remote-extractive-synthesis-v1")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Generation mode is provenance, not evidence strength/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Provisional evidence map — review pending")).toBeInTheDocument();
   });
 });

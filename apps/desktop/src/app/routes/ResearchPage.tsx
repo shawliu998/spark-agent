@@ -144,7 +144,15 @@ export function ResearchPage() {
   const literatureReady =
     serviceReady &&
     health?.paperQa === "available" &&
-    health.modelGateway === "configured";
+    health.modelGateway === "configured" &&
+    health.modelDestination != null;
+  const remoteDestinationApprovalKey = health?.modelDestination
+    ? `${health.modelDestination.endpointIdentity}:${health.modelDestination.model}`
+    : null;
+
+  useEffect(() => {
+    setRemoteDataApproved(false);
+  }, [remoteDestinationApprovalKey]);
 
   const createProject = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -374,6 +382,7 @@ export function ResearchPage() {
             canStart={Boolean(
               projectId && serviceReady && !loadingSources && readySources.length > 0,
             )}
+            remoteDestination={health?.modelDestination ?? null}
             onCreate={workflow.create}
             onApprovePlan={workflow.approvePlan}
             onCancel={workflow.cancel}
@@ -395,6 +404,7 @@ export function ResearchPage() {
                 answer={answer}
                 projectReady={Boolean(projectId)}
                 literatureReady={literatureReady}
+                remoteDestination={health?.modelDestination ?? null}
                 sources={paperSources}
                 readySourceCount={readySources.length}
                 selection={pdfSelection}

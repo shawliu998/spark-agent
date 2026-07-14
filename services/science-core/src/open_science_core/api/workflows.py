@@ -60,6 +60,16 @@ def _raise_conflict(error: WorkflowConflict) -> None:
     ) from error
 
 
+def _snapshot_or_conflict(
+    session: Session,
+    workflow: WorkflowRecord,
+) -> ResearchWorkflowSnapshot:
+    try:
+        return workflow_snapshot(session, workflow)
+    except WorkflowConflict as error:
+        _raise_conflict(error)
+
+
 @router.post(
     "/v1/projects/{project_id}/workflows",
     response_model=ResearchWorkflowSnapshot,
@@ -78,7 +88,7 @@ def create_workflow(
         workflow = start_workflow(session, project, payload, idempotency_key)
     except WorkflowConflict as error:
         _raise_conflict(error)
-    return workflow_snapshot(session, workflow)
+    return _snapshot_or_conflict(session, workflow)
 
 
 @router.get(
@@ -93,7 +103,7 @@ def get_project_workflows(
 ) -> list[ResearchWorkflowSnapshot]:
     _project_or_404(session, project_id)
     return [
-        workflow_snapshot(session, workflow)
+        _snapshot_or_conflict(session, workflow)
         for workflow in list_workflows(
             session,
             project_id,
@@ -111,7 +121,10 @@ def get_workflow(
     workflow_id: str,
     session: Session = Depends(get_workflow_session),
 ) -> ResearchWorkflowSnapshot:
-    return workflow_snapshot(session, _workflow_or_404(session, workflow_id))
+    return _snapshot_or_conflict(
+        session,
+        _workflow_or_404(session, workflow_id),
+    )
 
 
 @router.post(
@@ -137,7 +150,7 @@ def approve_workflow_plan(
     except WorkflowConflict as error:
         session.rollback()
         _raise_conflict(error)
-    return workflow_snapshot(session, workflow)
+    return _snapshot_or_conflict(session, workflow)
 
 
 @router.post(
@@ -160,7 +173,7 @@ def cancel_workflow(
     except WorkflowConflict as error:
         session.rollback()
         _raise_conflict(error)
-    return workflow_snapshot(session, workflow)
+    return _snapshot_or_conflict(session, workflow)
 
 
 @router.post(
@@ -188,7 +201,7 @@ def retry_failed_workflow(
     except WorkflowConflict as error:
         session.rollback()
         _raise_conflict(error)
-    return workflow_snapshot(session, workflow)
+    return _snapshot_or_conflict(session, workflow)
 
 
 @router.post(
@@ -215,7 +228,7 @@ def resume_blocked_workflow(
     except WorkflowConflict as error:
         session.rollback()
         _raise_conflict(error)
-    return workflow_snapshot(session, workflow)
+    return _snapshot_or_conflict(session, workflow)
 
 
 @router.get(

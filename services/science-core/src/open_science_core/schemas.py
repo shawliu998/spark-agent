@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+
+from .config import normalize_model_identifier
 
 
 def to_camel(value: str) -> str:
@@ -19,12 +21,20 @@ class ApiModel(BaseModel):
     )
 
 
+class ModelGatewayDestinationOut(ApiModel):
+    provider: Literal["openai-compatible"]
+    endpoint_host: str
+    endpoint_identity: str
+    model: str
+
+
 class HealthOut(ApiModel):
     status: str
     version: str
     database: str
     paper_qa: str
     model_gateway: str
+    model_destination: ModelGatewayDestinationOut | None
     runtime: str
 
 
@@ -64,7 +74,20 @@ class SourceOut(ApiModel):
 class QuestionIn(ApiModel):
     question: str = Field(min_length=2, max_length=8_000)
     model: str | None = None
-    remote_data_approved: bool = False
+    remote_data_approved: StrictBool = False
+
+    @field_validator("model")
+    @classmethod
+    def validate_model_override(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        try:
+            normalized = normalize_model_identifier(value)
+        except ValueError as error:
+            raise ValueError(str(error)) from None
+        if normalized is None:
+            raise ValueError("model override must not be blank")
+        return normalized
 
 
 class BoundingBoxOut(ApiModel):
@@ -81,7 +104,7 @@ class EvidenceOut(ApiModel):
     page_label: str | None
     text: str
     bbox: BoundingBoxOut | None
-    coordinate_space: str
+    coordinate_space: Literal["normalized-rotated-top-left-v1"]
     quote_hash: str
     extraction_method: str
     confidence: float
@@ -91,9 +114,9 @@ class EvidenceOut(ApiModel):
 class ClaimOut(ApiModel):
     id: str
     statement: str
-    claim_type: str
+    claim_type: Literal["answer", "finding", "limitation", "contradiction"]
     confidence: float
-    review_status: str
+    review_status: Literal["unreviewed", "verified", "rejected"]
     evidence: list[EvidenceOut]
 
 
@@ -104,6 +127,10 @@ class AnswerOut(ApiModel):
     answer: str
     claims: list[ClaimOut]
     unresolved_questions: list[str]
+    generator: str
+    model: str | None
+    prompt_version: str | None
+    metadata: dict[str, Any]
     created_at: datetime
 
 

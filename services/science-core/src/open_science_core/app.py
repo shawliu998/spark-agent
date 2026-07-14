@@ -11,6 +11,7 @@ import uuid
 from collections.abc import AsyncIterator, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
@@ -31,7 +32,7 @@ from .analysis import (
     validate_python_code,
 )
 from .api.workflows import router as workflow_router
-from .config import settings
+from .config import canonical_model_api_endpoint, settings
 from .db import SessionLocal, database_session, engine, initialize_database
 from .literature import paper_qa, paper_qa_available
 from .models import (
@@ -61,6 +62,7 @@ from .schemas import (
     ClaimOut,
     EvidenceOut,
     HealthOut,
+    ModelGatewayDestinationOut,
     ProjectCreate,
     ProjectOut,
     QuestionIn,
@@ -149,12 +151,23 @@ def health() -> HealthOut:
     except Exception:
         database = "error"
     runtime = "ready" if _runtime_ready() else "unavailable"
+    model_destination = (
+        ModelGatewayDestinationOut(
+            provider="openai-compatible",
+            endpoint_host=urlsplit(settings.openai_api_base).hostname or "",
+            endpoint_identity=_model_endpoint_identity(settings.openai_api_base),
+            model=settings.llm_model or "",
+        )
+        if settings.model_gateway_configured
+        else None
+    )
     return HealthOut(
         status="ok" if database == "ok" and runtime == "ready" else "degraded",
         version=__version__,
         database=database,
         paper_qa="available" if paper_qa_available() else "unavailable",
         model_gateway="configured" if settings.model_gateway_configured else "unconfigured",
+        model_destination=model_destination,
         runtime=runtime,
     )
 
@@ -786,6 +799,13 @@ def artifact_file(artifact_id: str, session: Session = Depends(get_session)) -> 
     )
 
 
+def _model_endpoint_identity(api_base: str) -> str:
+    endpoint = canonical_model_api_endpoint(api_base)
+    if endpoint is None:
+        return ""
+    return f"sha256:{hashlib.sha256(endpoint.encode('utf-8')).hexdigest()}"
+
+
 @app.post(
     "/v1/projects/{project_id}/questions",
     response_model=AnswerOut,
@@ -814,8 +834,9 @@ async def ask_question(
         raise HTTPException(
             status_code=503,
             detail=(
-                "PaperQA model gateway is not configured. Set OPENAI_API_KEY "
-                "for the internal MVP science-core process."
+                "PaperQA model gateway is not configured. Store the credential "
+                "with 'pnpm model-key:set', configure SPARK_AGENT_LLM_MODEL, and "
+                "start the service through 'pnpm mvp:dev'."
             ),
         )
     if not payload.remote_data_approved:
@@ -850,6 +871,10 @@ async def ask_question(
                 "questionHash": hashlib.sha256(payload.question.encode("utf-8")).hexdigest(),
                 "sourceIds": [source.id for source in sources],
                 "gateway": "openai-compatible",
+                "endpointHost": urlsplit(settings.openai_api_base).hostname or "",
+                "endpointIdentity": _model_endpoint_identity(settings.openai_api_base),
+                "model": payload.model or settings.llm_model,
+                "dataCategories": ["user-question", "selected-pdf-text"],
             },
         )
     )
@@ -869,7 +894,7 @@ async def ask_question(
                 "PaperQA2 could not answer this question. Check the model gateway "
                 "configuration and try again."
             ),
-        ) from error
+        ) from None
 
     answer_id = str(uuid.uuid4())
     answer_record = AnswerRecord(
@@ -878,6 +903,15 @@ async def ask_question(
         question=payload.question,
         answer=result.answer,
         unresolved_questions=[],
+        generator="paperqa2-remote-v1",
+        model=payload.model or settings.llm_model,
+        prompt_version=None,
+        metadata_json={
+            "generationMode": "remote-model-assisted",
+            "provider": "openai-compatible",
+            "endpointHost": urlsplit(settings.openai_api_base).hostname or "",
+            "endpointIdentity": _model_endpoint_identity(settings.openai_api_base),
+        },
     )
     claim = ClaimRecord(
         id=str(uuid.uuid4()),
@@ -936,8 +970,10 @@ async def ask_question(
             )
         )
     verified = [evidence for evidence in evidence_records if evidence.verified]
-    claim.confidence = max((evidence.confidence for evidence in verified), default=0.0)
-    claim.review_status = "verified" if verified else "unreviewed"
+    # Local quote location proves only that a passage occurs in a PDF. It does
+    # not review the generated PaperQA answer for entailment or correctness.
+    claim.confidence = 0.0
+    claim.review_status = "unreviewed"
     if not verified:
         answer_record.unresolved_questions = [
             "PaperQA2 produced an answer, but no evidence passage could be verified against the local PDF text."
@@ -967,6 +1003,10 @@ async def ask_question(
             )
         ],
         unresolved_questions=answer_record.unresolved_questions,
+        generator=answer_record.generator,
+        model=answer_record.model,
+        prompt_version=answer_record.prompt_version,
+        metadata=answer_record.metadata_json,
         created_at=answer_record.created_at,
     )
 

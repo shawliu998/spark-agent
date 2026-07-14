@@ -15,9 +15,12 @@ and provenance in one auditable desktop workspace.
   typed three-step plan, and explicitly approve or cancel it.
 - Extract page-addressable evidence across local papers, build atomic claims, and
   require a deterministic evidence-integrity Reviewer pass before completion.
+- Bind approved remote sources to their PDF and parsed-page hashes, then freeze
+  the reviewed answer, ordered claims, citations, source identity, and result hash.
 - Recover persisted workflow jobs after restart, with revision-checked retry,
   resume, cancel, and an auditable event timeline.
-- Ask PaperQA-backed questions with explicit remote-data approval.
+- Ask PaperQA-backed questions with explicit remote-data approval and clearly
+  distinguish locally located quotations from unreviewed model claims.
 - Inspect claims, exact evidence spans, citations, and source PDF pages.
 - Import CSV datasets and prepare editable Python analyses.
 - Review an immutable execution payload before approving a run.
@@ -53,7 +56,8 @@ Requirements:
 
 - macOS with Node.js 20+ and pnpm 9
 - Docker Desktop or OrbStack
-- an OpenAI-compatible credential only when remote PaperQA questions are needed
+- an OpenAI-compatible credential only for remote model-assisted workflows or
+  PaperQA questions
 
 ```bash
 git clone https://github.com/shawliu998/spark-agent.git
@@ -70,20 +74,47 @@ not printed or placed in a URL. The first container build downloads the pinned
 Python dependencies and can take several minutes; later starts reuse Docker's
 cache.
 
-To enable the current PaperQA model gateway, provide the key through the shell
-environment. Do not put the key directly in a shell command, commit it, or paste
-it into application logs. On the default macOS zsh, prompt for it without echoing:
+To enable the current PaperQA model gateway, store its credential in macOS
+Keychain. The secure prompt is handled by `security`; the launcher passes the key
+only to Compose's top-level secret source while creating the service, then clears
+its temporary variable. The key is not put in command arguments, persisted
+outside Keychain, rendered into Compose
+configuration, inherited by the desktop, placed in the service/container
+environment, or written to logs:
 
 ```bash
-read -s "OPENAI_API_KEY?OpenAI API key: "
-printf '\n'
-export OPENAI_API_KEY
-pnpm mvp:dev
-unset OPENAI_API_KEY
+pnpm model-key:set
+pnpm model-key:status
 ```
 
-Without a model key, the local extractive workflow, PDF import, CSV analysis, and
-Jupyter execution remain available; remote PaperQA answering is disabled.
+Select the non-secret provider model before launch. Set a compatible API base
+only when using a provider other than the default endpoint:
+
+```bash
+export SPARK_AGENT_LLM_MODEL='your-provider-model-id'
+# Optional: export OPENAI_API_BASE='https://your-provider.example/v1'
+# Optional: export SPARK_AGENT_EMBEDDING_MODEL='your-compatible-embedding-id'
+pnpm mvp:dev
+```
+
+For this internal slice, both model variables are raw IDs accepted by the same
+OpenAI-compatible endpoint. PaperQA-native local embedding profiles are not wired
+to this launcher yet.
+
+Public and LAN model endpoints must use HTTPS. Plain HTTP is accepted only for
+the literal `localhost` host or a loopback IP address.
+
+Delete the credential with `pnpm model-key:delete`. At launch, Spark Agent reads
+the key into a non-exported variable and exposes it only as a Compose secret file
+inside `science-core`. An inherited `OPENAI_API_KEY` causes startup to fail rather
+than leaking the key to Vite or another child process; run `unset OPENAI_API_KEY`
+before `pnpm mvp:dev` if an existing shell profile exports it.
+
+Without a model key, the default deterministic workflow, PDF import, CSV analysis,
+and Jupyter execution remain available. A stored key also enables optional
+remote-model-assisted planning and synthesis as well as PaperQA answering. Remote
+workflows require approval of the research goal before planning and a second
+approval of the source-bound plan before execution.
 
 Stop the local services with:
 
@@ -100,9 +131,12 @@ exchange and socket volumes are removed.
 - The durable orchestrator currently supports one coherent workflow type:
   `literature-synthesis` (inspect sources → extract local evidence → synthesize
   extractive claims → deterministic review).
-- The plan is intentionally deterministic and local in this slice. OpenCode,
-  PaperQA, STORM, MCP, OpenHands, and MLX do not own or mutate canonical workflow
-  state.
+- The default plan is deterministic and local. The optional model-assisted mode
+  proposes a schema-validated plan and extractive claims, while the durable local
+  workflow remains canonical and evidence verification stays fail-closed.
+- The Reviewer verifies immutable result materialization, exact citation links,
+  local quote location, and source-file/page fingerprints. It does not establish
+  scientific correctness, methodological quality, entailment, or generalizability.
 - Workflow activity uses authenticated cursor polling (1.5 seconds while active),
   not SSE yet.
 - This remains a source-run internal build. Tauri-managed packaging of the Python
@@ -115,7 +149,7 @@ exchange and socket volumes are removed.
   loopback-only service port, and an allowlisted CORS boundary.
 - No arbitrary direct shell mode in the product UI.
 - Compare-and-set workflow revisions, idempotent workflow creation and enqueue
-  guards, immutable plan hashes,
+  guards, immutable plan/approval envelopes and frozen reviewed-result hashes,
   leased jobs, bounded recovery, and fail-closed Reviewer checks.
 - Immutable, hashed analysis intents with compare-and-set approval decisions.
 - Jupyter execution in a no-network container with a read-only root filesystem,

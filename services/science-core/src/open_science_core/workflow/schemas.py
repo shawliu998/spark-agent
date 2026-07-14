@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    StrictBool,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from ..schemas import ApiModel, BoundingBoxOut
 
@@ -36,12 +43,14 @@ TaskStatus = Literal[
 AllowedAction = Literal["approve-plan", "cancel", "retry", "resume"]
 ReviewVerdict = Literal["passed", "revision-required", "blocked", "failed"]
 ClaimSupportStatus = Literal[
+    "pending-review",
     "supported",
     "partially-supported",
     "contradicted",
     "insufficient-evidence",
     "not-applicable",
 ]
+GenerationMode = Literal["local-deterministic", "remote-model-assisted"]
 
 StepKey = Annotated[
     str,
@@ -58,8 +67,44 @@ class StrictApiModel(ApiModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class FrozenSourceDescriptor(StrictApiModel):
+    source_id: str = Field(min_length=1, max_length=36)
+    title: str = Field(min_length=1, max_length=1_000)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    page_manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class InspectSourcesInput(StrictApiModel):
     source_kind: Literal["pdf"] = "pdf"
+    # Retained only so an old local plan can still be parsed. New remote plans
+    # use frozen_sources because IDs alone do not authorize immutable content.
+    source_ids: list[str] | None = Field(default=None, max_length=100)
+    frozen_sources: list[FrozenSourceDescriptor] | None = Field(
+        default=None,
+        max_length=100,
+    )
+
+    @field_validator("source_ids")
+    @classmethod
+    def validate_source_allowlist(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        normalized = [item.strip() for item in value]
+        if any(not item or len(item) > 36 for item in normalized):
+            raise ValueError("source_ids must contain non-empty record identifiers")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("source_ids must be unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_frozen_sources(self) -> InspectSourcesInput:
+        if self.source_ids is not None and self.frozen_sources is not None:
+            raise ValueError("source_ids and frozen_sources are mutually exclusive")
+        if self.frozen_sources is not None:
+            source_ids = [source.source_id for source in self.frozen_sources]
+            if len(set(source_ids)) != len(source_ids):
+                raise ValueError("frozen_sources must contain unique source identifiers")
+        return self
 
 
 class ExtractLocalEvidenceInput(StrictApiModel):
@@ -124,9 +169,98 @@ class PlanSpec(StrictApiModel):
         return value
 
 
+class ModelInspectStepProposal(StrictApiModel):
+    type: Literal["inspect-sources"]
+    objective: str = Field(min_length=1, max_length=2_000)
+
+
+class ModelEvidenceStepProposal(StrictApiModel):
+    type: Literal["extract-local-evidence"]
+    objective: str = Field(min_length=1, max_length=2_000)
+    query: str = Field(min_length=2, max_length=8_000)
+    max_passages: int = Field(default=12, ge=1, le=40)
+    max_per_source: int = Field(default=4, ge=1, le=10)
+
+    @field_validator("query")
+    @classmethod
+    def reject_blank_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be blank")
+        return value.strip()
+
+
+class ModelSynthesisStepProposal(StrictApiModel):
+    type: Literal["synthesize-extractive-claims"]
+    objective: str = Field(min_length=1, max_length=2_000)
+    max_claims: int = Field(default=8, ge=1, le=20)
+
+
+class ModelPlanProposal(StrictApiModel):
+    schema_version: Literal["1"] = "1"
+    steps: list[
+        ModelInspectStepProposal
+        | ModelEvidenceStepProposal
+        | ModelSynthesisStepProposal
+    ] = Field(min_length=3, max_length=3)
+
+    @field_validator("steps")
+    @classmethod
+    def validate_frozen_sequence(
+        cls,
+        value: list[
+            ModelInspectStepProposal
+            | ModelEvidenceStepProposal
+            | ModelSynthesisStepProposal
+        ],
+    ) -> list[
+        ModelInspectStepProposal
+        | ModelEvidenceStepProposal
+        | ModelSynthesisStepProposal
+    ]:
+        expected = [
+            "inspect-sources",
+            "extract-local-evidence",
+            "synthesize-extractive-claims",
+        ]
+        if [step.type for step in value] != expected:
+            raise ValueError("model plan must preserve the frozen three-step sequence")
+        return value
+
+
+class ModelClaimProposal(StrictApiModel):
+    statement: str = Field(min_length=20, max_length=2_000)
+    evidence_id: str = Field(min_length=1, max_length=36)
+    passage: str = Field(min_length=20, max_length=20_000)
+
+    @field_validator("statement", "passage")
+    @classmethod
+    def reject_surrounding_whitespace(cls, value: str) -> str:
+        if value != value.strip():
+            raise ValueError("extractive text must not contain surrounding whitespace")
+        return value
+
+
+class ModelSynthesisProposal(StrictApiModel):
+    schema_version: Literal["1"] = "1"
+    claims: list[ModelClaimProposal] = Field(min_length=1, max_length=20)
+    unresolved_questions: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("unresolved_questions")
+    @classmethod
+    def validate_questions(cls, value: list[str]) -> list[str]:
+        normalized = [" ".join(item.split()) for item in value]
+        if any(not item or len(item) > 1_000 for item in normalized):
+            raise ValueError("unresolved questions must be non-empty and at most 1000 characters")
+        if any(not item.endswith(("?", "？")) for item in normalized):
+            raise ValueError("unresolved questions must be explicitly phrased as questions")
+        return normalized
+
+
 class WorkflowCreateIn(StrictApiModel):
     goal: str = Field(min_length=2, max_length=8_000)
     workflow_type: Literal["literature-synthesis"] = "literature-synthesis"
+    generation_mode: GenerationMode = "local-deterministic"
+    remote_data_approved: StrictBool = False
 
     @field_validator("goal")
     @classmethod
@@ -134,6 +268,19 @@ class WorkflowCreateIn(StrictApiModel):
         if not value.strip():
             raise ValueError("goal must not be blank")
         return value.strip()
+
+    @model_validator(mode="after")
+    def require_explicit_remote_approval(self) -> WorkflowCreateIn:
+        if self.generation_mode == "remote-model-assisted" and not self.remote_data_approved:
+            raise ValueError(
+                "remote_data_approved must be true before the research goal is sent "
+                "to the configured remote model"
+            )
+        if self.generation_mode == "local-deterministic" and self.remote_data_approved:
+            raise ValueError(
+                "remote_data_approved is only valid for remote-model-assisted generation"
+            )
+        return self
 
 
 class ApprovePlanIn(StrictApiModel):
@@ -163,6 +310,7 @@ class WorkflowStateOut(ApiModel):
     project_id: str
     workflow_type: Literal["literature-synthesis"]
     goal: str
+    generation_mode: GenerationMode
     status: WorkflowStatus
     revision: int
     plan_version: int | None
@@ -194,6 +342,9 @@ class PlanSnapshotOut(ApiModel):
     version: int
     status: PlanStatus
     plan_sha256: str
+    generator: str
+    model: str | None
+    prompt_version: str | None
     spec: PlanSpec
     steps: list[MaterializedStepOut]
     created_at: datetime
@@ -221,11 +372,14 @@ class PendingApprovalOut(ApiModel):
 class EvidenceRelationshipOut(ApiModel):
     evidence_id: str
     source_id: str
+    source_title: str | None
+    source_content_hash: str | None
+    source_page_manifest_hash: str | None
     page_index: int
     page_label: str | None
     text: str
     bbox: BoundingBoxOut | None
-    coordinate_space: str
+    coordinate_space: Literal["normalized-rotated-top-left-v1"]
     quote_hash: str
     extraction_method: str
     confidence: float
@@ -244,6 +398,10 @@ class WorkflowClaimOut(ApiModel):
 class WorkflowResultOut(ApiModel):
     answer_id: str
     summary: str
+    generator: str
+    model: str | None
+    prompt_version: str | None
+    integrity_status: Literal["verified-frozen-v2", "unfrozen"]
     claims: list[WorkflowClaimOut]
     unresolved_questions: list[str]
 
@@ -264,11 +422,30 @@ class ClaimReviewResult(StrictApiModel):
 
 
 class DeterministicReviewResult(StrictApiModel):
-    schema_version: Literal["1"] = "1"
+    schema_version: Literal["1", "2"] = "1"
     verdict: ReviewVerdict
     checks: list[ReviewCheck]
     claim_results: list[ClaimReviewResult]
     required_revisions: list[str]
+    result_snapshot_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    result_snapshot: WorkflowResultOut | None = None
+
+    @model_validator(mode="after")
+    def validate_result_snapshot_binding(self) -> DeterministicReviewResult:
+        if self.schema_version == "1" and (
+            self.result_snapshot_sha256 is not None or self.result_snapshot is not None
+        ):
+            raise ValueError("review result schema 1 cannot contain a frozen result snapshot")
+        if self.schema_version == "2" and (
+            self.result_snapshot_sha256 is None or self.result_snapshot is None
+        ):
+            raise ValueError("review result schema 2 requires an immutable result snapshot")
+        if (self.result_snapshot_sha256 is None) != (self.result_snapshot is None):
+            raise ValueError("result snapshot and its hash must be stored together")
+        return self
 
 
 class ReviewSnapshotOut(ApiModel):
@@ -293,6 +470,15 @@ class ResearchWorkflowSnapshot(ApiModel):
 class CreatedEventData(StrictApiModel):
     workflow_type: Literal["literature-synthesis"]
     goal_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generation_mode: GenerationMode = "local-deterministic"
+
+
+class RemoteDataApprovalEventData(StrictApiModel):
+    provider: Literal["openai-compatible"]
+    endpoint_host: str = Field(min_length=1, max_length=253)
+    endpoint_identity: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    model: str | None = Field(default=None, max_length=200)
+    data_categories: list[Literal["user-goal"]]
 
 
 class StatusChangedEventData(StrictApiModel):
@@ -313,6 +499,10 @@ class ApprovalEventData(StrictApiModel):
     subject_id: str
     action: str
     payload_sha256: str
+    risk_level: str | None = None
+    reason: str | None = None
+    affected_resources: list[str] | None = None
+    approval_schema_version: str | None = None
 
 
 class TaskEventData(StrictApiModel):
@@ -343,6 +533,7 @@ class CancelEventData(StrictApiModel):
 
 WorkflowEventData = (
     CreatedEventData
+    | RemoteDataApprovalEventData
     | StatusChangedEventData
     | PlanEventData
     | ApprovalEventData

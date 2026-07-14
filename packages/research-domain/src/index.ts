@@ -32,6 +32,14 @@ export type ResearchWorkflowAllowedAction =
 
 export type ResearchWorkflowType = "literature-synthesis";
 
+/**
+ * Describes how a workflow generates its plan and narrative output.
+ * Evidence verification remains deterministic in both modes.
+ */
+export type ResearchGenerationMode =
+  | "local-deterministic"
+  | "remote-model-assisted";
+
 export interface WorkflowApiErrorDetail {
   code: string;
   userMessage: string;
@@ -49,6 +57,8 @@ export interface ResearchWorkflow {
   projectId: string;
   goal: string;
   workflowType: ResearchWorkflowType;
+  /** Optional while reading snapshots created before model-assisted v2. */
+  generationMode?: ResearchGenerationMode;
   status: ResearchWorkflowStatus;
   revision: number;
   currentStepId: string | null;
@@ -81,8 +91,19 @@ export type ResearchWorkflowTaskType =
   | "extract-local-evidence"
   | "synthesize-extractive-claims";
 
+export interface FrozenResearchSource {
+  sourceId: string;
+  title: string;
+  contentHash: string;
+  pageManifestHash: string;
+}
+
 export interface InspectSourcesInput {
   sourceKind: "pdf";
+  /** Retained for snapshots created before content-bound source descriptors. */
+  sourceIds: string[] | null;
+  /** Remote plans bind approval to both file bytes and parsed-page content. */
+  frozenSources?: FrozenResearchSource[] | null;
 }
 
 export interface ExtractLocalEvidenceInput {
@@ -146,6 +167,12 @@ export interface ResearchWorkflowPlan {
   version: number;
   status: ResearchWorkflowPlanStatus;
   planSha256: string;
+  /** Planner identity, for example a deterministic template or model gateway. */
+  generator?: string;
+  /** Versioned prompt/template identifier used to create this plan. */
+  promptVersion?: string | null;
+  /** Exact model identifier when a remote model generated the plan. */
+  model?: string | null;
   spec: ResearchWorkflowPlanSpec;
   steps: ResearchWorkflowMaterializedStep[];
   createdAt: string;
@@ -173,27 +200,20 @@ export interface WorkflowPendingApproval {
 /** Future policy approvals stay distinct from plan confirmation. */
 export type WorkflowApprovalKind = "plan" | "remote-data" | "analysis-execution";
 
-export interface RemoteDataDisclosure {
-  provider: string;
-  model: string | null;
-  endpointHost: string;
-  dataCategories: Array<
-    "user-goal" | "source-metadata" | "selected-source-passages"
-  >;
-  sourceIds: string[];
-  scope: "this-plan-version";
-}
-
 export type ClaimSupportStatus =
   | "supported"
   | "partially-supported"
   | "contradicted"
   | "insufficient-evidence"
+  | "pending-review"
   | "not-applicable";
 
 export interface WorkflowEvidenceRelationship {
   evidenceId: string;
   sourceId: string;
+  sourceTitle: string | null;
+  sourceContentHash: string | null;
+  sourcePageManifestHash: string | null;
   pageIndex: number;
   pageLabel: string | null;
   text: string;
@@ -217,6 +237,10 @@ export interface WorkflowClaim {
 export interface ResearchWorkflowResult {
   answerId: string;
   summary: string;
+  generator: string;
+  model: string | null;
+  promptVersion: string | null;
+  integrityStatus: "verified-frozen-v2" | "unfrozen";
   claims: WorkflowClaim[];
   unresolvedQuestions: string[];
 }
@@ -243,11 +267,13 @@ export interface WorkflowClaimReviewResult {
 }
 
 export interface WorkflowDeterministicReviewResult {
-  schemaVersion: "1";
+  schemaVersion: "1" | "2";
   verdict: WorkflowReviewVerdict;
   checks: WorkflowReviewCheck[];
   claimResults: WorkflowClaimReviewResult[];
   requiredRevisions: string[];
+  resultSnapshotSha256: string | null;
+  resultSnapshot: ResearchWorkflowResult | null;
 }
 
 export interface ResearchWorkflowReview {
@@ -272,6 +298,16 @@ export interface ResearchWorkflowSnapshot {
 export interface WorkflowCreatedEventData {
   workflowType: ResearchWorkflowType;
   goalSha256: string;
+  /** Optional while reading event logs created before model-assisted v2. */
+  generationMode?: ResearchGenerationMode;
+}
+
+export interface WorkflowRemoteDataApprovalEventData {
+  provider: string;
+  endpointHost: string;
+  endpointIdentity: string;
+  model: string | null;
+  dataCategories: Array<"user-goal">;
 }
 
 export interface WorkflowStatusChangedEventData {
@@ -292,6 +328,11 @@ export interface WorkflowApprovalEventData {
   subjectId: string;
   action: string;
   payloadSha256: string;
+  /** Added by v2 approval envelopes; absent on frozen v1 events. */
+  riskLevel?: string | null;
+  reason?: string | null;
+  affectedResources?: string[] | null;
+  approvalSchemaVersion?: string | null;
 }
 
 export interface WorkflowTaskEventData {
@@ -322,6 +363,7 @@ export interface WorkflowCancelEventData {
 
 export type WorkflowEventData =
   | WorkflowCreatedEventData
+  | WorkflowRemoteDataApprovalEventData
   | WorkflowStatusChangedEventData
   | WorkflowPlanEventData
   | WorkflowApprovalEventData
@@ -418,7 +460,18 @@ export interface ResearchAnswer {
   answer: string;
   claims: ResearchClaim[];
   unresolvedQuestions: string[];
+  generator: string;
+  model: string | null;
+  promptVersion: string | null;
+  metadata: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface ScienceCoreModelDestination {
+  provider: "openai-compatible";
+  endpointHost: string;
+  endpointIdentity: string;
+  model: string;
 }
 
 export interface ScienceCoreHealth {
@@ -427,6 +480,7 @@ export interface ScienceCoreHealth {
   database: "ok" | "error";
   paperQa: "available" | "unavailable";
   modelGateway: "configured" | "unconfigured";
+  modelDestination: ScienceCoreModelDestination | null;
   runtime: "ready" | "unavailable";
 }
 

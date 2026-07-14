@@ -5,9 +5,13 @@
 > no-network Jupyter science-runtime are implemented. science-core is now the
 > canonical control plane for persisted Workflow, Plan, Task, Approval, Job,
 > Review, Answer/Claim/Evidence, Run, Artifact, and Event state. A leased worker
-> executes a typed local literature-synthesis plan and recovers expired work after
-> restart; immutable plan hashes, workflow revisions, Bearer authentication, and a
-> deterministic Reviewer fail closed. The Research UI exposes plan approval,
+> executes a typed literature-synthesis plan and recovers expired work after
+> restart. Local deterministic generation is the default; an optional remote model
+> may propose only schema-bounded plan parameters and exact extractive claims after
+> two explicit disclosure approvals. Content-bound source descriptors, immutable
+> plan/approval envelopes, endpoint/model binding, frozen reviewed-result hashes,
+> workflow revisions, Bearer authentication, and a deterministic Reviewer fail
+> closed. The Research UI exposes plan approval,
 > progress, results, evidence, review, and activity. Activity currently uses cursor
 > polling rather than SSE. Later sections retain historical target design where
 > useful; `README.md`, `PROGRESS.md`, and the current code are authoritative.
@@ -19,13 +23,16 @@ Research UI
   → @spark/research-sdk (Bearer + typed snapshots)
   → science-core Workflow API
   → SQLite state machine + durable leased jobs + ordered events
-  → inspect local PDFs → extract evidence → atomic extractive claims
-  → deterministic Reviewer → completed or blocked
+  → local template (default) or explicitly approved schema-bound remote planner
+  → inspect hash-bound local PDFs → extract evidence → atomic extractive claims
+  → deterministic Reviewer + frozen result snapshot → completed or blocked
 ```
 
 The internal launcher binds science-core to a dynamically allocated loopback port,
 generates an ephemeral credential, migrates/backs up the database with Alembic, and
-passes connection details to the UI. OpenCode, PaperQA, MCP, STORM, and future
+passes connection details to the UI. Optional model credentials are stored in macOS
+Keychain and mounted into science-core as a runtime-only Compose secret, never as a
+container environment variable. OpenCode, PaperQA, MCP, STORM, and future
 OpenHands/MLX adapters remain replaceable capabilities; none is a second workflow
 fact source.
 
@@ -310,11 +317,19 @@ export, and open-source friendly.
 }
 ```
 
-### 10.3 Reviewer rules (v1, deterministic)
+### 10.3 Reviewer rules (v2, deterministic evidence integrity)
 
-Artifact exists; output is recorded in provenance; figure has a code file; table has
-source data; report includes limitations; citation has a recognizable ID; script can
-be re-run.
+For literature workflows, every claim must belong to the workflow answer, retain an
+exact sentence from a verified project-owned passage, and have a valid supporting
+relationship, page location, and quote hash. The answer summary is reconstructed
+deterministically from the ordered claim/evidence map; remote model output cannot
+free-write it. Generation provider, model, prompt version, and approved endpoint
+identity are provenance, not evidence strength.
+
+This Reviewer does not establish scientific correctness, methodological quality, or
+generalizability. Semantic and scientific review remain separate future layers.
+Analysis artifact verification separately checks recorded files, provenance, source
+data/code relationships, reproducibility metadata, containment, and content hashes.
 
 ## 11. Security
 
@@ -345,6 +360,9 @@ maps high-risk actions to "ask" and must never blanket-allow them.
 
 Stored in macOS Keychain / Windows Credential Manager (fallback: encrypted local
 secrets). Never enter provenance, logs, crash reports, git, or exported projects.
+The internal macOS launcher reads the model key only for the Compose secret handoff;
+science-core reads a bounded secret file. Public and LAN model endpoints require
+HTTPS, while plain HTTP is limited to literal loopback destinations.
 
 ## 12. Packaging & release
 

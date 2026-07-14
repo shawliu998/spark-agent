@@ -7,8 +7,11 @@
   "scripts": {
     "dev": "pnpm --filter @ai4s/desktop dev",
     "science:up": "bash scripts/dev/start-internal.sh",
-    "science:down": "SPARK_AGENT_CORE_TOKEN=cleanup-only docker compose --project-name ${SPARK_AGENT_INTERNAL_COMPOSE_PROJECT:-spark-agent-internal-dev} down --volumes --remove-orphans",
-    "science:logs": "SPARK_AGENT_CORE_TOKEN=logs-only docker compose --project-name ${SPARK_AGENT_INTERNAL_COMPOSE_PROJECT:-spark-agent-internal-dev} logs -f --tail=120",
+    "science:down": "SPARK_AGENT_OPENAI_API_KEY_SECRET= SPARK_AGENT_CORE_TOKEN=cleanup-only docker compose --project-name ${SPARK_AGENT_INTERNAL_COMPOSE_PROJECT:-spark-agent-internal-dev} down --volumes --remove-orphans",
+    "science:logs": "SPARK_AGENT_OPENAI_API_KEY_SECRET= SPARK_AGENT_CORE_TOKEN=logs-only docker compose --project-name ${SPARK_AGENT_INTERNAL_COMPOSE_PROJECT:-spark-agent-internal-dev} logs -f --tail=120",
+    "model-key:set": "bash scripts/dev/model-keychain.sh set",
+    "model-key:status": "bash scripts/dev/model-keychain.sh status",
+    "model-key:delete": "bash scripts/dev/model-keychain.sh delete",
     "mvp:dev": "bash scripts/dev/start-internal.sh",
     "build": "pnpm --filter @ai4s/desktop build",
     "test": "pnpm --filter @ai4s/desktop test",

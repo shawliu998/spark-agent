@@ -7,7 +7,12 @@ import {
   Quote,
   Search,
 } from "lucide-react";
-import type { EvidenceSpan, ResearchAnswer, ResearchSource } from "@spark/research-domain";
+import type {
+  EvidenceSpan,
+  ResearchAnswer,
+  ResearchSource,
+  ScienceCoreModelDestination,
+} from "@spark/research-domain";
 import { MarkdownViewer } from "@/components/markdown-viewer/MarkdownViewer";
 import { cn } from "@/lib/cn";
 import type { ResearchPdfSelection } from "./ResearchInspector";
@@ -19,6 +24,7 @@ export interface LegacyQuestionPanelProps {
   answer: ResearchAnswer | null;
   projectReady: boolean;
   literatureReady: boolean;
+  remoteDestination: ScienceCoreModelDestination | null;
   sources: ResearchSource[];
   readySourceCount: number;
   selection: ResearchPdfSelection | null;
@@ -28,14 +34,6 @@ export interface LegacyQuestionPanelProps {
   onSelectEvidence: (evidence: EvidenceSpan) => void;
 }
 
-function percent(value: number): string {
-  const normalized = value > 1 ? value / 100 : value;
-  return new Intl.NumberFormat(undefined, {
-    style: "percent",
-    maximumFractionDigits: 0,
-  }).format(Math.max(0, Math.min(1, normalized)));
-}
-
 export function LegacyQuestionPanel({
   question,
   approved,
@@ -43,6 +41,7 @@ export function LegacyQuestionPanel({
   answer,
   projectReady,
   literatureReady,
+  remoteDestination,
   sources,
   readySourceCount,
   selection,
@@ -72,7 +71,7 @@ export function LegacyQuestionPanel({
             })}
             className="mt-2 w-full resize-y rounded-input border border-border bg-bg px-3 py-2 text-sm leading-relaxed text-text outline-none placeholder:text-muted focus:border-accent"
           />
-          {literatureReady && readySourceCount > 0 && (
+          {literatureReady && remoteDestination && readySourceCount > 0 && (
             <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-input border border-warn/25 bg-warn/5 px-3 py-2.5 text-[11px] leading-relaxed text-muted">
               <input
                 type="checkbox"
@@ -83,8 +82,18 @@ export function LegacyQuestionPanel({
               <span>
                 {t("research.remoteApproval", {
                   defaultValue:
-                    "For this request, allow the configured remote model gateway to receive the question and PDF text needed for embedding, retrieval, and answering.",
+                    "For this request, allow {{model}} at {{host}} to receive the question and PDF text needed for embedding, retrieval, and answering.",
+                  model: remoteDestination?.model,
+                  host: remoteDestination?.endpointHost,
                 })}
+                {remoteDestination && (
+                  <span className="mt-1 block break-all font-mono text-[9px]">
+                    {t("research.endpointIdentity", {
+                      defaultValue: "Endpoint identity",
+                    })}
+                    : {remoteDestination.endpointIdentity}
+                  </span>
+                )}
               </span>
             </label>
           )}
@@ -105,6 +114,7 @@ export function LegacyQuestionPanel({
                 !question.trim() ||
                 !projectReady ||
                 !literatureReady ||
+                !remoteDestination ||
                 readySourceCount === 0 ||
                 !approved ||
                 asking
@@ -155,6 +165,14 @@ function AnswerView({
   const hasVerifiedEvidence = answer.claims.some((claim) =>
     claim.evidence.some((evidence) => evidence.verified),
   );
+  const endpointHost =
+    typeof answer.metadata.endpointHost === "string"
+      ? answer.metadata.endpointHost
+      : null;
+  const endpointIdentity =
+    typeof answer.metadata.endpointIdentity === "string"
+      ? answer.metadata.endpointIdentity
+      : null;
   return (
     <article className="mt-5 space-y-4">
       <section className="rounded-card border border-border bg-surface p-4 shadow-card">
@@ -165,18 +183,67 @@ function AnswerView({
             <AlertTriangle size={14} className="text-warn" />
           )}
           {hasVerifiedEvidence
-            ? t("research.answerHeading", { defaultValue: "Evidence-grounded answer" })
+            ? t("research.answerHeading", {
+                defaultValue: "Remote answer with locally matched passages",
+              })
             : t("research.unverifiedAnswerHeading", {
-                defaultValue: "Answer — evidence needs review",
+                defaultValue: "Remote answer — no locally matched passage",
               })}
         </div>
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px] text-muted">
+          <span className="rounded-full bg-warn/10 px-2 py-0.5 text-warn ring-1 ring-warn/20">
+            {t("research.remoteGenerated", { defaultValue: "Remote model output" })}
+          </span>
+          <span>{answer.generator}</span>
+          {answer.model && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>{answer.model}</span>
+            </>
+          )}
+        </div>
+        <dl className="mb-3 grid gap-2 rounded-input border border-border-faint bg-bg px-3 py-2 text-[10px] sm:grid-cols-2">
+          <div className="min-w-0">
+            <dt className="uppercase tracking-wider text-muted">
+              {t("research.remoteEndpoint", { defaultValue: "Remote endpoint" })}
+            </dt>
+            <dd className="mt-0.5 break-words font-mono text-text">
+              {endpointHost ?? t("research.notReported", { defaultValue: "Not reported" })}
+            </dd>
+          </div>
+          <div className="min-w-0">
+            <dt className="uppercase tracking-wider text-muted">
+              {t("research.endpointIdentity", { defaultValue: "Endpoint identity" })}
+            </dt>
+            <dd className="mt-0.5 break-all font-mono text-text">
+              {endpointIdentity ??
+                t("research.notReported", { defaultValue: "Not reported" })}
+            </dd>
+          </div>
+          {answer.promptVersion && (
+            <div className="min-w-0">
+              <dt className="uppercase tracking-wider text-muted">
+                {t("research.promptVersion", { defaultValue: "Prompt version" })}
+              </dt>
+              <dd className="mt-0.5 break-words font-mono text-text">
+                {answer.promptVersion}
+              </dd>
+            </div>
+          )}
+        </dl>
+        <p className="mb-3 rounded-input border border-warn/25 bg-warn/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
+          {t("research.paperQaEvidenceBoundary", {
+            defaultValue:
+              "A passage match confirms only that quoted text occurs in an imported PDF. It does not validate this answer's correctness, completeness, scientific quality, or entailment.",
+          })}
+        </p>
         <MarkdownViewer>{answer.answer}</MarkdownViewer>
       </section>
 
       <div className="flex items-center gap-2 pt-1">
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
           {t("research.claimsHeading", {
-            defaultValue: "Claims ({{count}})",
+            defaultValue: "Generated claims — not claim-reviewed ({{count}})",
             count: answer.claims.length,
           })}
         </h3>
@@ -192,24 +259,9 @@ function AnswerView({
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium leading-relaxed text-text">{claim.statement}</p>
               <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
-                <span className="rounded-full bg-surface-2 px-2 py-0.5 text-muted ring-1 ring-border">
-                  {t("research.confidence", {
-                    defaultValue: "{{value}} confidence",
-                    value: percent(claim.confidence),
-                  })}
-                </span>
-                <span
-                  className={cn(
-                    "rounded-full px-2 py-0.5 ring-1",
-                    claim.reviewStatus === "verified"
-                      ? "bg-ok/10 text-ok ring-ok/20"
-                      : claim.reviewStatus === "rejected"
-                        ? "bg-error/10 text-error ring-error/20"
-                        : "bg-warn/10 text-warn ring-warn/20",
-                  )}
-                >
-                  {t(`research.reviewStatus.${claim.reviewStatus}`, {
-                    defaultValue: claim.reviewStatus,
+                <span className="rounded-full bg-warn/10 px-2 py-0.5 text-warn ring-1 ring-warn/20">
+                  {t("research.notClaimReviewed", {
+                    defaultValue: "Not reviewed for claim support",
                   })}
                 </span>
               </div>
@@ -220,7 +272,9 @@ function AnswerView({
             {claim.evidence.length === 0 && (
               <div className="flex items-center gap-2 text-xs text-warn">
                 <AlertTriangle size={13} />
-                {t("research.noEvidence", { defaultValue: "No verified source passage attached." })}
+                {t("research.noEvidence", {
+                  defaultValue: "No locally matched source passage attached.",
+                })}
               </div>
             )}
             {claim.evidence.map((evidence) => {
@@ -249,8 +303,10 @@ function AnswerView({
                     })}
                     <span className="ml-auto normal-case tracking-normal">
                       {evidence.verified
-                        ? t("research.verified", { defaultValue: "verified" })
-                        : t("research.needsReview", { defaultValue: "needs review" })}
+                        ? t("research.quoteLocated", { defaultValue: "quote located locally" })
+                        : t("research.needsReview", {
+                            defaultValue: "quote location needs review",
+                          })}
                     </span>
                     <ChevronRight size={12} className="transition-transform group-hover:translate-x-0.5" />
                   </span>

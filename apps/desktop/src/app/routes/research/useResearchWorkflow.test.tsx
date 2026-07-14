@@ -126,6 +126,55 @@ describe("useResearchWorkflow", () => {
     const retryOptions = core.createWorkflow.mock.calls[1]?.[2];
     expect(firstOptions.idempotencyKey).toBeTruthy();
     expect(retryOptions.idempotencyKey).toBe(firstOptions.idempotencyKey);
+    expect(core.createWorkflow.mock.calls[0]?.[1]).toEqual({
+      goal: "Compare studies",
+      workflowType: "literature-synthesis",
+      generationMode: "local-deterministic",
+      remoteDataApproved: false,
+    });
+    unmount();
+  });
+
+  it("treats generation mode and remote approval as part of the create intent", async () => {
+    core.createWorkflow
+      .mockRejectedValueOnce(new Error("connection dropped"))
+      .mockResolvedValueOnce(snapshot());
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(core.listWorkflows).toHaveBeenCalled());
+
+    await act(async () => {
+      await result.current.create(
+        "Compare studies",
+        "remote-model-assisted",
+        true,
+      );
+    });
+    await act(async () => {
+      await result.current.create(
+        "Compare studies",
+        "local-deterministic",
+        false,
+      );
+    });
+
+    expect(core.createWorkflow).toHaveBeenCalledTimes(2);
+    expect(core.createWorkflow.mock.calls[0]?.[1]).toEqual({
+      goal: "Compare studies",
+      workflowType: "literature-synthesis",
+      generationMode: "remote-model-assisted",
+      remoteDataApproved: true,
+    });
+    expect(core.createWorkflow.mock.calls[1]?.[1]).toEqual({
+      goal: "Compare studies",
+      workflowType: "literature-synthesis",
+      generationMode: "local-deterministic",
+      remoteDataApproved: false,
+    });
+    expect(core.createWorkflow.mock.calls[1]?.[2].idempotencyKey).not.toBe(
+      core.createWorkflow.mock.calls[0]?.[2].idempotencyKey,
+    );
     unmount();
   });
 

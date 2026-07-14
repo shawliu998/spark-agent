@@ -4,6 +4,9 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_PROJECT="${SPARK_AGENT_INTERNAL_COMPOSE_PROJECT:-spark-agent-internal-dev}"
 CORE_DATA_DIR="${SPARK_AGENT_CORE_HOST_DATA_DIR:-${ROOT_DIR}/.local/science-core}"
+MODEL_KEYCHAIN_SERVICE="io.github.shawliu998.sparkagent.model-api-key"
+MODEL_KEYCHAIN_ACCOUNT="openai-compatible"
+MODEL_API_KEY=""
 DEV_PID=""
 
 fail() {
@@ -12,7 +15,13 @@ fail() {
 }
 
 compose() {
-  docker compose --project-name "${COMPOSE_PROJECT}" --project-directory "${ROOT_DIR}" "$@"
+  SPARK_AGENT_OPENAI_API_KEY_SECRET="" \
+    docker compose --project-name "${COMPOSE_PROJECT}" --project-directory "${ROOT_DIR}" "$@"
+}
+
+compose_with_model_secret() {
+  SPARK_AGENT_OPENAI_API_KEY_SECRET="${MODEL_API_KEY}" \
+    docker compose --project-name "${COMPOSE_PROJECT}" --project-directory "${ROOT_DIR}" "$@"
 }
 
 cleanup() {
@@ -26,11 +35,19 @@ cleanup() {
   exit "${exit_code}"
 }
 
+if [[ -n "${OPENAI_API_KEY+x}" ]]; then
+  fail "OPENAI_API_KEY is set in the host environment. Run 'unset OPENAI_API_KEY', store the credential with 'pnpm model-key:set', then retry."
+fi
+if [[ -n "${SPARK_AGENT_OPENAI_API_KEY_SECRET+x}" ]]; then
+  fail "SPARK_AGENT_OPENAI_API_KEY_SECRET is set in the host environment. Unset it and use 'pnpm model-key:set' so only macOS Keychain persists the credential."
+fi
+
 command -v docker >/dev/null 2>&1 || fail "Docker CLI was not found. Install Docker Desktop or OrbStack."
 docker compose version >/dev/null 2>&1 || fail "Docker Compose was not found. Install the Docker Compose plugin."
 docker info >/dev/null 2>&1 || fail "Docker is installed but its daemon is unavailable. Start Docker Desktop or OrbStack, then retry."
 command -v python3 >/dev/null 2>&1 || fail "python3 is required to create the ephemeral service credential."
 command -v pnpm >/dev/null 2>&1 || fail "pnpm was not found. Install the repository's declared pnpm version."
+command -v security >/dev/null 2>&1 || fail "macOS Keychain access is required. The 'security' command was not found."
 
 mkdir -p "${CORE_DATA_DIR}"
 CORE_DATA_DIR="$(cd "${CORE_DATA_DIR}" && pwd -P)"
@@ -92,8 +109,29 @@ print(", ".join(sorted(names)))
 )"
 [[ -z "${conflicting_containers}" ]] || fail "The science-core data directory is already mounted by: ${conflicting_containers}. Stop that stack or choose another SPARK_AGENT_CORE_HOST_DATA_DIR."
 
+printf 'Building the isolated science services…\n'
+compose build
+
+# Keep the credential out of the potentially long image build and read it only
+# for the single Compose command that materializes the runtime secret.
+if security find-generic-password \
+  -a "${MODEL_KEYCHAIN_ACCOUNT}" \
+  -s "${MODEL_KEYCHAIN_SERVICE}" >/dev/null 2>&1; then
+  MODEL_API_KEY="$(
+    security find-generic-password \
+      -a "${MODEL_KEYCHAIN_ACCOUNT}" \
+      -s "${MODEL_KEYCHAIN_SERVICE}" \
+      -w
+  )" || fail "The model credential exists in macOS Keychain but could not be read."
+fi
+[[ ${#MODEL_API_KEY} -le 4096 ]] || fail "The model credential exceeds the safe size limit."
+
 printf 'Starting the isolated science services…\n'
-compose up -d --build
+if ! compose_with_model_secret up -d; then
+  MODEL_API_KEY=""
+  fail "Docker Compose could not start the isolated science services."
+fi
+MODEL_API_KEY=""
 
 published=""
 for _ in $(seq 1 60); do

@@ -22,7 +22,12 @@ describe("ScienceCoreClient authentication and workflow transport", () => {
 
     await client.createWorkflow(
       "project one",
-      { goal: "Compare the imported studies", workflowType: "literature-synthesis" },
+      {
+        goal: "Compare the imported studies",
+        workflowType: "literature-synthesis",
+        generationMode: "remote-model-assisted",
+        remoteDataApproved: true,
+      },
       { idempotencyKey: "workflow-create-1" },
     );
 
@@ -31,6 +36,13 @@ describe("ScienceCoreClient authentication and workflow transport", () => {
     );
     expect(requestHeaders(fetchMock).get("Authorization")).toBe("Bearer test-token");
     expect(requestHeaders(fetchMock).get("Idempotency-Key")).toBe("workflow-create-1");
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(request?.body))).toEqual({
+      goal: "Compare the imported studies",
+      workflowType: "literature-synthesis",
+      generationMode: "remote-model-assisted",
+      remoteDataApproved: true,
+    });
     expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("test-token");
   });
 

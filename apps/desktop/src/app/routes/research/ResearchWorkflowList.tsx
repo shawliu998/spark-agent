@@ -68,6 +68,8 @@ export function ResearchWorkflowList({
             : t(`research.workflowStatus.${item.workflow.status}`, {
                 defaultValue: item.workflow.status,
               });
+          const remoteAssisted =
+            item.workflow.generationMode === "remote-model-assisted";
           return (
             <button
               key={item.workflow.id}
@@ -91,6 +93,15 @@ export function ResearchWorkflowList({
                 </span>
                 <span className={cn("mt-1 block text-[10px]", statusTone(item))}>
                   {status}
+                  <span className="text-muted">
+                    {remoteAssisted
+                      ? t("research.workflow.listRemoteMode", {
+                          defaultValue: " · model-assisted",
+                        })
+                      : t("research.workflow.listLocalMode", {
+                          defaultValue: " · local",
+                        })}
+                  </span>
                 </span>
               </span>
             </button>

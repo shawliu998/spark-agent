@@ -103,6 +103,10 @@ class AnswerRecord(Base):
     question: Mapped[str] = mapped_column(Text)
     answer: Mapped[str] = mapped_column(Text)
     unresolved_questions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    generator: Mapped[str] = mapped_column(String(100), default="legacy-unknown")
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     claims: Mapped[list[ClaimRecord]] = relationship(
@@ -208,6 +212,10 @@ class WorkflowRecord(Base):
             "'completed','blocked','failed','cancelled')",
             name="ck_workflow_status",
         ),
+        CheckConstraint(
+            "generation_mode IN ('local-deterministic','remote-model-assisted')",
+            name="ck_workflow_generation_mode",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -218,6 +226,9 @@ class WorkflowRecord(Base):
     create_payload_sha256: Mapped[str] = mapped_column(String(64))
     workflow_type: Mapped[str] = mapped_column(String(64), default="literature-synthesis")
     goal: Mapped[str] = mapped_column(Text)
+    generation_mode: Mapped[str] = mapped_column(
+        String(32), default="local-deterministic"
+    )
     status: Mapped[str] = mapped_column(String(32), default="planning", index=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     event_sequence: Mapped[int] = mapped_column(Integer, default=0)

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  ResearchGenerationMode,
   ResearchWorkflowAllowedAction,
   ResearchWorkflowSnapshot,
   WorkflowEvent,
@@ -54,7 +55,11 @@ export interface ResearchWorkflowController {
   selectWorkflow: (workflowId: string) => void;
   startNew: () => void;
   refresh: () => Promise<void>;
-  create: (goal: string) => Promise<void>;
+  create: (
+    goal: string,
+    generationMode?: ResearchGenerationMode,
+    remoteDataApproved?: boolean,
+  ) => Promise<void>;
   approvePlan: () => Promise<void>;
   cancel: () => Promise<void>;
   retry: () => Promise<void>;
@@ -81,6 +86,8 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
   const createIntentRef = useRef<{
     projectId: string;
     goal: string;
+    generationMode: ResearchGenerationMode;
+    remoteDataApproved: boolean;
     idempotencyKey: string;
   } | null>(null);
   projectIdRef.current = projectId;
@@ -312,17 +319,25 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
   );
 
   const create = useCallback(
-    async (goal: string) => {
+    async (
+      goal: string,
+      generationMode: ResearchGenerationMode = "local-deterministic",
+      remoteDataApproved = false,
+    ) => {
       if (!projectId) return;
       const normalizedGoal = goal.trim();
       const existingIntent = createIntentRef.current;
       const intent =
         existingIntent?.projectId === projectId &&
-        existingIntent.goal === normalizedGoal
+        existingIntent.goal === normalizedGoal &&
+        existingIntent.generationMode === generationMode &&
+        existingIntent.remoteDataApproved === remoteDataApproved
           ? existingIntent
           : {
               projectId,
               goal: normalizedGoal,
+              generationMode,
+              remoteDataApproved,
               idempotencyKey: idempotencyKey(),
             };
       createIntentRef.current = intent;
@@ -330,7 +345,12 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
         (signal) =>
           scienceCore.createWorkflow(
             projectId,
-            { goal: normalizedGoal, workflowType: "literature-synthesis" },
+            {
+              goal: normalizedGoal,
+              workflowType: "literature-synthesis",
+              generationMode,
+              remoteDataApproved,
+            },
             { idempotencyKey: intent.idempotencyKey, signal },
           ),
         (next) => {

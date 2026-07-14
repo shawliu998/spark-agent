@@ -226,6 +226,11 @@ function WorkflowActivity({ events }: { events: WorkflowEvent[] }) {
               sequence: event.sequence,
             })}
           </p>
+          {approvalActivityDetails(event).map((detail) => (
+            <p key={detail} className="mt-1 break-all font-mono text-[9px] text-muted">
+              {detail}
+            </p>
+          ))}
         </li>
       ))}
     </ol>
@@ -246,9 +251,46 @@ function activityMessage(event: WorkflowEvent): string {
     return `Workflow ${data.status.split("-").join(" ")}`;
   }
   if ("verdict" in data) return `Review ${data.verdict.split("-").join(" ")}`;
+  if (
+    "approvalId" in data &&
+    "action" in data &&
+    typeof data.action === "string"
+  ) {
+    return `Approval requested: ${data.action.split("-").join(" ")}`;
+  }
+  if (
+    "provider" in data &&
+    typeof data.provider === "string" &&
+    "dataCategories" in data &&
+    Array.isArray(data.dataCategories)
+  ) {
+    const destination =
+      "model" in data && typeof data.model === "string"
+        ? data.model
+        : data.provider;
+    return `Remote goal disclosure approved for ${destination}`;
+  }
   if ("planId" in data && "version" in data) return `Plan version ${data.version} updated`;
   if ("requested" in data) return data.requested ? "Cancellation requested" : "Cancellation updated";
   return event.type.split(".").join(" ");
+}
+
+function approvalActivityDetails(event: WorkflowEvent): string[] {
+  const data = event.data;
+  if (!("approvalId" in data) || !("payloadSha256" in data)) return [];
+  const details: string[] = [];
+  if (typeof data.riskLevel === "string") details.push(`Risk: ${data.riskLevel}`);
+  if (typeof data.reason === "string") details.push(`Reason: ${data.reason}`);
+  if (Array.isArray(data.affectedResources)) {
+    details.push(...data.affectedResources.map((resource) => `Resource: ${resource}`));
+  }
+  if (typeof data.approvalSchemaVersion === "string") {
+    details.push(`Schema: ${data.approvalSchemaVersion}`);
+  }
+  if (typeof data.payloadSha256 === "string") {
+    details.push(`Approval envelope: ${data.payloadSha256}`);
+  }
+  return details;
 }
 
 function formatTime(value: string): string {

@@ -5,7 +5,7 @@ services:
     environment:
       SPARK_AGENT_CORE_DATA_DIR: /data
       SPARK_AGENT_CORE_TOKEN: ${SPARK_AGENT_CORE_TOKEN:?SPARK_AGENT_CORE_TOKEN must be non-empty}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SPARK_AGENT_OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
       OPENAI_API_BASE: ${OPENAI_API_BASE:-}
       SPARK_AGENT_LLM_MODEL: ${SPARK_AGENT_LLM_MODEL:-}
       SPARK_AGENT_EMBEDDING_MODEL: ${SPARK_AGENT_EMBEDDING_MODEL:-}
@@ -24,6 +24,10 @@ services:
       - science-runtime-exchange:/runtime-data
       - science-runtime-socket:/runtime-socket
       - ./services/science-core/src:/app/src:ro
+    secrets:
+      - source: openai-api-key
+        target: openai_api_key
+        mode: 0400
     depends_on:
       science-runtime:
         condition: service_healthy
@@ -93,3 +97,7 @@ volumes:
       type: tmpfs
       device: tmpfs
       o: size=16m,uid=10001,gid=10001,mode=0700
+
+secrets:
+  openai-api-key:
+    environment: SPARK_AGENT_OPENAI_API_KEY_SECRET
