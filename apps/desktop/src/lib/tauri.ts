@@ -65,9 +65,8 @@ export async function importOpenCodeLogin(): Promise<boolean> {
   return invoke<boolean>("import_opencode_login");
 }
 
-/** How agent actions get approved — the composer's Codex-style switch.
- *  "approve": dangerous shell commands (delete / install / remote / privilege)
- *  and web fetches prompt first. "full": everything in-workspace just runs. */
+/** Legacy approval-mode shape kept for config migration compatibility.
+ *  Internal builds accept only "approve"; "full" is rejected by JS and Rust. */
 export type ApprovalMode = "approve" | "full";
 
 /** The approval mode OpenCode's config currently holds ("approve" until changed). */
@@ -80,6 +79,9 @@ export async function getApprovalMode(): Promise<ApprovalMode> {
 
 /** Switch the approval mode; the sidecar restarts — the caller must reconnect. */
 export async function setApprovalMode(mode: ApprovalMode): Promise<void> {
+  if (mode !== "approve") {
+    throw new Error("Full access is disabled by the internal safety policy.");
+  }
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
   await invoke("set_approval_mode", { mode });

@@ -1,5 +1,11 @@
 # Progress
 
+2026-07-14 15:13 · feat(analysis): completed the internal CSV analysis loop with immutable high-risk approval hashes, a real Jupyter kernel, crash recovery, SQLite provenance, directly openable artifacts, and a no-network/read-only runtime whose two tmpfs exchanges are quota-bound; Compose smoke produced and independently verified nine notebook, log, table, JSON, and figure artifacts.
+
+2026-07-14 14:05 · feat(research): added the reusable three-pane Research workspace and typed science-core boundary; container smoke now creates projects, ingests/deduplicates PDFs, persists canonical page word maps, and verifies exact evidence with normalized page coordinates while PaperQA 2026.3.18 is pinned behind an explicit model-gateway readiness check.
+
+2026-07-14 13:45 · feat(safety): internal safe mode now removes direct shell, Full access, Always allow, and custom MCP controls while Rust repairs legacy configs to deny workspace escape and require one-time approval for writes, commands, network, and unknown tools.
+
 2026-07-10 03:35 · fix(runtime): #9 root cause found by live probe — the browser delivers the xAI OAuth code fine; the sidecar's token exchange to auth.x.ai hangs because GUI-launched children inherit no proxy config. Added a network-proxy setting (follow system via scutil / custom URL / direct) in Settings → Agent runtime, injected as HTTP(S)_PROXY env at sidecar spawn with NO_PROXY for loopback; system+none apply on select via the masked-restart flow.
 
 2026-07-10 01:40 · fix(settings): OAuth browser-login hardening (#9) — retry the callback wait on webview network drops (WKWebView kills idle fetches ~60s, far short of xai's 5-min window; opencode's pending closure is re-invocable, verified in v1.17.13 source), never re-authorize while the same login is waiting (a second authorize makes the xai plugin close the loopback server the new attempt needs), and fix a latent oauth method-index mismatch after filtering. Provider-side token-exchange rejections (no SuperGrok, blocked auth.x.ai) remain possible and are swallowed upstream — awaiting reporter feedback.

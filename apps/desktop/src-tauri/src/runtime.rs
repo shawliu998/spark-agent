@@ -548,9 +548,8 @@ fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
     }
     // Ship the bundled scientific skills into the app-private OpenCode profile.
     deploy_bundled_skills(app);
-    // Safety default (AGENTS.md non-negotiable): on first run, seed the
-    // "approve" permission mode so dangerous shell commands prompt for
-    // approval. A mode the user chose (approve or full) is never overridden.
+    // Safety default (AGENTS.md non-negotiable): enforce the internal safe
+    // policy on every start, repairing legacy full/partial permission configs.
     let cfg_file = effective_config_file(app)?;
     let existing = std::fs::read_to_string(&cfg_file).unwrap_or_default();
     if let Some(seeded) = crate::opencode_config::seed_default_permission(&existing) {
@@ -1003,15 +1002,11 @@ fn remove_key_from_config(text: &str, section: &str, key: &str) -> Result<String
     serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
 }
 
-/// The current approval mode ("approve" | "full"). Spawn seeding guarantees a
-/// mode exists once the runtime has started; before that, report the default.
+/// The internal MVP exposes one approval mode. Legacy config is repaired when
+/// the runtime starts, and this command never advertises full access.
 #[tauri::command]
-pub fn get_approval_mode(app: AppHandle) -> Result<String, String> {
-    let path = effective_config_file(&app)?;
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    Ok(crate::opencode_config::permission_mode_of(&existing)
-        .unwrap_or(crate::opencode_config::MODE_APPROVE)
-        .to_string())
+pub fn get_approval_mode(_app: AppHandle) -> Result<String, String> {
+    Ok(crate::opencode_config::MODE_APPROVE.to_string())
 }
 
 /// Switch the approval mode and restart the sidecar so the permission rules

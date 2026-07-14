@@ -73,26 +73,16 @@ const COMMANDS = [
 ];
 
 describe("Composer '!' shell mode", () => {
-  it("switches on the leading '!' and Enter runs the command, not a prompt", () => {
+  it("keeps a leading '!' as a prompt even when a legacy shell handler is provided", () => {
     const onSend = vi.fn();
     const onRunShell = vi.fn();
     render(<Composer onSend={onSend} onRunShell={onRunShell} />);
     const input = screen.getByLabelText<HTMLTextAreaElement>("Ask anything");
     fireEvent.change(input, { target: { value: "!pwd && ls" } });
-    expect(screen.getByText("shell")).toBeInTheDocument(); // mode is visible
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(onRunShell).toHaveBeenCalledWith("pwd && ls");
-    expect(onSend).not.toHaveBeenCalled();
-    expect(input.value).toBe(""); // cleared for the next command
-  });
-
-  it("a bare '!' runs nothing", () => {
-    const onRunShell = vi.fn();
-    render(<Composer onSend={vi.fn()} onRunShell={onRunShell} />);
-    const input = screen.getByLabelText("Ask anything");
-    fireEvent.change(input, { target: { value: "!  " } });
+    expect(screen.queryByText("shell")).toBeNull();
     fireEvent.keyDown(input, { key: "Enter" });
     expect(onRunShell).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith("!pwd && ls");
   });
 
   it("stays a plain prompt when no shell handler is provided (mock sessions)", () => {
@@ -288,39 +278,10 @@ describe("approval mode switch", () => {
     expect(screen.queryByLabelText("Approval mode")).toBeNull();
   });
 
-  it("shows the current mode and switches on pick", () => {
+  it("stays absent even when a legacy surface provides the mode switch", () => {
     const onChange = vi.fn();
     render(<Composer onSend={vi.fn()} approvalMode="approve" onApprovalModeChange={onChange} />);
-    const button = screen.getByLabelText("Approval mode");
-    expect(button.textContent).toContain("Approve for me");
-
-    fireEvent.click(button); // open the menu
-    // mousedown, not click — in a real browser mousedown fires before the
-    // trigger button's blur closes the menu (same pattern as the palette).
-    fireEvent.mouseDown(screen.getByRole("menuitemradio", { name: /Full access/ }));
-    expect(onChange).toHaveBeenCalledWith("full");
-    // Menu closes after picking.
-    expect(screen.queryByRole("menuitemradio", { name: /Full access/ })).toBeNull();
-  });
-
-  it("marks the active mode in the menu", () => {
-    render(<Composer onSend={vi.fn()} approvalMode="full" onApprovalModeChange={vi.fn()} />);
-    fireEvent.click(screen.getByLabelText("Approval mode"));
-    expect(
-      screen.getByRole("menuitemradio", { name: /Full access/ }).getAttribute("aria-checked"),
-    ).toBe("true");
-    expect(
-      screen.getByRole("menuitemradio", { name: /Approve for me/ }).getAttribute("aria-checked"),
-    ).toBe("false");
-  });
-});
-
-describe("approval menu dismissal", () => {
-  it("closes when clicking anywhere outside (WKWebView gives buttons no focus — blur can't do this)", () => {
-    render(<Composer onSend={vi.fn()} approvalMode="approve" onApprovalModeChange={vi.fn()} />);
-    fireEvent.click(screen.getByLabelText("Approval mode"));
-    expect(screen.queryByRole("menu")).not.toBeNull();
-    fireEvent.mouseDown(document.body);
-    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByLabelText("Approval mode")).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

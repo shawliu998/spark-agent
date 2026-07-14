@@ -9,6 +9,8 @@
   },
   "items": {
     "new": "新建",
+    "research": "科研",
+    "analysis": "数据分析",
     "notebooks": "笔记本",
     "files": "文件",
     "runs": "运行",

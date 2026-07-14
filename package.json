@@ -6,6 +6,10 @@
   "license": "MIT",
   "scripts": {
     "dev": "pnpm --filter @ai4s/desktop dev",
+    "science:up": "docker compose up -d --build",
+    "science:down": "docker compose down",
+    "science:logs": "docker compose logs -f --tail=120",
+    "mvp:dev": "pnpm science:up && pnpm dev",
     "build": "pnpm --filter @ai4s/desktop build",
     "test": "pnpm --filter @ai4s/desktop test",
     "typecheck": "pnpm --filter @ai4s/desktop typecheck",

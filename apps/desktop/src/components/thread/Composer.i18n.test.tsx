@@ -10,10 +10,10 @@ import { WorkflowStarters } from "./WorkflowStarters";
 afterEach(() => useUiStore.getState().setLocale("en"));
 
 describe("Composer strings (i18n)", () => {
-  it("renders the default placeholder and the approval-mode switch in English", () => {
+  it("renders the default placeholder without the unsafe approval-mode switch", () => {
     render(<Composer onSend={() => {}} approvalMode="approve" onApprovalModeChange={() => {}} />);
     expect(screen.getByPlaceholderText("Ask anything")).toBeInTheDocument();
-    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Approve for me");
+    expect(screen.queryByLabelText("Approval mode")).toBeNull();
   });
 });
 

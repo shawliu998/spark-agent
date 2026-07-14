@@ -17,7 +17,6 @@ import type { ArtifactBlock, RuntimeStatus, ThreadBlock, ToolVerb } from "@ai4s/
 import {
   detectTools as probeTools,
   commitWorkspaceSnapshot,
-  getApprovalMode,
   isTauri,
   logDebug,
   markSession,
@@ -32,6 +31,7 @@ import {
   type ProxyMode,
   type ToolStatus,
 } from "./tauri";
+import { RUNTIME_POLICY } from "./runtimePolicy";
 import { kernelReset } from "./kernel";
 import { moveScrollMemory } from "./scrollMemory";
 import { deriveArtifact } from "./artifacts";
@@ -495,6 +495,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     }
   },
   replyPermission: async (requestId, reply) => {
+    if (reply === "always" && !RUNTIME_POLICY.allowPersistentPermissionGrants) {
+      set({ error: "Persistent permission grants are disabled by the internal safety policy." });
+      return;
+    }
     const p = get().permissions.find((x) => x.requestId === requestId);
     if (!p || !client) return;
     // Identical pending asks (same session, action and resources — e.g. three
@@ -548,6 +552,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   setApprovalMode: async (mode) => {
+    if (!RUNTIME_POLICY.allowApprovalModeChanges || mode !== "approve") {
+      set({
+        approvalMode: "approve",
+        error: "Full access is disabled by the internal safety policy.",
+      });
+      return;
+    }
     // A deliberate restart, like switchWorkspace: `switching` keeps the UI
     // rendering as connected — no status flip, no page flash.
     set({ switching: true });
@@ -596,7 +607,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     teardownClient();
     // Scope skill discovery to the sidecar's workspace (null in browser dev).
     const directory = await workspacePath();
-    set({ workspace: directory, approvalMode: await getApprovalMode() });
+    set({ workspace: directory, approvalMode: "approve" });
     // The bundled sidecar requires per-run Basic auth; browser dev (no Tauri)
     // gets null and connects to a user-run passwordless server.
     const password = await runtimePassword();
@@ -1020,6 +1031,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   // No retry for shell/command: re-POSTing would run the command twice.
   runShell: (command) => {
+    if (!RUNTIME_POLICY.allowDirectShell) {
+      set({ error: "Direct shell mode is disabled by the internal safety policy." });
+      return Promise.resolve(null);
+    }
     const agent = get().agents.find((a) => a.mode === "primary")?.name ?? "build";
     return performTurn(
       set,

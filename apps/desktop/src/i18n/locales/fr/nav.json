@@ -9,6 +9,8 @@
   },
   "items": {
     "new": "Nouveau",
+    "research": "Recherche",
+    "analysis": "Analyse de données",
     "notebooks": "Notebooks",
     "files": "Fichiers",
     "runs": "Exécutions",

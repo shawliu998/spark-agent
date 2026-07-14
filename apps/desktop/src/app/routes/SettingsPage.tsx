@@ -48,6 +48,7 @@ import { DataFlowCard } from "@/components/settings/DataFlowCard";
 import { SCIENCE_CONNECTORS } from "@/lib/scienceConnectors";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { RUNTIME_POLICY } from "@/lib/runtimePolicy";
 
 /**
  * Settings. ONE configuration surface: everything talks to the bundled
@@ -419,6 +420,9 @@ export function SettingsPage() {
 
   const addMcp = () =>
     run(t("toast.couldNotAddMcp"), async () => {
+      if (!RUNTIME_POLICY.allowCustomMcpServers) {
+        throw new Error("Custom MCP servers are disabled by the internal safety policy.");
+      }
       const name = mName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
       const target = mTarget.trim();
       if (!name || !target) {
@@ -991,44 +995,46 @@ export function SettingsPage() {
                 </div>
               ))}
 
-              <div
-                className={cn(
-                  "space-y-2 bg-surface-2/50 p-3",
-                  mcpServers.length > 0 && "border-t border-border",
-                )}
-              >
-                <div className="flex gap-2">
-                  <input
-                    value={mName}
-                    onChange={(e) => setMName(e.target.value)}
-                    placeholder={t("mcp.namePlaceholder")}
-                    className={inputCls("flex-1")}
-                  />
-                  <select
-                    value={mType}
-                    onChange={(e) => setMType(e.target.value as "local" | "remote")}
-                    className={inputCls("w-[110px]")}
-                  >
-                    <option value="local">{t("mcp.typeLocal")}</option>
-                    <option value="remote">{t("mcp.typeRemote")}</option>
-                  </select>
+              {RUNTIME_POLICY.allowCustomMcpServers && (
+                <div
+                  className={cn(
+                    "space-y-2 bg-surface-2/50 p-3",
+                    mcpServers.length > 0 && "border-t border-border",
+                  )}
+                >
+                  <div className="flex gap-2">
+                    <input
+                      value={mName}
+                      onChange={(e) => setMName(e.target.value)}
+                      placeholder={t("mcp.namePlaceholder")}
+                      className={inputCls("flex-1")}
+                    />
+                    <select
+                      value={mType}
+                      onChange={(e) => setMType(e.target.value as "local" | "remote")}
+                      className={inputCls("w-[110px]")}
+                    >
+                      <option value="local">{t("mcp.typeLocal")}</option>
+                      <option value="remote">{t("mcp.typeRemote")}</option>
+                    </select>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      value={mTarget}
+                      onChange={(e) => setMTarget(e.target.value)}
+                      placeholder={
+                        mType === "local"
+                          ? t("mcp.commandPlaceholder")
+                          : t("mcp.urlPlaceholder")
+                      }
+                      className={inputCls("flex-1 font-mono")}
+                    />
+                    <button className={btnAccent()} onClick={() => void addMcp()} disabled={busy}>
+                      {t("mcp.addServer")}
+                    </button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <input
-                    value={mTarget}
-                    onChange={(e) => setMTarget(e.target.value)}
-                    placeholder={
-                      mType === "local"
-                        ? t("mcp.commandPlaceholder")
-                        : t("mcp.urlPlaceholder")
-                    }
-                    className={inputCls("flex-1 font-mono")}
-                  />
-                  <button className={btnAccent()} onClick={() => void addMcp()} disabled={busy}>
-                    {t("mcp.addServer")}
-                  </button>
-                </div>
-              </div>
+              )}
             </div>
           )}
         </Card>

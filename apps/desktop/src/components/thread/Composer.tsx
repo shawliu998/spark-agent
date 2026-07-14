@@ -6,6 +6,7 @@ import { WorkspaceChip } from "@/components/thread/WorkspaceChip";
 import { useUiStore } from "@/lib/store";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
+import { RUNTIME_POLICY } from "@/lib/runtimePolicy";
 
 /** A paste longer than this becomes a workspace file chip instead of raw text. */
 const PASTE_AS_FILE_CHARS = 2000;
@@ -132,7 +133,8 @@ export function Composer({
   const composerDraft = useUiStore((s) => s.composerDraft);
   const setComposerDraft = useUiStore((s) => s.setComposerDraft);
 
-  const shellMode = !!onRunShell && !command && value.startsWith("!");
+  const shellMode =
+    RUNTIME_POLICY.allowDirectShell && !!onRunShell && !command && value.startsWith("!");
   // The palette is open while the command NAME is being typed ("/na…"); the
   // first space ends name-typing (arguments follow) and closes it.
   const slashTyping = !!onRunCommand && !command && /^\/\S*$/.test(value);
@@ -484,7 +486,7 @@ export function Composer({
         {/* Folder picker for a fresh draft — renders nothing once the session
             exists (its folder then shows in the header's Files toggle). */}
         <WorkspaceChip />
-        {approvalMode && onApprovalModeChange && (
+        {RUNTIME_POLICY.allowApprovalModeChanges && approvalMode && onApprovalModeChange && (
           <div className="relative shrink-0" ref={approvalRef}>
             {approvalOpen && (
               <div

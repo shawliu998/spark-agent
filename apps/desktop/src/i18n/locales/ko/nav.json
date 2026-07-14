@@ -9,6 +9,8 @@
   },
   "items": {
     "new": "새로 만들기",
+    "research": "리서치",
+    "analysis": "데이터 분석",
     "notebooks": "노트북",
     "files": "파일",
     "runs": "실행",

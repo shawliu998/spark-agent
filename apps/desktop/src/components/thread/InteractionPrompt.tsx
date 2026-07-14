@@ -3,6 +3,7 @@ import { Check, HelpCircle, ShieldQuestion } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { PermissionAskedEvent, PermissionReply, QuestionAskedEvent } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
+import { RUNTIME_POLICY } from "@/lib/runtimePolicy";
 
 /**
  * The answerable surface for an agent request that blocks the run — a
@@ -223,12 +224,14 @@ function PermissionCard({
           {t("interaction.reject")}
         </button>
         <div className="flex-1" />
-        <button
-          className="rounded-input border border-border px-3 py-1.5 text-xs text-text hover:bg-surface-2"
-          onClick={() => onReply(permission.requestId, "always")}
-        >
-          {t("interaction.alwaysAllow")}
-        </button>
+        {RUNTIME_POLICY.allowPersistentPermissionGrants && (
+          <button
+            className="rounded-input border border-border px-3 py-1.5 text-xs text-text hover:bg-surface-2"
+            onClick={() => onReply(permission.requestId, "always")}
+          >
+            {t("interaction.alwaysAllow")}
+          </button>
+        )}
         <button
           className="rounded-input bg-accent px-3.5 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90"
           onClick={() => onReply(permission.requestId, "once")}

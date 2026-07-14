@@ -9,6 +9,8 @@
   },
   "items": {
     "new": "新規",
+    "research": "リサーチ",
+    "analysis": "データ分析",
     "notebooks": "ノートブック",
     "files": "ファイル",
     "runs": "実行",

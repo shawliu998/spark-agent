@@ -368,27 +368,12 @@ describe("per-session workspace folders", () => {
     expect(useRuntimeStore.getState().status).toBe("ready");
   });
 
-  it("runShell: echoes `! cmd`, runs it, and ends the turn even though idle beat the POST", async () => {
+  it("runShell is rejected by the internal safety policy", async () => {
     const id = await useRuntimeStore.getState().runShell("pwd");
-    expect(id).toBe("ses_new");
-    expect(mocks.runShell).toHaveBeenCalledWith("ses_new", "pwd", "build");
+    expect(id).toBeNull();
+    expect(mocks.runShell).not.toHaveBeenCalled();
     const s = useRuntimeStore.getState();
-    expect(s.threads["ses_new"].blocks[0]).toEqual({ kind: "user", text: "! pwd" });
-    // The sync endpoint resolves after session.idle already fired — the
-    // running lock must not stick (it was set before the POST, cleared after).
-    expect(s.runningSessions["ses_new"]).toBeUndefined();
-    expect(s.shellTurns["ses_new"]).toBeUndefined();
-    expect(s.sending).toBe(false);
-  });
-
-  it("runShell: the bash row carries the command as title and the output inline", async () => {
-    await useRuntimeStore.getState().runShell("pwd");
-    const bash = useRuntimeStore
-      .getState()
-      .threads["ses_new"].blocks.find((b) => b.kind === "tool-call");
-    // The shell endpoint reports an empty title — the command line stands in,
-    // and the output shows inline (it IS the result the user asked for).
-    expect(bash).toMatchObject({ title: "pwd", status: "success", outputSummary: "/ws/mock" });
+    expect(s.error).toContain("Direct shell mode is disabled");
   });
 
   it("an agent bash step (no shell turn) stays a quiet line without inline output", async () => {
@@ -410,19 +395,6 @@ describe("per-session workspace folders", () => {
     // not the model's free-text description.
     expect(bash).toMatchObject({ title: "pip install numpy", verb: "Ran", status: "success" });
     expect((bash as { outputSummary?: string }).outputSummary).toBeUndefined();
-  });
-
-  it("runShell failure lands as a red line and unlocks the composer", async () => {
-    mocks.failShell = true;
-    await useRuntimeStore.getState().runShell("pwd");
-    const s = useRuntimeStore.getState();
-    expect(s.threads["ses_new"].blocks.slice(-1)[0]).toMatchObject({
-      kind: "status-line",
-      tone: "error",
-    });
-    expect(s.runningSessions["ses_new"]).toBeUndefined();
-    expect(s.shellTurns["ses_new"]).toBeUndefined(); // no events will clear it
-    expect(s.sending).toBe(false);
   });
 
   it("runCommand: echoes `/name args` and posts the command with its arguments", async () => {
@@ -557,10 +529,24 @@ describe("subagent permission asks and long sync turns", () => {
     ask("per_b");
     ask("per_c");
     expect(useRuntimeStore.getState().permissions).toHaveLength(3);
-    await useRuntimeStore.getState().replyPermission("per_a", "always");
+    await useRuntimeStore.getState().replyPermission("per_a", "once");
     expect(mocks.replyPermission).toHaveBeenCalledTimes(3);
-    expect(mocks.replyPermission).toHaveBeenCalledWith("per_b", "always");
+    expect(mocks.replyPermission).toHaveBeenCalledWith("per_b", "once");
     expect(useRuntimeStore.getState().permissions).toHaveLength(0);
+  });
+
+  it("rejects persistent permission grants", async () => {
+    await useRuntimeStore.getState().sendPrompt("go");
+    mocks.fireEvent({
+      type: "permission.asked",
+      sessionId: "ses_new",
+      requestId: "per_always",
+      action: "bash",
+      resources: ["git status"],
+    });
+    await useRuntimeStore.getState().replyPermission("per_always", "always");
+    expect(mocks.replyPermission).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().permissions).toHaveLength(1);
   });
 });
 
@@ -749,30 +735,21 @@ describe("per-session right pane", () => {
 
 
 describe("approval mode", () => {
-  it("loads the configured mode when connecting", async () => {
+  it("ignores a legacy full mode when connecting", async () => {
     expect(useRuntimeStore.getState().approvalMode).toBe("approve");
     mocks.approvalMode = "full";
     await useRuntimeStore.getState().connect();
-    expect(useRuntimeStore.getState().approvalMode).toBe("full");
+    expect(useRuntimeStore.getState().approvalMode).toBe("approve");
   });
 
-  it("setApprovalMode persists the choice and reconnects to the restarted sidecar", async () => {
+  it("rejects full mode without persisting or restarting", async () => {
     await useRuntimeStore.getState().setApprovalMode("full");
-    expect(mocks.setApprovalMode).toHaveBeenCalledWith("full");
+    expect(mocks.setApprovalMode).not.toHaveBeenCalled();
     const s = useRuntimeStore.getState();
-    expect(s.approvalMode).toBe("full");
-    expect(s.status).toBe("ready"); // reconnected after the restart
-  });
-
-  it("setApprovalMode is a deliberate restart: `switching` masks the reconnect (no UI flash)", async () => {
-    const p = useRuntimeStore.getState().setApprovalMode("full");
-    // Synchronously flagged, like switchWorkspace — the page must not render
-    // the restart as a disconnection.
-    expect(useRuntimeStore.getState().switching).toBe(true);
-    await p;
-    const s = useRuntimeStore.getState();
+    expect(s.approvalMode).toBe("approve");
     expect(s.switching).toBe(false);
     expect(s.status).toBe("ready");
+    expect(s.error).toContain("Full access is disabled");
   });
 
   it("setDefaultModel applies the model and reconnects seamlessly (no manual Connect)", async () => {
