@@ -1009,15 +1009,51 @@ function RunStatus({ status }: { status: AnalysisRunStatus }) {
 }
 
 function ArtifactRow({ artifact }: { artifact: AnalysisArtifact }) {
+  const { t } = useTranslation("pages");
+  const [opening, setOpening] = useState(false);
+
+  const openArtifact = async () => {
+    if (opening) return;
+    const preview = window.open("about:blank", "_blank");
+    if (preview) preview.opener = null;
+    setOpening(true);
+    try {
+      const blob = await scienceCore.fetchArtifactBlob(artifact.id);
+      const objectUrl = URL.createObjectURL(blob);
+      if (preview) {
+        preview.location.replace(objectUrl);
+      } else {
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.target = "_blank";
+        anchor.rel = "noreferrer";
+        anchor.click();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      preview?.close();
+      toast.error(
+        t("analysis.toast.openArtifactFailed", {
+          defaultValue: "Could not open artifact: {{error}}",
+          error: errorMessage(error),
+        }),
+      );
+    } finally {
+      setOpening(false);
+    }
+  };
+
   return (
     <li>
-      <a
-        href={scienceCore.artifactFileUrl(artifact.id)}
-        target="_blank"
-        rel="noreferrer"
-        className="flex items-center gap-2 rounded-input border border-border-faint bg-surface px-2.5 py-2 hover:border-accent/30 hover:bg-surface-2"
+      <button
+        type="button"
+        onClick={() => void openArtifact()}
+        disabled={opening}
+        className="flex w-full items-center gap-2 rounded-input border border-border-faint bg-surface px-2.5 py-2 text-left hover:border-accent/30 hover:bg-surface-2 disabled:opacity-60"
       >
-        {artifact.artifactType.startsWith("notebook") ? (
+        {opening ? (
+          <Loader2 size={13} className="shrink-0 animate-spin text-muted" />
+        ) : artifact.artifactType.startsWith("notebook") ? (
           <NotebookPen size={13} className="shrink-0 text-muted" />
         ) : artifact.mimeType.startsWith("image/") ? (
           <BarChart3 size={13} className="shrink-0 text-muted" />
@@ -1030,7 +1066,7 @@ function ArtifactRow({ artifact }: { artifact: AnalysisArtifact }) {
             {artifact.artifactType} · {artifact.contentHash.slice(0, 12)}
           </p>
         </div>
-      </a>
+      </button>
     </li>
   );
 }

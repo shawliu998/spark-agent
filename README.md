@@ -11,6 +11,12 @@ and provenance in one auditable desktop workspace.
 ## What works today
 
 - Create local research projects and import PDF papers.
+- Start a durable literature-synthesis workflow from a research goal, inspect its
+  typed three-step plan, and explicitly approve or cancel it.
+- Extract page-addressable evidence across local papers, build atomic claims, and
+  require a deterministic evidence-integrity Reviewer pass before completion.
+- Recover persisted workflow jobs after restart, with revision-checked retry,
+  resume, cancel, and an auditable event timeline.
 - Ask PaperQA-backed questions with explicit remote-data approval.
 - Inspect claims, exact evidence spans, citations, and source PDF pages.
 - Import CSV datasets and prepare editable Python analyses.
@@ -24,10 +30,13 @@ and provenance in one auditable desktop workspace.
 ```text
 Spark Agent Desktop (Tauri + React)
   |-- OpenCode-compatible agent shell
-  |-- Research and Analysis workspaces
+  |-- Research workflow, evidence, review, and Analysis workspaces
   |-- explicit permission and approval UI
   |
   +-- science-core (FastAPI + SQLite + PaperQA2)
+        |-- canonical Workflow / Plan / Task / Approval / Job / Review / Event state
+        |-- leased background worker + restart recovery
+        |-- local evidence extraction + deterministic claim review
         |
         +-- Unix-domain socket
               |
@@ -53,15 +62,28 @@ pnpm install
 pnpm mvp:dev
 ```
 
+`mvp:dev` performs the internal preflight, builds the two isolated services,
+applies verified Alembic migrations, allocates an available loopback port, creates
+an ephemeral 256-bit Bearer credential, waits for both services to become healthy,
+and injects the URL and credential into the desktop web client. The credential is
+not printed or placed in a URL. The first container build downloads the pinned
+Python dependencies and can take several minutes; later starts reuse Docker's
+cache.
+
 To enable the current PaperQA model gateway, provide the key through the shell
-environment. Do not commit it or paste it into application logs.
+environment. Do not put the key directly in a shell command, commit it, or paste
+it into application logs. On the default macOS zsh, prompt for it without echoing:
 
 ```bash
-OPENAI_API_KEY=your-key pnpm mvp:dev
+read -s "OPENAI_API_KEY?OpenAI API key: "
+printf '\n'
+export OPENAI_API_KEY
+pnpm mvp:dev
+unset OPENAI_API_KEY
 ```
 
-Without a model key, PDF import, CSV analysis, and Jupyter execution remain
-available; remote literature answering is disabled.
+Without a model key, the local extractive workflow, PDF import, CSV analysis, and
+Jupyter execution remain available; remote PaperQA answering is disabled.
 
 Stop the local services with:
 
@@ -69,10 +91,32 @@ Stop the local services with:
 pnpm science:down
 ```
 
+Normally, pressing `Ctrl-C` in the `mvp:dev` terminal performs the same scoped
+cleanup. Project data remains under `.local/science-core`; the ephemeral runtime
+exchange and socket volumes are removed.
+
+## Internal MVP boundary
+
+- The durable orchestrator currently supports one coherent workflow type:
+  `literature-synthesis` (inspect sources → extract local evidence → synthesize
+  extractive claims → deterministic review).
+- The plan is intentionally deterministic and local in this slice. OpenCode,
+  PaperQA, STORM, MCP, OpenHands, and MLX do not own or mutate canonical workflow
+  state.
+- Workflow activity uses authenticated cursor polling (1.5 seconds while active),
+  not SSE yet.
+- This remains a source-run internal build. Tauri-managed packaging of the Python
+  services is a later release step.
+
 ## Safety defaults
 
 - Project-scoped file access and explicit approval for high-risk operations.
+- A generated Bearer credential on every internal launch, a dynamically allocated
+  loopback-only service port, and an allowlisted CORS boundary.
 - No arbitrary direct shell mode in the product UI.
+- Compare-and-set workflow revisions, idempotent workflow creation and enqueue
+  guards, immutable plan hashes,
+  leased jobs, bounded recovery, and fail-closed Reviewer checks.
 - Immutable, hashed analysis intents with compare-and-set approval decisions.
 - Jupyter execution in a no-network container with a read-only root filesystem,
   resource limits, and a Unix-domain socket instead of a TCP runtime port.

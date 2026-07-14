@@ -12,6 +12,340 @@ export type ResearchTaskStatus =
   | "failed"
   | "cancelled";
 
+/** Canonical workflow states owned by science-core. */
+export type ResearchWorkflowStatus =
+  | "planning"
+  | "waiting-plan-approval"
+  | "running"
+  | "reviewing"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+/** Actions science-core currently permits for a workflow snapshot. */
+export type ResearchWorkflowAllowedAction =
+  | "approve-plan"
+  | "cancel"
+  | "retry"
+  | "resume";
+
+export type ResearchWorkflowType = "literature-synthesis";
+
+export interface WorkflowApiErrorDetail {
+  code: string;
+  userMessage: string;
+  retryable: boolean;
+}
+
+export interface WorkflowBlockingReason {
+  code: string;
+  userMessage: string;
+  retryable: boolean;
+}
+
+export interface ResearchWorkflow {
+  id: string;
+  projectId: string;
+  goal: string;
+  workflowType: ResearchWorkflowType;
+  status: ResearchWorkflowStatus;
+  revision: number;
+  currentStepId: string | null;
+  planVersion: number | null;
+  retryCount: number;
+  blockingReason: WorkflowBlockingReason | null;
+  cancelRequestedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export type ResearchWorkflowPlanStatus =
+  | "pending-approval"
+  | "approved"
+  | "rejected"
+  | "superseded";
+
+export type ResearchWorkflowTaskStatus =
+  | "pending"
+  | "queued"
+  | "running"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+export type ResearchWorkflowTaskType =
+  | "inspect-sources"
+  | "extract-local-evidence"
+  | "synthesize-extractive-claims";
+
+export interface InspectSourcesInput {
+  sourceKind: "pdf";
+}
+
+export interface ExtractLocalEvidenceInput {
+  query: string;
+  maxPassages: number;
+  maxPerSource: number;
+}
+
+export interface SynthesizeExtractiveClaimsInput {
+  maxClaims: number;
+}
+
+export type ResearchWorkflowStepInput =
+  | InspectSourcesInput
+  | ExtractLocalEvidenceInput
+  | SynthesizeExtractiveClaimsInput;
+
+export type ResearchWorkflowExpectedOutput =
+  | "sources"
+  | "evidence"
+  | "claims"
+  | "evidence-map";
+
+export type ResearchWorkflowAcceptanceCriterion =
+  | "at-least-one-ready-pdf"
+  | "at-least-one-verified-evidence"
+  | "at-least-one-claim"
+  | "every-claim-has-verified-evidence";
+
+export interface ResearchWorkflowStepSpec {
+  key: string;
+  type: ResearchWorkflowTaskType;
+  objective: string;
+  inputs: ResearchWorkflowStepInput;
+  expectedOutputs: ResearchWorkflowExpectedOutput[];
+  acceptanceCriteria: ResearchWorkflowAcceptanceCriterion[];
+}
+
+export interface ResearchWorkflowPlanSpec {
+  schemaVersion: "1";
+  goal: string;
+  steps: ResearchWorkflowStepSpec[];
+}
+
+export interface ResearchWorkflowMaterializedStep {
+  id: string;
+  key: string;
+  orderIndex: number;
+  type: ResearchWorkflowTaskType;
+  objective: string;
+  status: ResearchWorkflowTaskStatus;
+  retryCount: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  outputSummary: string | null;
+}
+
+export interface ResearchWorkflowPlan {
+  id: string;
+  workflowId: string;
+  version: number;
+  status: ResearchWorkflowPlanStatus;
+  planSha256: string;
+  spec: ResearchWorkflowPlanSpec;
+  steps: ResearchWorkflowMaterializedStep[];
+  createdAt: string;
+  approvedAt: string | null;
+}
+
+export interface WorkflowPendingApproval {
+  id: string;
+  workflowId: string;
+  planId: string;
+  taskId: string | null;
+  kind: "plan";
+  status: "waiting";
+  subjectType: string;
+  subjectId: string;
+  action: string;
+  payloadSha256: string;
+  riskLevel: string;
+  reason: string;
+  affectedResources: string[];
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+/** Future policy approvals stay distinct from plan confirmation. */
+export type WorkflowApprovalKind = "plan" | "remote-data" | "analysis-execution";
+
+export interface RemoteDataDisclosure {
+  provider: string;
+  model: string | null;
+  endpointHost: string;
+  dataCategories: Array<
+    "user-goal" | "source-metadata" | "selected-source-passages"
+  >;
+  sourceIds: string[];
+  scope: "this-plan-version";
+}
+
+export type ClaimSupportStatus =
+  | "supported"
+  | "partially-supported"
+  | "contradicted"
+  | "insufficient-evidence"
+  | "not-applicable";
+
+export interface WorkflowEvidenceRelationship {
+  evidenceId: string;
+  sourceId: string;
+  pageIndex: number;
+  pageLabel: string | null;
+  text: string;
+  bbox: EvidenceBoundingBox | null;
+  coordinateSpace: "normalized-rotated-top-left-v1";
+  quoteHash: string;
+  extractionMethod: string;
+  confidence: number;
+  verified: boolean;
+  relationship: "supporting" | "contradicting";
+}
+
+export interface WorkflowClaim {
+  id: string;
+  statement: string;
+  supportStatus: ClaimSupportStatus;
+  confidence: number;
+  evidence: WorkflowEvidenceRelationship[];
+}
+
+export interface ResearchWorkflowResult {
+  answerId: string;
+  summary: string;
+  claims: WorkflowClaim[];
+  unresolvedQuestions: string[];
+}
+
+export type WorkflowReviewVerdict =
+  | "passed"
+  | "revision-required"
+  | "blocked"
+  | "failed";
+
+export interface WorkflowReviewCheck {
+  code: string;
+  status: "passed" | "failed";
+  message: string;
+  claimId: string | null;
+  evidenceId: string | null;
+}
+
+export interface WorkflowClaimReviewResult {
+  claimId: string;
+  status: ClaimSupportStatus;
+  evidenceIds: string[];
+  relationships: Array<"supporting" | "contradicting">;
+}
+
+export interface WorkflowDeterministicReviewResult {
+  schemaVersion: "1";
+  verdict: WorkflowReviewVerdict;
+  checks: WorkflowReviewCheck[];
+  claimResults: WorkflowClaimReviewResult[];
+  requiredRevisions: string[];
+}
+
+export interface ResearchWorkflowReview {
+  id: string;
+  reviewType: string;
+  verdict: WorkflowReviewVerdict;
+  inputSha256: string;
+  result: WorkflowDeterministicReviewResult;
+  createdAt: string;
+}
+
+export interface ResearchWorkflowSnapshot {
+  workflow: ResearchWorkflow;
+  plan: ResearchWorkflowPlan | null;
+  pendingApprovals: WorkflowPendingApproval[];
+  result: ResearchWorkflowResult | null;
+  latestReview: ResearchWorkflowReview | null;
+  allowedActions: ResearchWorkflowAllowedAction[];
+  eventCursor: number;
+}
+
+export interface WorkflowCreatedEventData {
+  workflowType: ResearchWorkflowType;
+  goalSha256: string;
+}
+
+export interface WorkflowStatusChangedEventData {
+  previousStatus: ResearchWorkflowStatus;
+  status: ResearchWorkflowStatus;
+  reasonCode: string | null;
+}
+
+export interface WorkflowPlanEventData {
+  planId: string;
+  version: number;
+  planSha256: string;
+}
+
+export interface WorkflowApprovalEventData {
+  approvalId: string;
+  subjectType: string;
+  subjectId: string;
+  action: string;
+  payloadSha256: string;
+}
+
+export interface WorkflowTaskEventData {
+  taskId: string;
+  stepKey: string;
+  orderIndex: number;
+  status: ResearchWorkflowTaskStatus;
+  outputCount: number | null;
+  errorCode: string | null;
+}
+
+export interface WorkflowJobEventData {
+  jobId: string;
+  kind: string;
+  attempt: number;
+  errorCode: string | null;
+}
+
+export interface WorkflowReviewEventData {
+  reviewId: string;
+  verdict: WorkflowReviewVerdict;
+  claimCount: number;
+}
+
+export interface WorkflowCancelEventData {
+  requested: boolean;
+}
+
+export type WorkflowEventData =
+  | WorkflowCreatedEventData
+  | WorkflowStatusChangedEventData
+  | WorkflowPlanEventData
+  | WorkflowApprovalEventData
+  | WorkflowTaskEventData
+  | WorkflowJobEventData
+  | WorkflowReviewEventData
+  | WorkflowCancelEventData;
+
+export interface WorkflowEvent {
+  id: string;
+  sequence: number;
+  type: string;
+  taskId: string | null;
+  jobId: string | null;
+  data: WorkflowEventData;
+  createdAt: string;
+}
+
+export interface WorkflowEventsPage {
+  events: WorkflowEvent[];
+  nextAfter: number;
+  hasMore: boolean;
+}
+
 export type ResearchSourceKind =
   | "paper"
   | "pdf"

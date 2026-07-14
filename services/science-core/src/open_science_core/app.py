@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import shutil
 import socket
@@ -29,6 +30,7 @@ from .analysis import (
     validate_csv,
     validate_python_code,
 )
+from .api.workflows import router as workflow_router
 from .config import settings
 from .db import SessionLocal, database_session, engine, initialize_database
 from .literature import paper_qa, paper_qa_available
@@ -64,15 +66,28 @@ from .schemas import (
     QuestionIn,
     SourceOut,
 )
+from .workflow.worker import WorkflowWorker
+
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    if not settings.bearer_token:
+        raise RuntimeError(
+            "SPARK_AGENT_CORE_TOKEN is required; science-core will not start without authentication"
+        )
     initialize_database()
     with SessionLocal() as session:
         _recover_interrupted_analysis_state(session)
     _cleanup_stale_exchange_entries(reject_recent=False)
-    yield
+    workflow_worker = WorkflowWorker()
+    await workflow_worker.start()
+    try:
+        yield
+    finally:
+        await workflow_worker.stop()
 
 
 app = FastAPI(title="Spark Agent Core", version=__version__, lifespan=lifespan)
@@ -89,14 +104,17 @@ app.add_middleware(
     ],
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
     expected = settings.bearer_token
-    if expected is None:
-        return
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Science-core authentication is not configured",
+        )
     supplied = authorization.removeprefix("Bearer ") if authorization else ""
     if not secrets.compare_digest(supplied, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid science-core token")
@@ -104,6 +122,9 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
 
 def get_session() -> Generator[Session, None, None]:
     yield from database_session()
+
+
+app.include_router(workflow_router, dependencies=[Depends(require_token)])
 
 
 def _runtime_ready() -> bool:
@@ -841,7 +862,14 @@ async def ask_question(
             payload.model,
         )
     except Exception as error:
-        raise HTTPException(status_code=502, detail=f"PaperQA2 failed: {error}") from error
+        logger.warning("PaperQA2 request failed (%s)", type(error).__name__)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "PaperQA2 could not answer this question. Check the model gateway "
+                "configuration and try again."
+            ),
+        ) from error
 
     answer_id = str(uuid.uuid4())
     answer_record = AnswerRecord(

@@ -1,12 +1,33 @@
 # Spark Agent Desktop — Technical Design
 
-> **Implementation status (v0.1, 2026-07-02).** Built and verified: Tauri 2 shell + React
-> UI; **OpenCode** bundled as an isolated sidecar (auto-started, app-private config/data,
-> dedicated port); `OpenCodeClient` over HTTP + SSE; real multi-session chat with history;
-> Skills page backed by OpenCode's real skills/agents; macOS `.dmg`; cross-platform CI.
-> Planned (not yet built): self-authored scientific skills, MCP connectors, provenance/
-> reviewer engine, literature search, Jupyter runtime, remote compute. This document is the
-> target design; sections mixing built vs planned are noted inline.
+> **Implementation status (internal MVP, 2026-07-14).** The Tauri/React desktop,
+> isolated OpenCode agent shell, science-core (FastAPI/SQLite/PaperQA), and
+> no-network Jupyter science-runtime are implemented. science-core is now the
+> canonical control plane for persisted Workflow, Plan, Task, Approval, Job,
+> Review, Answer/Claim/Evidence, Run, Artifact, and Event state. A leased worker
+> executes a typed local literature-synthesis plan and recovers expired work after
+> restart; immutable plan hashes, workflow revisions, Bearer authentication, and a
+> deterministic Reviewer fail closed. The Research UI exposes plan approval,
+> progress, results, evidence, review, and activity. Activity currently uses cursor
+> polling rather than SSE. Later sections retain historical target design where
+> useful; `README.md`, `PROGRESS.md`, and the current code are authoritative.
+
+Current workflow control path:
+
+```text
+Research UI
+  → @spark/research-sdk (Bearer + typed snapshots)
+  → science-core Workflow API
+  → SQLite state machine + durable leased jobs + ordered events
+  → inspect local PDFs → extract evidence → atomic extractive claims
+  → deterministic Reviewer → completed or blocked
+```
+
+The internal launcher binds science-core to a dynamically allocated loopback port,
+generates an ephemeral credential, migrates/backs up the database with Alembic, and
+passes connection details to the UI. OpenCode, PaperQA, MCP, STORM, and future
+OpenHands/MLX adapters remain replaceable capabilities; none is a second workflow
+fact source.
 
 ## 1. Technical goals
 

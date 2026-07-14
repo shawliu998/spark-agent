@@ -3,7 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -70,9 +83,23 @@ class SourcePageRecord(Base):
 
 class AnswerRecord(Base):
     __tablename__ = "answers"
+    __table_args__ = (
+        Index(
+            "uq_workflow_answer_task",
+            "task_id",
+            unique=True,
+            sqlite_where=text("task_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     question: Mapped[str] = mapped_column(Text)
     answer: Mapped[str] = mapped_column(Text)
     unresolved_questions: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -136,20 +163,191 @@ class ClaimEvidenceRecord(Base):
 
 class TaskRecord(Base):
     __tablename__ = "tasks"
+    __table_args__ = (
+        UniqueConstraint("plan_id", "step_key", name="uq_task_plan_step_key"),
+        UniqueConstraint("plan_id", "order_index", name="uq_task_plan_order"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflow_plans.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    step_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    order_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     objective: Mapped[str] = mapped_column(Text)
     task_type: Mapped[str] = mapped_column(String(64))
     inputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     expected_outputs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    outputs: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     acceptance_criteria: Mapped[list[str]] = mapped_column(JSON, default=list)
     permissions: Mapped[list[str]] = mapped_column(JSON, default=list)
+    risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    input_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(64), default="draft-plan")
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
     retries: Mapped[int] = mapped_column(Integer, default=0)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkflowRecord(Base):
+    __tablename__ = "workflows"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "create_idempotency_key", name="uq_workflow_project_create_key"
+        ),
+        CheckConstraint(
+            "status IN ('planning','waiting-plan-approval','running','reviewing',"
+            "'completed','blocked','failed','cancelled')",
+            name="ck_workflow_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    create_idempotency_key: Mapped[str] = mapped_column(String(200))
+    create_payload_sha256: Mapped[str] = mapped_column(String(64))
+    workflow_type: Mapped[str] = mapped_column(String(64), default="literature-synthesis")
+    goal: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="planning", index=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    blocking_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    blocking_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PlanRecord(Base):
+    __tablename__ = "workflow_plans"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "version", name="uq_workflow_plan_version"),
+        CheckConstraint(
+            "status IN ('pending-approval','approved','rejected','superseded')",
+            name="ck_workflow_plan_status",
+        ),
+        Index(
+            "uq_workflow_one_approved_plan",
+            "workflow_id",
+            unique=True,
+            sqlite_where=text("status = 'approved'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    spec_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    spec_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending-approval", index=True)
+    generator: Mapped[str] = mapped_column(String(100), default="template-v1")
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JobRecord(Base):
+    __tablename__ = "workflow_jobs"
+    __table_args__ = (
+        UniqueConstraint("operation_key", "attempt", name="uq_workflow_job_attempt"),
+        CheckConstraint(
+            "kind IN ('generate-plan','execute-task','review-workflow')",
+            name="ck_workflow_job_kind",
+        ),
+        CheckConstraint(
+            "status IN ('queued','leased','succeeded','failed','cancelled')",
+            name="ck_workflow_job_status",
+        ),
+        Index(
+            "uq_workflow_job_active_operation",
+            "operation_key",
+            unique=True,
+            sqlite_where=text("status IN ('queued','leased')"),
+        ),
+        Index("ix_workflow_job_claim", "status", "available_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32))
+    operation_key: Mapped[str] = mapped_column(String(300), index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    handler_version: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    request_idempotency_key: Mapped[str | None] = mapped_column(
+        String(200), nullable=True, unique=True
+    )
+    previous_job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflow_jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ReviewRecord(Base):
+    __tablename__ = "workflow_reviews"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id", "review_type", "input_sha256", name="uq_workflow_review_input"
+        ),
+        CheckConstraint(
+            "verdict IN ('passed','revision-required','blocked','failed')",
+            name="ck_workflow_review_verdict",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_plans.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    review_type: Mapped[str] = mapped_column(String(100))
+    input_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    verdict: Mapped[str] = mapped_column(String(32))
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class AnalysisIntentRecord(Base):
@@ -210,9 +408,30 @@ class ArtifactRecord(Base):
 
 class ApprovalRecord(Base):
     __tablename__ = "approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "subject_type",
+            "subject_id",
+            "requested_action",
+            "intent_hash",
+            name="uq_approval_subject_payload",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    plan_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflow_plans.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    subject_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    payload_schema_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    row_version: Mapped[int] = mapped_column(Integer, default=1)
     intent_hash: Mapped[str] = mapped_column(String(64), index=True)
     requested_action: Mapped[str] = mapped_column(String(200))
     risk_level: Mapped[str] = mapped_column(String(32))
@@ -225,9 +444,22 @@ class ApprovalRecord(Base):
 
 class EventRecord(Base):
     __tablename__ = "events"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "sequence", name="uq_workflow_event_sequence"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflow_jobs.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     event_type: Mapped[str] = mapped_column(String(100), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

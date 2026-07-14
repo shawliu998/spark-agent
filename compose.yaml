@@ -4,6 +4,7 @@ services:
       context: ./services/science-core
     environment:
       SPARK_AGENT_CORE_DATA_DIR: /data
+      SPARK_AGENT_CORE_TOKEN: ${SPARK_AGENT_CORE_TOKEN:?SPARK_AGENT_CORE_TOKEN must be non-empty}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_API_BASE: ${OPENAI_API_BASE:-}
       SPARK_AGENT_LLM_MODEL: ${SPARK_AGENT_LLM_MODEL:-}
@@ -13,15 +14,33 @@ services:
       SPARK_AGENT_EXECUTION_TIMEOUT_SECONDS: "120"
       PYTHONPATH: /app/src
     ports:
-      - "127.0.0.1:8765:8765"
+      # An empty host port asks Docker to allocate one atomically. Developers
+      # may pin it with e.g. SPARK_AGENT_CORE_PUBLISH=127.0.0.1:8877:8765.
+      - "${SPARK_AGENT_CORE_PUBLISH:-127.0.0.1::8765}"
     volumes:
-      - ./.local/science-core:/data
+      - type: bind
+        source: ${SPARK_AGENT_CORE_HOST_DATA_DIR:-./.local/science-core}
+        target: /data
       - science-runtime-exchange:/runtime-data
       - science-runtime-socket:/runtime-socket
       - ./services/science-core/src:/app/src:ro
     depends_on:
       science-runtime:
         condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import json, urllib.request;
+          data=json.load(urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=2));
+          assert data.get('status') == 'ok' and data.get('database') == 'ok'
+          and data.get('runtime') == 'ready'
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 12
     restart: unless-stopped
 
   science-runtime:

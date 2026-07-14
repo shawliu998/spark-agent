@@ -34,10 +34,11 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 def initialize_database() -> None:
-    # Import registers every mapped table before create_all runs.
-    from . import models  # noqa: F401
+    # Alembic owns every schema change. This also recognizes and safely stamps
+    # the pre-Alembic MVP schema before applying any later revisions.
+    from .migration import ensure_database
 
-    Base.metadata.create_all(engine)
+    ensure_database(settings.database_path)
 
 
 def database_session() -> Generator[Session, None, None]:
