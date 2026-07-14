@@ -20,7 +20,7 @@ import type {
   ResearchProject,
   ResearchSource,
   ScienceCoreHealth,
-} from "@ai4s/shared";
+} from "@spark/research-domain";
 import { MarkdownViewer } from "@/components/markdown-viewer/MarkdownViewer";
 import { cn } from "@/lib/cn";
 import { scienceCore } from "@/lib/scienceCore";

@@ -1,3 +1,5 @@
+> Archived upstream positioning reference. It does not describe the current Spark Agent product.
+
 # Open Science Desktop vs OpenScience: two open-source Claude Science alternatives
 
 Open Science Desktop and Synthetic Sciences OpenScience are both open-source

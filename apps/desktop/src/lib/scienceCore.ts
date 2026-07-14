@@ -1,4 +1,4 @@
-import { ScienceCoreClient } from "@ai4s/sdk";
+import { ScienceCoreClient } from "@spark/research-sdk";
 
 const configuredBaseUrl = import.meta.env.VITE_SCIENCE_CORE_URL?.trim();
 

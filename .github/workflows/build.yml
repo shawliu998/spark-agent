@@ -87,7 +87,7 @@ jobs:
           # On a v* tag push, attach installers to a draft GitHub Release.
           # Empty tagName (workflow_dispatch) skips release creation.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: ${{ github.ref_type == 'tag' && format('Open Science {0}', github.ref_name) || '' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('Spark Agent {0}', github.ref_name) || '' }}
           releaseDraft: true
           # Standing install/first-launch notes — every draft is born with these
           # (the builds are unsigned/un-notarized, so users must clear Gatekeeper /
@@ -98,10 +98,10 @@ jobs:
             These installers are **not code-signed or notarized**, so your OS warns on first launch. This is expected; clear it once:
 
             **macOS** — Apple Silicon: `…_aarch64.dmg` · Intel: `…_x64.dmg` (requires macOS 13+)
-            1. Open the DMG and drag **Open Science** into Applications.
+            1. Open the DMG and drag **Spark Agent** into Applications.
             2. If you see *"… is damaged and can't be opened"* or *"unidentified developer"*, clear the quarantine attribute in Terminal, then open normally:
                ```
-               xattr -cr "/Applications/Open Science.app"
+               xattr -cr "/Applications/Spark Agent.app"
                ```
 
             **Windows** — `…_x64-setup.exe` or `…_x64_en-US.msi`
@@ -119,7 +119,7 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: ai4s-workbench-${{ matrix.target }}
+          name: spark-agent-${{ matrix.target }}
           path: |
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.exe

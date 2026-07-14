@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Files, FlaskConical, FolderTree, Library, NotebookPen, PanelLeft, Plus, Settings, Trash2 } from "lucide-react";
+import { Files, FlaskConical, FolderTree, NotebookPen, PanelLeft, Plus, Settings, Trash2 } from "lucide-react";
 import type { Project } from "@ai4s/shared";
 import { cn } from "@/lib/cn";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -9,6 +9,8 @@ import { SIDEBAR_MAX, SIDEBAR_MIN, useOverlayTitlebar, useUiStore } from "@/lib/
 import { useUpdateStore } from "@/lib/update";
 import { StatusPills } from "./StatusPills";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
+import { PRODUCT } from "@/config/product";
+import { productNavigation } from "@/product/manifest";
 import logo from "@/assets/logo.webp";
 
 interface Row {
@@ -124,7 +126,7 @@ export function Sidebar({ project }: { project: Project }) {
           <img src={logo} alt="" className="h-[18px] w-auto self-center" />
           {/* eslint-disable-next-line i18next/no-literal-string -- product brand name, not translated across locales (see AGENTS.md) */}
           <div className="font-serif text-[17px] font-semibold leading-none tracking-tight text-text">
-            Open Science
+            {PRODUCT.name}
           </div>
           <span className="text-[10px] uppercase tracking-widest text-muted">{t("sidebar.betaBadge")}</span>
           {!overlayTitlebar && (
@@ -142,8 +144,17 @@ export function Sidebar({ project }: { project: Project }) {
 
       <nav className="flex flex-col px-3">
         <NavRow icon={<Plus size={16} />} label={t("items.new")} onClick={startNew} />
-        <NavRow icon={<Library size={16} />} label={t("items.research")} onClick={() => navigate("/research")} />
-        <NavRow icon={<BarChart3 size={16} />} label={t("items.analysis")} onClick={() => navigate("/analysis")} />
+        {productNavigation.map((item) => {
+          const Icon = item.icon;
+          return (
+            <NavRow
+              key={item.id}
+              icon={<Icon size={16} />}
+              label={t(item.labelKey)}
+              onClick={() => navigate(item.path)}
+            />
+          );
+        })}
         <NavRow icon={<NotebookPen size={16} />} label={t("items.notebooks")} onClick={() => navigate("/notebooks")} />
         <NavRow icon={<FolderTree size={16} />} label={t("items.files")} onClick={() => navigate("/files")} />
         <NavRow icon={<FlaskConical size={16} />} label={t("items.runs")} onClick={() => navigate("/runs")} />

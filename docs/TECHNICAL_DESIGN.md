@@ -1,4 +1,4 @@
-# AI4S Workbench Desktop — Technical Design
+# Spark Agent Desktop — Technical Design
 
 > **Implementation status (v0.1, 2026-07-02).** Built and verified: Tauri 2 shell + React
 > UI; **OpenCode** bundled as an isolated sidecar (auto-started, app-private config/data,
@@ -18,7 +18,7 @@ extensibility to Jupyter, HPC, Modal, Docker, and remote servers.
 ## 2. Overall architecture
 
 ```text
-AI4S Workbench Desktop
+Spark Agent Desktop
 ├── Desktop Shell: Tauri 2
 ├── Frontend: React + TypeScript + Vite
 ├── UI System: Tailwind CSS + Radix UI / shadcn-style components
@@ -48,7 +48,7 @@ small, fast, secure cross-platform apps built from a single codebase.
 
 If later needs arise — complex browser capabilities, a more mature desktop ecosystem,
 identical embedded Chromium behavior, or many native Node.js modules — Electron could be
-reconsidered. But AI4S Workbench's core is the workbench, files, agent, runtime, and
+reconsidered. But Spark Agent's core is the workbench, files, agent, runtime, and
 artifacts, which do not need Chromium-level capabilities, so Tauri fits better.
 
 ## 4. Frontend
@@ -126,7 +126,7 @@ git-ignored and fetched by `scripts/dev/fetch-opencode.sh`). The Rust side
 - runs the **bundled** binary (not the user's `PATH`);
 - on a **dedicated free port** (not the default 4096);
 - with an **app-private** config/data dir via `XDG_CONFIG_HOME`/`XDG_DATA_HOME` under
-  `~/Library/Application Support/com.ai4s.workbench/runtime/` (macOS) — so the user's
+  `~/Library/Application Support/io.github.shawliu998.sparkagent/runtime/` (macOS) — so the user's
   sessions/config are never touched;
 - but it **shares the user's login**: the user's `auth.json` (OpenCode credentials / free
   access) is copied read-only into the sandbox at startup, so the bundled runtime can
@@ -226,7 +226,7 @@ the OpenCode server; start an optional Jupyter Gateway; monitor runtime health.
   workspaces/  logs/  cache/  secrets/
 ```
 
-Windows: `%APPDATA%/AI4S Workbench/` · macOS: `~/Library/Application Support/AI4S Workbench/`
+Windows: `%APPDATA%/Spark Agent/` · macOS: `~/Library/Application Support/Spark Agent/`
 
 ## 9. Storage
 
@@ -440,7 +440,7 @@ ai4s-workbench/
 - `apps/desktop` — Tauri + React desktop app; `src-tauri/src/runtime.rs` supervises the
   bundled OpenCode sidecar (`OpenCodeClient` lives in `packages/sdk`).
 - `runtime/manager` — local runtime manager (detect deps, workspace, provenance, logs).
-- `runtime/opencode-profile` — the AI4S Workbench OpenCode config/skills bundle.
+- `runtime/opencode-profile` — the Spark Agent OpenCode config/skills bundle.
 - `runtime/skills` — self-authored scientific skills.
 - `examples` — the complete demo project.
 

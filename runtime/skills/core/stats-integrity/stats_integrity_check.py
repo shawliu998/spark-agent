@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open Science — social-science analysis integrity (P1-6).
+"""Spark Agent — social-science analysis integrity (P1-6).
 
 Three deterministic checks that guard the decisive social-science risks:
 sycophantic over-interpretation, silent p-hacking / HARKing, and irreproducible

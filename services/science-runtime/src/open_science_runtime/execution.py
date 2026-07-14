@@ -285,10 +285,10 @@ def _build_notebook(
     run_dir_literal = json.dumps(str(run_dir), ensure_ascii=False)
     setup_code = "\n".join(
         (
-            "# Open Science Desktop runtime inputs (generated; do not edit)",
-            "from pathlib import Path as _OpenSciencePath",
-            f"DATASET_PATH = _OpenSciencePath({dataset_literal})",
-            f"RUN_DIR = _OpenSciencePath({run_dir_literal})",
+            "# Spark Agent runtime inputs (generated; do not edit)",
+            "from pathlib import Path as _SparkAgentPath",
+            f"DATASET_PATH = _SparkAgentPath({dataset_literal})",
+            f"RUN_DIR = _SparkAgentPath({run_dir_literal})",
             "dataset_path = DATASET_PATH",
             "run_dir = RUN_DIR",
         )
@@ -475,7 +475,7 @@ def _build_log(
     stderr: str,
 ) -> str:
     lines = [
-        "Open Science Desktop notebook execution",
+        "Spark Agent notebook execution",
         f"runId: {payload.run_id}",
         f"status: {run_status}",
         f"payloadSha256: {payload.payload_sha256}",

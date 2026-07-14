@@ -17,7 +17,7 @@ pub struct RuntimeState {
     port: Mutex<Option<u16>>,
 }
 
-/// App-private runtime root, e.g. ~/Library/Application Support/com.ai4s.workbench/runtime
+/// App-private runtime root, e.g. ~/Library/Application Support/io.github.shawliu998.sparkagent/runtime
 fn runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
@@ -42,7 +42,7 @@ fn base_workspace_file(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// The active workspace folder OpenCode / the kernel / previews / provenance all
-/// operate in. Defaults to the base folder (`~/Documents/OpenScience`) until the
+/// operate in. Defaults to the base folder (`~/Documents/SparkAgent`) until the
 /// user opens or creates another one; the choice persists across restarts.
 pub fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(f) = active_workspace_file(app) {
@@ -57,7 +57,7 @@ pub fn workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// The workspace root new dated session folders are created under. A folder
-/// the user picked in Settings wins; the default is `~/Documents/OpenScience`
+/// the user picked in Settings wins; the default is `~/Documents/SparkAgent`
 /// (no space — the agent runs shell commands against this path, and unquoted
 /// spaces break them), falling back to `$HOME/Documents`.
 pub fn base_workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -78,16 +78,15 @@ pub fn base_workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
             PathBuf::from(home).join("Documents")
         }
     };
-    let dir = docs.join("OpenScience");
+    let dir = docs.join("SparkAgent");
 
-    // One-time migrations, oldest name last. A failed rename (e.g. cross-volume)
-    // keeps the existing location rather than splitting the user's files.
+    // Only migrate the app-private legacy workspace. Do not move an existing
+    // Open Science workspace: the two products may coexist, and importing user
+    // data must remain an explicit action.
     if !dir.exists() {
-        for old in [docs.join("Open Science"), runtime_root(app)?.join("workspace")] {
-            if old.is_dir() {
-                if std::fs::rename(&old, &dir).is_ok() {
-                    break;
-                }
+        let old = runtime_root(app)?.join("workspace");
+        if old.is_dir() {
+            if std::fs::rename(&old, &dir).is_err() {
                 return Ok(old);
             }
         }
@@ -155,8 +154,7 @@ pub fn import_opencode_login(app: AppHandle, state: State<'_, RuntimeState>) -> 
 /// Deploy the bundled skill packs (Tauri resources) into the app-private
 /// profile's global skills dir (`<xdg-config>/opencode/skills/`), which OpenCode
 /// scans regardless of project detection: `skills/` is the external ai4s-skills
-/// pack, `skills-office/` Anthropic's document skills (docx/pdf/pptx/xlsx),
-/// `skills-core/` the first-party skills from `runtime/skills/core`. The
+/// pack and `skills-core/` contains the product-owned core skills. The
 /// workspace's own `.opencode/skills/` stays reserved for skills the user
 /// installs. Runs before every sidecar start so app upgrades refresh the packs.
 fn deploy_bundled_skills(app: &AppHandle) {
@@ -166,7 +164,7 @@ fn deploy_bundled_skills(app: &AppHandle) {
     };
     let mut bundled: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();
     let mut all_ok = true;
-    for resource in ["skills", "skills-office", "skills-core"] {
+    for resource in ["skills", "skills-core"] {
         let src = match app
             .path()
             .resolve(resource, tauri::path::BaseDirectory::Resource)
@@ -190,7 +188,7 @@ fn deploy_bundled_skills(app: &AppHandle) {
     // freshly-bundled set is a stale leftover — e.g. one renamed across an app
     // upgrade (`hpc-slurm` → `remote-compute`) — and must be removed so the
     // obsolete duplicate can't shadow or confuse the agent. Prune ONLY when all
-    // three packs deployed cleanly: a partial deploy would make `bundled`
+    // packs deployed cleanly: a partial deploy would make `bundled`
     // incomplete and wrongly delete valid skills.
     if all_ok {
         prune_stale_skills(&dst, &bundled);
@@ -648,7 +646,7 @@ pub fn workspace_path(app: AppHandle) -> Result<String, String> {
     Ok(workspace_dir(&app)?.to_string_lossy().to_string())
 }
 
-/// The base folder new dated workspaces are created under (`~/Documents/OpenScience`).
+/// The base folder new dated workspaces are created under (`~/Documents/SparkAgent`).
 #[tauri::command]
 pub fn workspace_base(app: AppHandle) -> Result<String, String> {
     Ok(base_workspace_dir(&app)?.to_string_lossy().to_string())

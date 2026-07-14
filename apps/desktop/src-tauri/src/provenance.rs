@@ -62,7 +62,7 @@ pub struct EnvInfo {
     pub python: Option<String>,
     /// OS and architecture, e.g. "macos-aarch64".
     pub platform: String,
-    /// Open Science app version that recorded this.
+    /// Spark Agent app version that recorded this.
     pub app: String,
     /// Installed Python packages (pip freeze), content-addressed to a lockfile.
     #[serde(default, skip_serializing_if = "Option::is_none")]

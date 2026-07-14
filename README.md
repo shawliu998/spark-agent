@@ -1,283 +1,103 @@
-<div align="center">
+# Spark Agent
 
-[![Open Science Desktop — Local-first AI research workbench](./docs/assets/banner.webp)](https://github.com/ai4s-research/open-science)
+Spark Agent is a local-first, evidence-first research agent for macOS. It joins
+papers, citations, datasets, Python analysis, execution approvals, artifacts,
+and provenance in one auditable desktop workspace.
 
-# Open Science Desktop
+> Status: internal source MVP. The research and analysis loops run locally, but
+> the Python services are currently started with Docker Compose and are not yet
+> packaged as Tauri-managed sidecars.
 
-**Local-first, model-agnostic AI research workbench for macOS, Windows & Linux.**
+## What works today
 
-Formerly Open Science. An open-source desktop alternative to Claude Science and
-similar AI-for-science workbenches — built with Tauri, MCP, agent skills, and
-reproducible artifacts. It connects agents, notebooks, files, figures, reports,
-runs, and review into one auditable desktop workflow.
+- Create local research projects and import PDF papers.
+- Ask PaperQA-backed questions with explicit remote-data approval.
+- Inspect claims, exact evidence spans, citations, and source PDF pages.
+- Import CSV datasets and prepare editable Python analyses.
+- Review an immutable execution payload before approving a run.
+- Execute with Jupyter in a no-network, resource-limited container.
+- Save notebooks, logs, figures, tables, environment metadata, and hashes.
+- Audit projects, sources, approvals, tasks, runs, artifacts, and events in SQLite.
 
-<p>
-  <b>English</b> ·
-  <a href="./README.zh.md">简体中文</a> ·
-  <a href="./README.ja.md">日本語</a> ·
-  <a href="./README.es.md">Español</a> ·
-  <a href="./README.de.md">Deutsch</a> ·
-  <a href="./README.fr.md">Français</a> ·
-  <a href="./README.ko.md">한국어</a>
-</p>
+## Architecture
 
-<p>
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://internscience.github.io/ResearchClawBench-Home/"><img src="https://img.shields.io/badge/%F0%9F%8F%86%20%231-ResearchClawBench-FFB300" alt="#1 on ResearchClawBench"></a>
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" alt="Platforms">
-  <img src="https://img.shields.io/badge/i18n-7%20languages-5B8DEF" alt="7 interface languages">
-  <img src="https://img.shields.io/badge/built%20with-Tauri%202%20%2B%20React-24C8DB" alt="Built with Tauri + React">
-  <img src="https://img.shields.io/badge/runtime-OpenCode-success" alt="OpenCode runtime">
-  <a href="https://discord.gg/fWNMDKcd5P"><img src="https://img.shields.io/badge/Join-Discord-5865F2" alt="Join Discord"></a>
-  <a href="http://makeapullrequest.com"><img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs Welcome"></a>
-  <a href="https://linux.do"><img src="https://img.shields.io/badge/Join-linux.do-orange" alt="linux.do"></a>
-</p>
-
-</div>
-
----
-
-🎉 **Recognition:** Open Science Desktop ranks #1 by scored-task average on [ResearchClawBench](https://internscience.github.io/ResearchClawBench-Home/), an end-to-end benchmark for autonomous scientific research agents (Pass@1 leaderboard, July 9, 2026).
-
----
-
-## Contents
-
-- [✨ What it does](#what-it-does)
-- [🎬 See it in action](#see-it-in-action)
-- [🧪 Current capabilities](#current-capabilities)
-- [🔌 Skills and connectors](#skills-and-connectors)
-- [📦 Install](#install)
-- [🚀 Build from source](#build-from-source)
-- [🔒 Safety and privacy](#safety-and-privacy)
-- [🗂️ Repository layout](#repository-layout)
-- [📌 Status](#status)
-- [🤝 Contributing](#contributing)
-- [⚖️ License](#license)
-
-## What it does
-
-**Runs the whole research loop** — from a broad direction to a finished paper:
-exploration, literature survey, hypothesis, experiment code, analysis, figures, and
-write-up, in one continuous, auditable session.
-
-- **Autonomous research agents** — the bundled `ai4s-agent` chains specialist skills
-  end to end (explore → survey → experiment → write), and each stage drops a real,
-  inspectable artifact into your workspace, not just a chat reply.
-- **Everything traces back** — figures, tables, reports, notebooks, and run outputs
-  link to the exact code, inputs, environment, model output, and conversation that
-  produced them.
-- **Local-first and yours** — sessions, data, provenance, notebooks, and run records
-  live in local folders on your machine. Nothing leaves by default.
-- **Model-agnostic runtime** — the UI talks through `packages/sdk` to a bundled,
-  pinned OpenCode sidecar. Bring your own model; providers, skills, and MCP servers
-  stay pluggable.
-- **Reproducible by construction** — local, SSH/Slurm, Modal, and notebook-batch runs
-  are captured as reproducible run records, not loose terminal scrollback.
-- **Extensible** — agent skills, MCP servers and one-click science connectors,
-  `/` commands, `!` shell mode, and a model-agnostic SDK.
-
-## See it in action
-
-**One prompt -> a complete, traceable analysis.** Simulate data, fit a model, save a
-publication-grade figure, and write a report where every number traces to the code.
-
-![End-to-end dose-response analysis: the agent runs code and produces a fitted figure and a report](./docs/assets/showcase-workflow.webp)
-
-**Every artifact traces back to its code, inputs, and conversation.**
-
-![Artifact inspector showing a figure's generating code, inputs, and provenance](./docs/assets/showcase-provenance.webp)
-
-**Literature -> verifiable report.** Search papers, draft a manuscript rendered as a
-PDF, and audit citations, unsourced numbers, and figure/code consistency.
-
-![Literature survey producing a rendered PDF manuscript with a traceability review](./docs/assets/showcase-literature.webp)
-
-<details>
-<summary><b>More screenshots</b></summary>
-
-<br>
-
-![The agent driving a Jupyter notebook with a live matplotlib figure](./docs/assets/showcase-notebook.webp)
-
-![An experiment sweep table alongside a live analysis notebook](./docs/assets/showcase-experiment.webp)
-
-![The skills library listing bundled scientific skills](./docs/assets/showcase-skills.webp)
-
-</details>
-
-## Current capabilities
-
-**The research loop, as skills.** One meta-skill runs the full pipeline; each stage
-is a self-contained skill that produces a real, gradeable artifact — runnable on any
-model OpenCode supports:
-
-| Skill | Role | Primary output |
-| --- | --- | --- |
-| `ai4s-agent` | Runs the four skills below, in order | The full research package |
-| `research-explorer` | Turn a broad direction into concrete topics | `research_exploration.md`, `topic_matrix.md`, `literature_pre_survey.md` |
-| `literature-survey` | Write a literature survey | 6–20 pp PDF, 60+ real citations, LaTeX source, taxonomy figures |
-| `experiment-suite` | Build an experiment package | Design doc, runnable code, `results.json` with provenance, figures, report |
-| `paper-writer` | Write a research paper | 8–14 pp PDF, 200+ citations, 4–8 figures, tables |
-| `mindmap-render` | Render a mindmap | Image generated from a `topic_matrix.md` |
-| `integrity-auditor` | Audit a paper's integrity | Image / numerical / logical findings, 4-level evidence grading, `audit_report.md` |
-
-These ship in the `ai4s-skills` pack alongside first-party review skills and the
-office/document skills below.
-
-### Platform
-
-| Area | Current state |
-| --- | --- |
-| Desktop shell | Tauri 2 + React + TypeScript + Vite, with macOS, Windows, and Linux desktop builds. |
-| Runtime | Bundled OpenCode sidecar, auto-started by the app, isolated from the user's own OpenCode config/data. |
-| Sessions | Multi-session chat/history, dated workspace folders, global history across workspaces, `/` commands, and `!` shell mode. |
-| Files | Global and per-session file browsing, context menu actions, external open/reveal, copy path, and local preview server. |
-| Notebooks | Real `.ipynb` files, Python and R notebook creation, local kernel execution, managed Jupyter environment via bundled `uv`, and an Open JupyterLab action. |
-| Runs | Append-only run logs, global SQLite run index, search/facets/pagination, local/remote surfaces, output links, logs, and reproduce prompts. |
-| Provenance | `.openscience/provenance.jsonl` tracks file versions and links produced artifacts back to the run or edit that created them. |
-| Review | Traceability, statistics-integrity, domain-check, large-file, publication-figure, remote-compute, and Modal run skills are bundled as first-party skills. |
-| Viewers | PDF, image, video, HTML, Markdown, code, CSV/TSV tables with charts, DOCX, XLSX, PPTX, molecules, 3D meshes, genome tracks, FITS, DOS/DOSCAR, EIGENVAL bands, qcode, anomaly maps, and phase files. |
-| Models | OpenCode provider catalog, OAuth/API-key provider flows, custom OpenAI-compatible endpoints, and local/provider-specific options supported by OpenCode. |
-| Interface languages | English, Simplified Chinese, Japanese, Spanish, German, French, and Korean. Portuguese (Brazil) and Arabic are registered but not selectable yet. |
-
-## Skills and connectors
-
-Bundled skills are fetched for builds and releases instead of being committed into
-git history:
-
-- `ai4s-skills` pack from `ai4s-research/ai4s-skills`.
-- Office/document skills from the Apache-2.0 `anthropics/skills` repository:
-  `docx`, `pdf`, `pptx`, and `xlsx`.
-- First-party core skills in `runtime/skills/core/`:
-  `traceability-review`, `stats-integrity`, `domain-check`, `large-file`,
-  `publication-figures`, `remote-compute`, and `modal-run`.
-
-One-click science MCP connectors currently include:
-
-- Literature search: arXiv, PubMed, Crossref, Semantic Scholar, bioRxiv/medRxiv.
-- Biomedical databases: PubMed, ClinicalTrials.gov, MyVariant/ClinVar.
-- Materials Project.
-- FRED economic data.
-- Space weather.
-- Open-Meteo weather and climate.
-- USGS water data.
-
-You can also add any local or remote MCP server from Settings. See
-[`docs/CONNECT_YOUR_TOOLS.md`](./docs/CONNECT_YOUR_TOOLS.md).
-
-For a neutral positioning note, see
-[`Open Science Desktop vs OpenScience`](./docs/open-science-desktop-vs-openscience.md).
-
-## Install
-
-Download the latest installer from the
-[Releases page](https://github.com/ai4s-research/open-science/releases/latest).
-
-- **macOS**: `.dmg` / `.app`, Apple Silicon and Intel, macOS 13 Ventura or later.
-- **Windows**: NSIS `.exe` and `.msi`, Windows 10/11 x64.
-- **Linux**: `.deb` and `.rpm` on x86_64 Linux.
-
-Builds are not code-signed or notarized yet.
-
-**macOS**: if Gatekeeper says the app is damaged or from an unidentified developer,
-install it into Applications and run:
-
-```bash
-xattr -cr "/Applications/Open Science.app"
+```text
+Spark Agent Desktop (Tauri + React)
+  |-- OpenCode-compatible agent shell
+  |-- Research and Analysis workspaces
+  |-- explicit permission and approval UI
+  |
+  +-- science-core (FastAPI + SQLite + PaperQA2)
+        |
+        +-- Unix-domain socket
+              |
+              +-- science-runtime (Jupyter, no network, read-only root)
 ```
 
-**Windows**: if SmartScreen appears, choose **More info -> Run anyway**.
+The desktop shell reuses MIT-licensed Open Science Desktop code. Spark-specific
+research pages, domain contracts, science services, approval state, and the
+isolated execution runtime are maintained in this repository.
 
-**Linux**:
+## Run the internal MVP
 
-```bash
-sudo apt install ./OpenScience_*.deb
-# or
-sudo rpm -i OpenScience_*.rpm
-```
+Requirements:
 
-## Build from source
-
-Prerequisites:
-
-- Node.js >= 20
-- pnpm 9
-- Rust toolchain
-- macOS, Windows, or Linux system dependencies required by Tauri
+- macOS with Node.js 20+ and pnpm 9
+- Docker Desktop or OrbStack
+- an OpenAI-compatible credential only when remote PaperQA questions are needed
 
 ```bash
-git clone https://github.com/ai4s-research/open-science
-cd open-science
+git clone https://github.com/shawliu998/spark-agent.git
+cd spark-agent
 pnpm install
-
-# Fetch pinned sidecars and bundled skills. These are git-ignored.
-bash scripts/dev/fetch-opencode.sh
-bash scripts/dev/fetch-uv.sh
-bash scripts/dev/fetch-skills.sh
-
-# Run in development or build installers.
-pnpm --filter @ai4s/desktop tauri dev
-pnpm --filter @ai4s/desktop tauri build
+pnpm mvp:dev
 ```
 
-Useful checks:
+To enable the current PaperQA model gateway, provide the key through the shell
+environment. Do not commit it or paste it into application logs.
 
 ```bash
-pnpm test
-pnpm typecheck
-pnpm lint
+OPENAI_API_KEY=your-key pnpm mvp:dev
 ```
 
-## Safety and privacy
+Without a model key, PDF import, CSV analysis, and Jupyter execution remain
+available; remote literature answering is disabled.
 
-- Workspace files, raw data, session history, provenance, notebooks, and run records
-  stay local by default.
-- Command execution, file deletion, dependency installation, and remote connections
-  are human-approved flows in the desktop app.
-- Provider credentials are written to app-private runtime config, not to the
-  workspace, provenance, git, exports, or global OpenCode config.
-- Settings includes a plain-language data-flow view explaining what can be sent to
-  the selected model provider.
+Stop the local services with:
 
-## Repository layout
+```bash
+pnpm science:down
+```
 
-| Path | Purpose |
-| --- | --- |
-| `apps/desktop/` | Tauri + React desktop app. |
-| `packages/sdk/` | `OpenCodeClient`; keeps the UI from calling OpenCode directly. |
-| `packages/shared/` | Shared domain types and chart palette. |
-| `packages/ui/` | Shared UI package. |
-| `runtime/skills/core/` | First-party scientific skills. |
-| `runtime/skills/external/` | Build-fetched external skills. |
-| `runtime/harness/` | Runtime harness knowledge and operator context. |
-| `runtime/mcp/` | MCP runtime notes/configuration. |
-| `examples/` | Built-in example workspaces. |
-| `scripts/dev/` | Sidecar, `uv`, skill fetchers, and focused regression probes. |
-| `docs/` | Product, technical, operator, connector, and research notes. |
+## Safety defaults
 
-## Status
+- Project-scoped file access and explicit approval for high-risk operations.
+- No arbitrary direct shell mode in the product UI.
+- Immutable, hashed analysis intents with compare-and-set approval decisions.
+- Jupyter execution in a no-network container with a read-only root filesystem,
+  resource limits, and a Unix-domain socket instead of a TCP runtime port.
+- Artifact paths, regular files, source containment, and SHA-256 are verified
+  before files are served or accepted.
 
-The project is a working desktop MVP in active development. The most reliable current
-implementation log is [`PROGRESS.md`](./PROGRESS.md). Product and architecture notes
-live in [`docs/PRD.md`](./docs/PRD.md) and
-[`docs/TECHNICAL_DESIGN.md`](./docs/TECHNICAL_DESIGN.md), but those documents include
-target design as well as historical status notes.
+This is research software. Model answers and generated analyses must still be
+reviewed before publication or consequential use.
 
-Near-term work is focused on signed/notarized releases, broader Windows/Linux
-verification, auto-update, richer connector hardening, and continued reproducibility
-review.
+## Upstream and maintenance model
 
-## Contributing
+This GitHub repository is independent and is not registered as a GitHub Fork.
+Its source history is nevertheless derived from Open Science Desktop v0.1.9.
+The `upstream` Git remote is retained so selected upstream releases can be
+merged intentionally. Product-specific services and features are kept separate
+where practical to reduce merge conflicts.
 
-Issues and PRs are welcome. Keep changes minimal and verifiable, follow
-[`AGENTS.md`](./AGENTS.md), and run the checks before opening a PR. For discussion,
-join the [Open Science Discord](https://discord.gg/fWNMDKcd5P) or the
-[linux.do](https://linux.do) community.
+Internal `@ai4s/*` and Rust crate names are temporarily retained for source
+compatibility. They are implementation details, not the Spark Agent brand.
 
-## License
+## License and attribution
 
-[MIT](./LICENSE). Bundled third-party skills and connectors keep their own licenses.
+The inherited Open Science Desktop code is available under the MIT License; the
+required original notice is retained in [LICENSE](./LICENSE). See
+[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for major reused components.
 
-> Open Science Desktop is beta research tooling. Treat outputs as drafts: verify numbers,
-> citations, code, and conclusions before publication or decision-making.
+Spark Agent is maintained and distributed independently from Open Science
+Desktop and its maintainers.

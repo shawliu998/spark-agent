@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-14 15:45 · feat(product): established Spark Agent as an independent downstream product with its own macOS identity, update channel, icon, workspace and data paths, extracted `@spark/research-domain`/`@spark/research-sdk` plus route/nav contributions, retained upstream MIT attribution, and removed the unlicensed-by-default Office skill bundle; frontend production build and targeted checks pass while Docker smoke awaits a running daemon.
+
 2026-07-14 15:13 · feat(analysis): completed the internal CSV analysis loop with immutable high-risk approval hashes, a real Jupyter kernel, crash recovery, SQLite provenance, directly openable artifacts, and a no-network/read-only runtime whose two tmpfs exchanges are quota-bound; Compose smoke produced and independently verified nine notebook, log, table, JSON, and figure artifacts.
 
 2026-07-14 14:05 · feat(research): added the reusable three-pane Research workspace and typed science-core boundary; container smoke now creates projects, ingests/deduplicates PDFs, persists canonical page word maps, and verifies exact evidence with normalized page coordinates while PaperQA 2026.3.18 is pinned behind an explicit model-gateway readiness check.

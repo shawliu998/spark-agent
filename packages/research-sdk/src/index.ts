@@ -5,7 +5,7 @@ import type {
   ResearchProject,
   ResearchSource,
   ScienceCoreHealth,
-} from "@ai4s/shared";
+} from "@spark/research-domain";
 
 export const DEFAULT_SCIENCE_CORE_URL = "http://127.0.0.1:8765";
 
@@ -36,11 +36,7 @@ export interface PrepareAnalysisIntentInput {
 
 export type AnalysisIntentDecision = "approved" | "rejected";
 
-/**
- * Typed boundary for the local Python science-core service. The desktop never
- * reaches PaperQA, SQLite, or Jupyter directly; those implementations remain
- * replaceable behind this client.
- */
+/** Typed boundary around the replaceable local science-core service. */
 export class ScienceCoreClient {
   private readonly baseUrl: string;
   private readonly token: string | null;
@@ -104,10 +100,7 @@ export class ScienceCoreClient {
     );
   }
 
-  async ask(
-    projectId: string,
-    input: AskResearchQuestionInput,
-  ): Promise<ResearchAnswer> {
+  async ask(projectId: string, input: AskResearchQuestionInput): Promise<ResearchAnswer> {
     return this.request<ResearchAnswer>(
       `/v1/projects/${encodeURIComponent(projectId)}/questions`,
       { method: "POST", body: JSON.stringify(input) },

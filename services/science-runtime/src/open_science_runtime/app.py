@@ -35,7 +35,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Open Science Runtime", version=__version__, lifespan=lifespan)
+app = FastAPI(title="Spark Agent Runtime", version=__version__, lifespan=lifespan)
 _execution_slot = threading.Lock()
 
 

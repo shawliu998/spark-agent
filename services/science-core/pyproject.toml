@@ -3,9 +3,9 @@ requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "open-science-core"
+name = "spark-agent-core"
 version = "0.1.0"
-description = "Local evidence, provenance, and research workflow service for Open Science Desktop."
+description = "Local evidence, provenance, and research workflow service for Spark Agent."
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "fastapi>=0.116,<1",

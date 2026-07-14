@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-const RELEASES_ATOM_URL: &str = "https://github.com/ai4s-research/open-science/releases.atom";
+const RELEASES_ATOM_URL: &str = "https://github.com/shawliu998/spark-agent/releases.atom";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -20,7 +20,7 @@ pub async fn latest_release() -> Result<ReleaseInfo, String> {
 
 fn fetch_latest_release() -> Result<ReleaseInfo, String> {
     let body = reqwest::blocking::Client::builder()
-        .user_agent("Open Science Desktop update checker")
+        .user_agent("Spark Agent update checker")
         .build()
         .map_err(|e| format!("could not create HTTP client: {e}"))?
         .get(RELEASES_ATOM_URL)
@@ -97,8 +97,8 @@ mod tests {
 <feed>
   <entry>
     <updated>2026-07-09T13:59:12Z</updated>
-    <link rel="alternate" type="text/html" href="https://github.com/ai4s-research/open-science/releases/tag/v0.1.8"/>
-    <title>Open Science v0.1.8</title>
+    <link rel="alternate" type="text/html" href="https://github.com/shawliu998/spark-agent/releases/tag/v0.1.8"/>
+    <title>Spark Agent v0.1.8</title>
   </entry>
 </feed>
 "#;
@@ -107,8 +107,8 @@ mod tests {
             parse_latest_release(atom).unwrap(),
             ReleaseInfo {
                 version: "v0.1.8".into(),
-                url: "https://github.com/ai4s-research/open-science/releases/tag/v0.1.8".into(),
-                name: Some("Open Science v0.1.8".into()),
+                url: "https://github.com/shawliu998/spark-agent/releases/tag/v0.1.8".into(),
+                name: Some("Spark Agent v0.1.8".into()),
                 published_at: Some("2026-07-09T13:59:12Z".into()),
             },
         );

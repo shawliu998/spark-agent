@@ -1,3 +1,5 @@
+> Archived upstream documentation for Open Science Desktop. It is not the current Spark Agent product documentation; see `README.md`.
+
 <div align="center">
 
 [![Open Science Desktop — 本地优先 AI 科研桌面工作台](./docs/assets/banner.webp)](https://github.com/ai4s-research/open-science)

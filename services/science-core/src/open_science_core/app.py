@@ -75,7 +75,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="Open Science Core", version=__version__, lifespan=lifespan)
+app = FastAPI(title="Spark Agent Core", version=__version__, lifespan=lifespan)
 _analysis_execution_slot = threading.Lock()
 app.add_middleware(
     CORSMiddleware,

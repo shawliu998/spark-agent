@@ -10,7 +10,7 @@ import {
 
 const latest: UpdateInfo = {
   version: "v0.1.8",
-  url: "https://github.com/ai4s-research/open-science/releases/tag/v0.1.8",
+  url: "https://github.com/shawliu998/spark-agent/releases/tag/v0.1.8",
   name: "v0.1.8",
   publishedAt: "2026-07-09T00:00:00Z",
 };

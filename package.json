@@ -1,8 +1,8 @@
 {
-  "name": "ai4s-workbench",
+  "name": "spark-agent",
   "version": "0.1.9",
   "private": true,
-  "description": "Open Science Desktop — local-first, model-agnostic AI research workbench for macOS, Windows and Linux.",
+  "description": "Spark Agent — a local-first, evidence-first research agent for macOS.",
   "license": "MIT",
   "scripts": {
     "dev": "pnpm --filter @ai4s/desktop dev",

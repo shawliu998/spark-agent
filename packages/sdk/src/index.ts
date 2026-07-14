@@ -1,14 +1,5 @@
 export { OpenCodeClient } from "./OpenCodeClient";
 export {
-  ScienceCoreClient,
-  DEFAULT_SCIENCE_CORE_URL,
-  type ScienceCoreClientOptions,
-  type CreateResearchProjectInput,
-  type AskResearchQuestionInput,
-  type PrepareAnalysisIntentInput,
-  type AnalysisIntentDecision,
-} from "./ScienceCoreClient";
-export {
   OPENCODE_VERSION,
   DEFAULT_OPENCODE_URL,
   type OpenCodeEvent,

@@ -7,9 +7,8 @@ import { NotebooksPage } from "./routes/NotebooksPage";
 import { FilesPage } from "./routes/FilesPage";
 import { RunsPage } from "./routes/RunsPage";
 import { SettingsPage } from "./routes/SettingsPage";
-import { ResearchPage } from "./routes/ResearchPage";
-import { AnalysisPage } from "./routes/AnalysisPage";
 import { NotFound } from "./routes/NotFound";
+import { productRoutes } from "@/product/manifest";
 
 export const routes: RouteObject[] = [
   {
@@ -24,8 +23,7 @@ export const routes: RouteObject[] = [
       { path: "notebooks", element: <NotebooksPage /> },
       { path: "files", element: <FilesPage /> },
       { path: "runs", element: <RunsPage /> },
-      { path: "research", element: <ResearchPage /> },
-      { path: "analysis", element: <AnalysisPage /> },
+      ...productRoutes,
       { path: "settings", element: <SettingsPage /> },
       { path: "*", element: <NotFound /> },
     ],

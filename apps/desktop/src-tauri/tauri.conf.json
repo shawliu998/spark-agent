@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Open Science",
+  "productName": "Spark Agent",
   "version": "0.1.9",
-  "identifier": "com.ai4s.workbench",
+  "identifier": "io.github.shawliu998.sparkagent",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Open Science",
+        "title": "Spark Agent",
         "width": 1440,
         "height": 900,
         "minWidth": 1000,
@@ -35,10 +35,11 @@
     },
     "resources": {
       "../../../runtime/skills/external/ai4s-skills": "skills/",
-      "../../../runtime/skills/external/anthropic-skills": "skills-office/",
       "../../../runtime/skills/core": "skills-core/",
       "../../../runtime/harness": "harness/",
-      "../../../examples/climate-trends": "examples/climate-trends/"
+      "../../../examples/climate-trends": "examples/climate-trends/",
+      "../../../LICENSE": "LICENSE",
+      "../../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },
     "icon": [
       "icons/32x32.png",

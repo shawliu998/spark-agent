@@ -1206,14 +1206,15 @@ export interface FoldState {
 /** Pure reducer: fold one normalized OpenCode event into a thread's blocks. */
 /**
  * Tidy a tool-call title for the conversation: show workspace files by their
- * relative path (`demo/analyze.py`), not the full `/Users/.../OpenScience/...`
+ * relative path (`demo/analyze.py`), not the full `/Users/.../SparkAgent/...`
  * absolute path, so the thread reads like a researcher's log, not a shell trace.
  * The workspace path never contains spaces (by design), so a space-free run
- * ending in `OpenScience/` matches it whether or not it has a leading slash
+ * ending in `SparkAgent/` matches it whether or not it has a leading slash.
+ * The legacy `OpenScience/` name remains recognized during workspace migration
  * (OpenCode's write-tool titles drop it).
  */
 export function tidyToolTitle(title: string): string {
-  return title.replace(/[^\s]*OpenScience\//g, "").trim() || title;
+  return title.replace(/[^\s]*(?:SparkAgent|OpenScience)\//g, "").trim() || title;
 }
 
 /**

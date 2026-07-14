@@ -30,8 +30,8 @@ import type {
   ResearchProject,
   ResearchSource,
   ScienceCoreHealth,
-} from "@ai4s/shared";
-import type { AnalysisIntentDecision } from "@ai4s/sdk";
+} from "@spark/research-domain";
+import type { AnalysisIntentDecision } from "@spark/research-sdk";
 import { cn } from "@/lib/cn";
 import { scienceCore } from "@/lib/scienceCore";
 import { toast } from "@/lib/toast";
