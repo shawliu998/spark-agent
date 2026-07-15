@@ -61,6 +61,13 @@ export function LiveSessionPage() {
     setApprovalMode,
   } = useRuntimeStore();
   const clearingLocalCommand = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // A deliberate workspace move restarts the sidecar — expected and brief, so
   // the UI stays "connected" (no badge flip, no Connect button, no help card).
@@ -84,7 +91,7 @@ export function LiveSessionPage() {
 
   // All three composer paths reflect a freshly-created session in the URL.
   const afterTurn = (id: string | null) => {
-    if (id && !sessionId) navigate(`/live/${id}`);
+    if (mounted.current && id && !sessionId) navigate(`/live/${id}`);
   };
   const onSend = async (text: string) => afterTurn(await sendPrompt(text));
   const onRunShell = async (command: string) => afterTurn(await runShell(command));
@@ -96,7 +103,7 @@ export function LiveSessionPage() {
     // which never re-runs) and silently block the next openSession.
     if (localClear && sessionId) clearingLocalCommand.current = true;
     const id = await runCommand(name, args);
-    if (localClear) navigate("/live", { replace: true });
+    if (localClear && mounted.current) navigate("/live", { replace: true });
     else afterTurn(id);
   };
   const composerCommands = useMemo(() => {
@@ -400,7 +407,7 @@ export function LiveSessionPage() {
               onRunShell={(c) => void onRunShell(c)}
               onRunCommand={(n, a) => void onRunCommand(n, a)}
               commands={composerCommands}
-              disabled={!connected || working}
+              disabled={!connected || switching || working}
               working={running}
               onStop={() => void interrupt()}
               placeholder={

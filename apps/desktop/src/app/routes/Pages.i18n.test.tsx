@@ -1,5 +1,5 @@
-import { screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act, fireEvent, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderAt } from "@/test/render";
 import { useUiStore } from "@/lib/store";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -10,7 +10,12 @@ afterEach(() => useUiStore.getState().setLocale("en"));
 
 // COPYCAT RULE: useRuntimeStore is also module-global — restore the
 // disconnected default after any test that fakes a "ready" runtime.
-const RUNTIME_DEFAULTS = { status: useRuntimeStore.getState().status, agents: useRuntimeStore.getState().agents };
+const RUNTIME_DEFAULTS = {
+  status: useRuntimeStore.getState().status,
+  agents: useRuntimeStore.getState().agents,
+  switching: useRuntimeStore.getState().switching,
+  installSkill: useRuntimeStore.getState().installSkill,
+};
 afterEach(() => useRuntimeStore.setState(RUNTIME_DEFAULTS));
 
 describe("NotebooksPage strings (i18n)", () => {
@@ -53,5 +58,28 @@ describe("SkillsPage strings (i18n)", () => {
     expect(screen.getByText("primary")).toBeInTheDocument();
     // Unknown mode values (outside the closed set OpenCode emits) render raw, unmodified.
     expect(screen.getByText("future-mode")).toBeInTheDocument();
+  });
+
+  it("does not navigate back to a late install after the Skills page unmounts", async () => {
+    let resolveInstall!: (id: string | null) => void;
+    const pending = new Promise<string | null>((resolve) => {
+      resolveInstall = resolve;
+    });
+    const installSkill = vi.fn(() => pending);
+    useRuntimeStore.setState({ status: "ready", switching: false, installSkill });
+    const { router } = renderAt("/skills");
+
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "safe skill" } });
+    fireEvent.click(screen.getByRole("button", { name: /install/i }));
+    expect(installSkill).toHaveBeenCalledWith("safe skill");
+    await act(async () => {
+      await router.navigate("/settings");
+    });
+    await act(async () => {
+      resolveInstall("ses_late_install");
+      await pending;
+    });
+
+    expect(router.state.location.pathname).toBe("/settings");
   });
 });

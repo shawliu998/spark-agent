@@ -27,6 +27,50 @@ check_packaged_skill_bytecode() {
     fail "Python bytecode/cache would be packaged: $contaminant"
 }
 
+read_json_version() {
+  node -e '
+    const fs = require("node:fs");
+    const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).version;
+    if (typeof value === "string") process.stdout.write(value);
+  ' "$1" 2>/dev/null || true
+}
+
+check_desktop_release_version() {
+  local source_root="$1"
+  local ref_type="${2:-}"
+  local ref_name="${3:-}"
+  local root_version desktop_version tauri_version cargo_version
+
+  root_version="$(read_json_version "$source_root/package.json")"
+  desktop_version="$(read_json_version "$source_root/apps/desktop/package.json")"
+  tauri_version="$(read_json_version "$source_root/apps/desktop/src-tauri/tauri.conf.json")"
+  cargo_version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "$source_root/apps/desktop/src-tauri/Cargo.toml")"
+
+  [[ -n "$root_version" && -n "$desktop_version" && -n "$tauri_version" && \
+    -n "$cargo_version" ]] || fail "could not read every desktop release version"
+  [[ "$root_version" == "$desktop_version" && \
+    "$root_version" == "$tauri_version" && \
+    "$root_version" == "$cargo_version" ]] || \
+    fail "desktop release versions differ: root=$root_version desktop=$desktop_version tauri=$tauri_version cargo=$cargo_version"
+
+  if [[ "$ref_type" == tag ]]; then
+    [[ "$ref_name" == "v$root_version" ]] || \
+      fail "release tag $ref_name does not match desktop version v$root_version"
+  fi
+}
+
+if [[ "${1:-}" == "--version-only" ]]; then
+  [[ "$#" -eq 1 ]] || fail "--version-only accepts no additional arguments"
+  check_desktop_release_version \
+    "$ROOT" \
+    "${GITHUB_REF_TYPE:-}" \
+    "${GITHUB_REF_NAME:-}"
+  printf 'Desktop release version policy passed.\n'
+  exit 0
+fi
+[[ "$#" -eq 0 ]] || fail "unknown argument: $1"
+
 write_transaction_journal_fixture() {
   local destination="$1"
   local owner="$2"
@@ -99,6 +143,11 @@ sdk_opencode_version="$(sed -n 's/^export const OPENCODE_VERSION = "\([^"]*\)";$
   "$sdk_opencode_version" == "$(sidecar_pinned_version opencode)" ]] || \
   fail "SDK and release manifest OpenCode versions differ"
 
+check_desktop_release_version \
+  "$ROOT" \
+  "${GITHUB_REF_TYPE:-}" \
+  "${GITHUB_REF_NAME:-}"
+
 IFS='|' read -r sample_tool sample_version sample_triple _ \
   <<<"${SIDECAR_ASSET_MANIFEST[0]}"
 if resolve_sidecar "$sample_tool" 0.0.0 "$sample_triple" >/dev/null 2>&1; then
@@ -143,6 +192,21 @@ done
 
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
+
+version_fixture="$test_root/release-version"
+mkdir -p "$version_fixture/apps/desktop/src-tauri"
+printf '{"version":"2.3.4"}\n' >"$version_fixture/package.json"
+printf '{"version":"2.3.4"}\n' >"$version_fixture/apps/desktop/package.json"
+printf '{"version":"2.3.4"}\n' >"$version_fixture/apps/desktop/src-tauri/tauri.conf.json"
+printf '[package]\nversion = "2.3.4"\n' >"$version_fixture/apps/desktop/src-tauri/Cargo.toml"
+check_desktop_release_version "$version_fixture" tag v2.3.4
+if (check_desktop_release_version "$version_fixture" tag v2.3.5) >/dev/null 2>&1; then
+  fail "desktop release version check accepted a mismatched tag"
+fi
+printf '{"version":"2.3.5"}\n' >"$version_fixture/apps/desktop/package.json"
+if (check_desktop_release_version "$version_fixture" branch main) >/dev/null 2>&1; then
+  fail "desktop release version check accepted version drift"
+fi
 
 bytecode_fixture="$test_root/packaged-skill-bytecode"
 mkdir -p "$bytecode_fixture/clean/skill" "$bytecode_fixture/clean/.git/objects"
@@ -325,6 +389,8 @@ mkdir -p "$symlink_destination" "$symlink_target"
 printf 'accepted tree' >"$symlink_destination/marker"
 printf 'symlink candidate' >"$symlink_target/marker"
 ln -s "$symlink_target" "$symlink_staging"
+[[ -L "$symlink_staging" ]] || \
+  fail "test environment could not create a real staging-root symlink"
 if install_directory_transactionally "$symlink_staging" "$symlink_destination" \
   >/dev/null 2>&1; then
   fail "skills transaction accepted a staging-root symlink"

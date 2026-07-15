@@ -60,6 +60,11 @@ export class OpenCodeClient {
   private status: RuntimeStatus = "offline";
   private abort: AbortController | null = null;
   private es: EventSource | null = null;
+  /** Monotonically identifies event-stream connections so queued callbacks or
+   *  fetch-body reads from a closed/superseded source cannot mutate state. */
+  private connectionGeneration = 0;
+  /** Rejects an EventSource connect() that has not reached onopen yet. */
+  private cancelPendingEventSourceConnect: ((error: Error) => void) | null = null;
   /** Pending self-heal of a dead event stream (see reconnectSoon). */
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /** True between close() and the next connect() — stops self-healing. */
@@ -124,39 +129,98 @@ export class OpenCodeClient {
   /** Open the SSE event stream. Resolves once the server acknowledges. */
   connect(): Promise<void> {
     this.closed = false;
+    const generation = ++this.connectionGeneration;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.setStatus("connecting");
-
     // Prefer EventSource in a real webview/browser (reliable SSE, incl. macOS
     // WKWebView) — auth rides along as ?auth_token=, since EventSource cannot
     // set headers. Fall back to streaming fetch for node/tests.
     const canUseEventSource = !this.customFetch && typeof EventSource !== "undefined";
     if (canUseEventSource) {
+      this.cancelPendingEventSourceConnect?.(
+        new Error("OpenCode event stream connection was superseded"),
+      );
+      this.cancelPendingEventSourceConnect = null;
+      if (this.es) {
+        this.disposeEventSource(this.es);
+        this.es = null;
+      }
+      this.setStatus("connecting");
+      // Status listeners are synchronous. A listener may deliberately close()
+      // (or start a newer connect) as soon as it sees "connecting"; do not
+      // create a handshake after that newer intent has already won.
+      if (this.closed || generation !== this.connectionGeneration) {
+        return Promise.reject(
+          new Error(
+            this.closed
+              ? "OpenCode event stream was closed"
+              : "OpenCode event stream connection was superseded",
+          ),
+        );
+      }
+
       return new Promise((resolve, reject) => {
         let opened = false;
         let finished = false;
         const es = new EventSource(this.eventUrl());
         this.es = es;
-        const timer = setTimeout(() => {
-          if (opened || finished) return;
-          finished = true;
-          this.setStatus("error");
-          es.close();
-          if (this.es === es) this.es = null;
-          reject(new Error("Timed out opening OpenCode event stream"));
-        }, this.connectTimeoutMs);
-        es.onopen = () => {
+        let timer: ReturnType<typeof setTimeout> | null = null;
+
+        const clearHandshake = () => {
+          if (timer !== null) {
+            clearTimeout(timer);
+            timer = null;
+          }
+          if (this.cancelPendingEventSourceConnect === cancelHandshake) {
+            this.cancelPendingEventSourceConnect = null;
+          }
+        };
+        const failHandshake = (error: Error, setErrorStatus: boolean) => {
           if (finished) return;
+          finished = true;
+          clearHandshake();
+          this.disposeEventSource(es);
+          if (this.es === es) this.es = null;
+          if (
+            setErrorStatus &&
+            generation === this.connectionGeneration &&
+            !this.closed
+          ) {
+            this.setStatus("error");
+          }
+          reject(error);
+        };
+        const cancelHandshake = (error: Error) => failHandshake(error, false);
+        this.cancelPendingEventSourceConnect = cancelHandshake;
+        timer = setTimeout(() => {
+          failHandshake(new Error("Timed out opening OpenCode event stream"), true);
+        }, this.connectTimeoutMs);
+
+        es.onopen = () => {
+          if (
+            finished ||
+            generation !== this.connectionGeneration ||
+            this.closed ||
+            this.es !== es
+          ) {
+            return;
+          }
           opened = true;
           finished = true;
-          clearTimeout(timer);
+          clearHandshake();
           this.setStatus("ready");
           resolve();
         };
         es.onmessage = (ev) => {
+          if (
+            generation !== this.connectionGeneration ||
+            this.closed ||
+            this.es !== es
+          ) {
+            return;
+          }
           try {
             this.normalize(JSON.parse(ev.data) as OpenCodeRawEvent);
           } catch {
@@ -164,14 +228,15 @@ export class OpenCodeClient {
           }
         };
         es.onerror = () => {
+          if (
+            generation !== this.connectionGeneration ||
+            this.closed ||
+            this.es !== es
+          ) {
+            return;
+          }
           if (!opened) {
-            if (finished) return;
-            finished = true;
-            clearTimeout(timer);
-            this.setStatus("error");
-            es.close();
-            this.es = null;
-            reject(new Error("Could not open OpenCode event stream"));
+            failHandshake(new Error("Could not open OpenCode event stream"), true);
           } else {
             // Take over reconnection ourselves. EventSource's built-in retry
             // never recovers when the server ends the stream terminally —
@@ -180,7 +245,7 @@ export class OpenCodeClient {
             // even a freshly reopened stream; the app then sat in
             // "connecting" until a manual Connect. Reopen a fresh stream
             // with backoff instead (a deliberate close() cancels it).
-            es.close();
+            this.disposeEventSource(es);
             if (this.es === es) {
               this.es = null;
               this.reconnectSoon();
@@ -190,12 +255,30 @@ export class OpenCodeClient {
       });
     }
 
-    this.abort = new AbortController();
+    // A manual reconnect supersedes a fetch handshake just as it does an
+    // EventSource handshake. Fetch observes the abort and rejects its own
+    // connect() promise; identity checks below keep that stale rejection from
+    // changing the newer connection's status.
+    this.abort?.abort();
+    this.abort = null;
+    this.setStatus("connecting");
+    if (this.closed || generation !== this.connectionGeneration) {
+      return Promise.reject(
+        new Error(
+          this.closed
+            ? "OpenCode event stream was closed"
+            : "OpenCode event stream connection was superseded",
+        ),
+      );
+    }
+    const abort = new AbortController();
+    this.abort = abort;
     return new Promise((resolve, reject) => {
       let opened = false;
-      const abort = this.abort!;
       const timer = setTimeout(() => {
-        if (!opened) abort.abort(new Error("Timed out opening OpenCode event stream"));
+        if (!opened && this.abort === abort) {
+          abort.abort(new Error("Timed out opening OpenCode event stream"));
+        }
       }, this.connectTimeoutMs);
       this.fetchImpl(this.eventUrl(), {
         headers: { Accept: "text/event-stream", ...this.headers() },
@@ -203,6 +286,11 @@ export class OpenCodeClient {
       })
         .then(async (res) => {
           clearTimeout(timer);
+          if (!this.fetchStreamIsCurrent(abort, generation)) {
+            await res.body?.cancel().catch(() => undefined);
+            reject(new Error("OpenCode event stream connection is no longer active"));
+            return;
+          }
           if (!res.ok || !res.body) {
             this.setStatus("error");
             reject(new Error(`OpenCode /event returned ${res.status}`));
@@ -211,14 +299,15 @@ export class OpenCodeClient {
           this.setStatus("ready");
           opened = true;
           resolve();
-          await this.readStream(res.body);
+          await this.readStream(res.body, abort, generation);
         })
         .catch((err) => {
           clearTimeout(timer);
+          const isCurrent = this.fetchStreamIsCurrent(abort, generation);
           if (!opened) {
-            this.setStatus("error");
+            if (isCurrent) this.setStatus("error");
             reject(err instanceof Error ? err : new Error(String(err)));
-          } else {
+          } else if (isCurrent) {
             this.setStatus("offline");
           }
         });
@@ -227,15 +316,25 @@ export class OpenCodeClient {
 
   close(): void {
     this.closed = true;
+    ++this.connectionGeneration;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.es?.close();
+    this.cancelPendingEventSourceConnect?.(new Error("OpenCode event stream was closed"));
+    this.cancelPendingEventSourceConnect = null;
+    if (this.es) this.disposeEventSource(this.es);
     this.es = null;
     this.abort?.abort();
     this.abort = null;
     this.setStatus("offline");
+  }
+
+  private disposeEventSource(es: EventSource): void {
+    es.onopen = null;
+    es.onmessage = null;
+    es.onerror = null;
+    es.close();
   }
 
   /** Reopen the event stream after it died post-open, with backoff. The first
@@ -244,12 +343,22 @@ export class OpenCodeClient {
    *  "error" so the banner offers the manual Connect. */
   private reconnectSoon(attempt = 0): void {
     if (this.closed || this.reconnectTimer) return;
+    const connectionAtStatus = this.connectionGeneration;
     this.setStatus("connecting");
+    // A synchronous status listener can close or manually reconnect. Do not
+    // install a delayed automatic connect after that newer intent.
+    if (this.closed || connectionAtStatus !== this.connectionGeneration) return;
     const delay = attempt === 0 ? 250 : Math.min(1000 * attempt, 3000);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.closed) return;
-      this.connect().catch(() => {
+      const pending = this.connect();
+      const generation = this.connectionGeneration;
+      pending.catch(() => {
+        // A manual connect may have superseded this automatic handshake. Its
+        // cancellation is success for the newer intent, not a reason to queue
+        // another timer that would later tear the new stream down again.
+        if (this.closed || generation !== this.connectionGeneration) return;
         if (attempt + 1 < 8) this.reconnectSoon(attempt + 1);
         else this.setStatus("error");
       });
@@ -731,17 +840,30 @@ export class OpenCodeClient {
 
   // ---- internals ----
 
-  private async readStream(body: ReadableStream<Uint8Array>): Promise<void> {
+  private fetchStreamIsCurrent(owner: AbortController, generation: number): boolean {
+    return !this.closed && this.abort === owner && this.connectionGeneration === generation;
+  }
+
+  private async readStream(
+    body: ReadableStream<Uint8Array>,
+    owner: AbortController,
+    generation: number,
+  ): Promise<void> {
     const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     try {
       for (;;) {
         const { done, value } = await reader.read();
+        if (!this.fetchStreamIsCurrent(owner, generation)) return;
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         let sep: number;
         while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          // An event listener can synchronously reconnect while normalizing a
+          // frame. Re-check before every buffered frame so the remainder of the
+          // superseded response cannot leak into the newer connection.
+          if (!this.fetchStreamIsCurrent(owner, generation)) return;
           const chunk = buffer.slice(0, sep);
           buffer = buffer.slice(sep + 2);
           this.handleSseChunk(chunk);
@@ -750,7 +872,14 @@ export class OpenCodeClient {
     } catch {
       // aborted or connection dropped
     } finally {
-      this.setStatus("offline");
+      if (this.fetchStreamIsCurrent(owner, generation)) {
+        this.abort = null;
+        this.setStatus("offline");
+      } else {
+        // A custom fetch may not wire AbortSignal to an already-returned body.
+        // Cancel its reader explicitly so a superseded stream cannot linger.
+        await reader.cancel().catch(() => undefined);
+      }
     }
   }
 

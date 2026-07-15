@@ -16,7 +16,24 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify release tag and desktop versions
+        shell: bash
+        run: bash scripts/quality/check-release-assets.sh --version-only
+
   build:
+    needs: preflight
     permissions:
       contents: write
     strategy:
@@ -81,6 +98,14 @@ jobs:
       - name: Fetch bundled uv sidecar
         shell: bash
         run: bash scripts/dev/fetch-uv.sh ${{ matrix.target }}
+
+      - name: Verify release version and asset integrity policy
+        shell: bash
+        env:
+          # Git for Windows otherwise emulates `ln -s` by copying directories,
+          # invalidating the release policy's symlink-attack fixtures.
+          MSYS: winsymlinks:nativestrict
+        run: pnpm test:release-assets
 
       - name: Build the app (Tauri)
         uses: tauri-apps/tauri-action@v0

@@ -218,6 +218,305 @@ describe("OpenCodeClient ↔ OpenCode server", () => {
     }
   });
 
+  it("immediately rejects a hanging EventSource handshake when closed", async () => {
+    const sources: HangingEventSource[] = [];
+    class HangingEventSource {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn();
+      constructor(_url: string) {
+        sources.push(this);
+      }
+    }
+    const globals = globalThis as { EventSource?: unknown };
+    const previousEventSource = globals.EventSource;
+    globals.EventSource = HangingEventSource;
+    vi.useFakeTimers();
+    try {
+      const statuses: string[] = [];
+      const client = new OpenCodeClient({
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        connectTimeoutMs: 60_000,
+      });
+      client.onStatus((status) => statuses.push(status));
+
+      let rejection: unknown;
+      const pending = client.connect();
+      void pending.catch((error: unknown) => {
+        rejection = error;
+      });
+      const staleOpen = sources[0].onopen;
+      const staleError = sources[0].onerror;
+
+      client.close();
+      await Promise.resolve();
+
+      expect(rejection).toEqual(new Error("OpenCode event stream was closed"));
+      expect(sources[0].close).toHaveBeenCalledOnce();
+      expect(sources[0].onopen).toBeNull();
+      expect(sources[0].onmessage).toBeNull();
+      expect(sources[0].onerror).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(client.getStatus()).toBe("offline");
+
+      // Already-queued browser callbacks must be inert after close().
+      staleOpen?.();
+      staleError?.();
+      expect(client.getStatus()).toBe("offline");
+      expect(statuses[statuses.length - 1]).toBe("offline");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      if (previousEventSource === undefined) delete globals.EventSource;
+      else globals.EventSource = previousEventSource;
+    }
+  });
+
+  it("does not start a handshake after a connecting listener closes synchronously", async () => {
+    const sources: ReentrantEventSource[] = [];
+    class ReentrantEventSource {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn();
+      constructor(_url: string) {
+        sources.push(this);
+      }
+    }
+    const globals = globalThis as { EventSource?: unknown };
+    const previousEventSource = globals.EventSource;
+    globals.EventSource = ReentrantEventSource;
+    vi.useFakeTimers();
+    try {
+      const statuses: string[] = [];
+      const client = new OpenCodeClient({
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        connectTimeoutMs: 60_000,
+      });
+      client.onStatus((status) => {
+        statuses.push(status);
+        if (status === "connecting") client.close();
+      });
+
+      const outcome = client.connect().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await vi.runAllTimersAsync();
+
+      expect(await outcome).toEqual(new Error("OpenCode event stream was closed"));
+      expect(sources).toHaveLength(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(client.getStatus()).toBe("offline");
+      expect(statuses).toEqual(["connecting", "offline"]);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      if (previousEventSource === undefined) delete globals.EventSource;
+      else globals.EventSource = previousEventSource;
+    }
+  });
+
+  it("lets a newer EventSource connection supersede a hanging handshake", async () => {
+    const sources: HangingEventSource[] = [];
+    class HangingEventSource {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn();
+      constructor(_url: string) {
+        sources.push(this);
+      }
+    }
+    const globals = globalThis as { EventSource?: unknown };
+    const previousEventSource = globals.EventSource;
+    globals.EventSource = HangingEventSource;
+    vi.useFakeTimers();
+    try {
+      const client = new OpenCodeClient({
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        connectTimeoutMs: 60_000,
+      });
+      let firstRejection: unknown;
+      const first = client.connect();
+      void first.catch((error: unknown) => {
+        firstRejection = error;
+      });
+      const staleOpen = sources[0].onopen;
+      const staleError = sources[0].onerror;
+
+      const second = client.connect();
+      await Promise.resolve();
+
+      expect(firstRejection).toEqual(
+        new Error("OpenCode event stream connection was superseded"),
+      );
+      expect(sources[0].close).toHaveBeenCalledOnce();
+      expect(sources[0].onopen).toBeNull();
+      expect(sources).toHaveLength(2);
+
+      sources[1].onopen?.();
+      await expect(second).resolves.toBeUndefined();
+      expect(client.getStatus()).toBe("ready");
+
+      // Callbacks captured before supersession cannot disturb the new stream.
+      staleOpen?.();
+      staleError?.();
+      expect(client.getStatus()).toBe("ready");
+      expect(vi.getTimerCount()).toBe(0);
+      client.close();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      if (previousEventSource === undefined) delete globals.EventSource;
+      else globals.EventSource = previousEventSource;
+    }
+  });
+
+  it("does not restart auto-recovery after a manual connect supersedes its handshake", async () => {
+    const sources: RecoveringEventSource[] = [];
+    class RecoveringEventSource {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      close = vi.fn();
+      constructor(_url: string) {
+        sources.push(this);
+      }
+    }
+    const globals = globalThis as { EventSource?: unknown };
+    const previousEventSource = globals.EventSource;
+    globals.EventSource = RecoveringEventSource;
+    vi.useFakeTimers();
+    try {
+      const client = new OpenCodeClient({
+        baseUrl: `http://127.0.0.1:${server.port}`,
+        connectTimeoutMs: 60_000,
+      });
+      const initial = client.connect();
+      sources[0].onopen?.();
+      await initial;
+
+      // Drop the opened stream and let the first automatic retry begin its
+      // handshake. It intentionally remains pending.
+      sources[0].onerror?.();
+      await vi.advanceTimersByTimeAsync(250);
+      expect(sources).toHaveLength(2);
+
+      // A manual connect wins. Rejecting the pending automatic handshake must
+      // not be interpreted as another network failure that queues retry #2.
+      const automatic = sources[1];
+      const manual = client.connect();
+      await Promise.resolve();
+      expect(automatic.close).toHaveBeenCalledOnce();
+      expect(sources).toHaveLength(3);
+      const manualSource = sources[2];
+      manualSource.onopen?.();
+      await manual;
+      await Promise.resolve();
+
+      expect(client.getStatus()).toBe("ready");
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(sources).toHaveLength(3);
+      expect(manualSource.close).not.toHaveBeenCalled();
+      expect(client.getStatus()).toBe("ready");
+      client.close();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      if (previousEventSource === undefined) delete globals.EventSource;
+      else globals.EventSource = previousEventSource;
+    }
+  });
+
+  it("keeps the fetch fallback offline when closed during a hanging handshake", async () => {
+    const hangingFetch = ((_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Aborted", "AbortError")),
+          { once: true },
+        );
+      })) as typeof fetch;
+    const statuses: string[] = [];
+    const client = new OpenCodeClient({
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      fetchImpl: hangingFetch,
+      connectTimeoutMs: 60_000,
+    });
+    client.onStatus((status) => statuses.push(status));
+
+    const pending = client.connect();
+    client.close();
+    expect(client.getStatus()).toBe("offline");
+
+    await expect(pending).rejects.toThrow("Aborted");
+    expect(client.getStatus()).toBe("offline");
+    expect(statuses).toEqual(["connecting", "offline"]);
+  });
+
+  it("ignores late frames and EOF from superseded fetch fallback streams", async () => {
+    const streams = Array.from({ length: 3 }, () => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const body = new ReadableStream<Uint8Array>({
+        start(next) {
+          controller = next;
+        },
+      });
+      return { body, controller: () => controller };
+    });
+    let response = 0;
+    const controlledFetch = (async () =>
+      new Response(streams[response++].body, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      })) as typeof fetch;
+    const statuses: string[] = [];
+    const events: OpenCodeEvent[] = [];
+    const client = new OpenCodeClient({
+      baseUrl: `http://127.0.0.1:${server.port}`,
+      fetchImpl: controlledFetch,
+      connectTimeoutMs: 60_000,
+    });
+    client.onStatus((status) => statuses.push(status));
+    client.onEvent((event) => events.push(event));
+
+    await client.connect();
+    await client.connect();
+    expect(client.getStatus()).toBe("ready");
+
+    // The first response ignores AbortSignal and delivers a queued frame after
+    // connection #2 is already ready. It must never reach normalize()/listeners.
+    streams[0]
+      .controller()
+      .enqueue(
+        new TextEncoder().encode(
+          'data: {"type":"session.idle","properties":{"sessionID":"stale"}}\n\n',
+        ),
+      );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(events).toEqual([]);
+    expect(client.getStatus()).toBe("ready");
+
+    await client.connect();
+    expect(client.getStatus()).toBe("ready");
+    // EOF from connection #2 arrives only after connection #3 is ready. Its
+    // readStream.finally must not publish "offline" for the current stream.
+    streams[1].controller().close();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(client.getStatus()).toBe("ready");
+    expect(statuses[statuses.length - 1]).toBe("ready");
+    expect(statuses).not.toContain("offline");
+
+    client.close();
+    streams[2].controller().close();
+    await Promise.resolve();
+  });
+
   it("times out a hanging EventSource handshake so boot retry can continue", async () => {
     class HangingEventSource {
       onopen: (() => void) | null = null;

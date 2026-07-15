@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type {
   McpServer,
+  OpenCodeClient,
   OAuthAuthorization,
   ProviderAuthMethod,
   ProviderCatalogEntry,
@@ -144,35 +145,79 @@ export function SettingsPage() {
   // callback request so retries never stack pending waits on the sidecar.
   const oauthGen = useRef(0);
   const oauthAbort = useRef<AbortController | null>(null);
+  const refreshGen = useRef(0);
+
+  // Runtime settings belong to one concrete client/endpoint. Switching the
+  // Server URL invalidates both late list responses and any pending OAuth
+  // callback so values or credentials from endpoint A can never target B.
+  const invalidateOauthWait = useCallback(() => {
+    oauthGen.current++;
+    oauthAbort.current?.abort();
+    oauthAbort.current = null;
+  }, []);
+  const clearEndpointState = useCallback(() => {
+    refreshGen.current++;
+    invalidateOauthWait();
+    setProviders([]);
+    setAuthMethods({});
+    setCatalog([]);
+    setCustomIds([]);
+    setMcpServers([]);
+    setOauth(null);
+    setCodeInput("");
+    setConnectQuery("");
+    setKeyInput("");
+    setPromptInputs({});
+    // Form inputs can contain endpoint credentials (connector keys, custom
+    // provider keys, or tokens embedded in a remote MCP URL). Never carry
+    // them across a disconnect or Server URL change.
+    setConnectorKeys({});
+    setShowCustom(false);
+    setCName("");
+    setCNpm("@ai-sdk/openai-compatible");
+    setCUrl("");
+    setCKey("");
+    setCModels("");
+    setMName("");
+    setMType("local");
+    setMTarget("");
+  }, [invalidateOauthWait]);
 
   const refresh = useCallback(async () => {
-    const client = getClient();
-    if (!client) return;
+    const refreshClient = getClient();
+    const generation = ++refreshGen.current;
+    if (!refreshClient) {
+      clearEndpointState();
+      return;
+    }
     try {
-      const [p, m, c, custom, mcp] = await Promise.all([
-        client.listProviders(),
-        client.listAuthMethods(),
-        client.listProviderCatalog(),
-        client.listCustomProviderIds(),
-        client.listMcpServers().catch(() => []),
+      const [p, m, c, custom, mcp, jupyterStatusResult] = await Promise.all([
+        refreshClient.listProviders(),
+        refreshClient.listAuthMethods(),
+        refreshClient.listProviderCatalog(),
+        refreshClient.listCustomProviderIds(),
+        refreshClient.listMcpServers().catch(() => []),
+        jupyterStatus().catch(() => null),
       ]);
+      if (generation !== refreshGen.current || getClient() !== refreshClient) return;
       setProviders(p);
       setAuthMethods(m);
       setCatalog(c.all);
       setCustomIds(custom);
       setMcpServers(mcp);
-      setJupyter(await jupyterStatus());
+      setJupyter(jupyterStatusResult);
     } catch {
       /* runtime not ready yet */
     }
-  }, []);
+  }, [clearEndpointState]);
 
   // Re-refresh when a provisioning run finishes (setupGeneration bumps) so a
   // newly-enabled MCP shows up even if setup completed while this page was
   // closed — the flow itself lives in the setup store.
   useEffect(() => {
     if (connected) void refresh();
-  }, [connected, refresh, setupGeneration]);
+    else clearEndpointState();
+  }, [clearEndpointState, connected, refresh, serverUrl, setupGeneration]);
   useEffect(() => {
     // The BASE folder — the parent every session's dated subfolder is created
     // under. (The per-session active folder shows in the conversation header.)
@@ -258,14 +303,6 @@ export function SettingsPage() {
     }
   };
 
-  // Any action that cancels, restarts or bypasses the oauth flow must call
-  // this: it invalidates the pending browser wait and aborts its request.
-  const invalidateOauthWait = () => {
-    oauthGen.current++;
-    oauthAbort.current?.abort();
-    oauthAbort.current = null;
-  };
-
   const saveModel = (model: string) =>
     run(t("toast.couldNotSetModel"), async () => {
       // Go through the store, not the client directly: applying a model closes
@@ -277,7 +314,10 @@ export function SettingsPage() {
 
   const saveKey = (providerID: string) =>
     run(t("toast.couldNotSaveKey"), async () => {
-      await getClient()!.setProviderApiKey(providerID, keyInput.trim());
+      const actionClient = getClient();
+      if (!actionClient) throw new Error("Runtime endpoint is not connected.");
+      await actionClient.setProviderApiKey(providerID, keyInput.trim());
+      if (getClient() !== actionClient) return;
       cancelOAuth(); // a pending browser login for this panel is now moot
       setKeyInput("");
       setConnectQuery("");
@@ -300,22 +340,29 @@ export function SettingsPage() {
         return;
       invalidateOauthWait(); // this flow replaces any pending one
       const gen = oauthGen.current;
-      const auth = await getClient()!.oauthAuthorize(providerID, methodIndex, inputs);
-      if (gen !== oauthGen.current) return; // cancelled while starting
+      const oauthClient = getClient();
+      if (!oauthClient) throw new Error("Runtime endpoint is not connected.");
+      const auth = await oauthClient.oauthAuthorize(providerID, methodIndex, inputs);
+      if (gen !== oauthGen.current || getClient() !== oauthClient) return;
       setOauth({ ...auth, providerID, methodIndex });
       await openExternal(auth.url);
       // "auto" flows finish on the browser redirect — the callback call below
       // WAITS for it, so run it in the background (never through `busy`, which
       // would lock the whole page for as long as the browser tab stays open).
       if (auth.method !== "code" && gen === oauthGen.current)
-        void waitForBrowserLogin(providerID, methodIndex, gen);
+        void waitForBrowserLogin(providerID, methodIndex, gen, oauthClient);
     });
 
   // Provider plugins hold a browser login open for minutes (xai: 5). Match
   // that window when re-attaching a dropped callback wait below.
   const OAUTH_WAIT_MS = 5 * 60 * 1000;
 
-  const waitForBrowserLogin = async (providerID: string, methodIndex: number, gen: number) => {
+  const waitForBrowserLogin = async (
+    providerID: string,
+    methodIndex: number,
+    gen: number,
+    oauthClient: OpenCodeClient,
+  ) => {
     // The callback POST hangs open until the browser redirect lands, but the
     // webview's native fetch enforces its own idle timeout (~60s in WKWebView)
     // — far shorter than the provider's login window, and a slow browser login
@@ -328,10 +375,12 @@ export function SettingsPage() {
     const deadline = Date.now() + OAUTH_WAIT_MS;
     let lastError: unknown = new Error("Timed out waiting for the browser login");
     while (Date.now() < deadline) {
+      if (getClient() !== oauthClient) return;
       const abort = new AbortController();
       oauthAbort.current = abort;
       try {
-        await getClient()!.oauthCallback(providerID, methodIndex, undefined, abort.signal);
+        await oauthClient.oauthCallback(providerID, methodIndex, undefined, abort.signal);
+        if (getClient() !== oauthClient) return;
         if (gen !== oauthGen.current) {
           // Cancelled in the UI, but the login DID complete — refresh silently
           // so the now-connected provider still shows up in the list.
@@ -343,7 +392,7 @@ export function SettingsPage() {
         await refreshAll();
         return;
       } catch (e) {
-        if (gen !== oauthGen.current) return; // cancelled — the abort is expected
+        if (gen !== oauthGen.current || getClient() !== oauthClient) return;
         // Webview fetch failures (idle timeout, transient drop) are TypeError;
         // apiError() throws plain Error for the server's HTTP verdicts.
         if (e instanceof TypeError) {
@@ -360,6 +409,7 @@ export function SettingsPage() {
       }
     }
     // The login window closed without a verdict from the server.
+    if (gen !== oauthGen.current || getClient() !== oauthClient) return;
     setOauth(null);
     toast.error(
       `${t("toast.loginDidNotComplete")}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
@@ -377,7 +427,10 @@ export function SettingsPage() {
       if (!oauth) return;
       const { providerID, methodIndex } = oauth;
       invalidateOauthWait(); // the pasted code supersedes any browser wait
-      await getClient()!.oauthCallback(providerID, methodIndex, codeInput.trim() || undefined);
+      const oauthClient = getClient();
+      if (!oauthClient) throw new Error("Runtime endpoint is not connected.");
+      await oauthClient.oauthCallback(providerID, methodIndex, codeInput.trim() || undefined);
+      if (getClient() !== oauthClient) return;
       toast.success(t("toast.providerConnected", { providerID }));
       setOauth(null);
       setCodeInput("");
@@ -385,30 +438,36 @@ export function SettingsPage() {
 
   const disconnectProvider = (providerID: string) =>
     run(t("toast.couldNotRemove"), async () => {
+      const actionClient = getClient();
+      if (!actionClient) throw new Error("Runtime endpoint is not connected.");
       if (customIds.includes(providerID)) {
         // Custom endpoints live in the config file; removal restarts the sidecar.
         await removeConfigEntry("provider", providerID);
       } else {
-        await getClient()!.removeProviderAuth(providerID);
+        await actionClient.removeProviderAuth(providerID);
       }
+      if (getClient() !== actionClient) return;
       toast.success(t("toast.providerRemoved", { providerID }));
     });
 
   const saveCustom = () =>
     run(t("toast.couldNotAddEndpoint"), async () => {
+      const actionClient = getClient();
+      if (!actionClient) throw new Error("Runtime endpoint is not connected.");
       const id = cName.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
       const models = cModels.split(",").map((s) => s.trim()).filter(Boolean);
       if (!id || !cUrl.trim() || models.length === 0) {
         toast.error(t("toast.endpointFieldsRequired"));
         return;
       }
-      await getClient()!.addCustomProvider(id, {
+      await actionClient.addCustomProvider(id, {
         name: cName.trim(),
         npm: cNpm,
         baseURL: cUrl.trim(),
         apiKey: cKey.trim() || undefined,
         models,
       });
+      if (getClient() !== actionClient) return;
       toast.success(t("toast.endpointAdded", { name: cName.trim() }));
       setShowCustom(false);
       setCName("");
@@ -428,12 +487,15 @@ export function SettingsPage() {
         toast.error(t("toast.mcpFieldsRequired"));
         return;
       }
-      await getClient()!.addMcpServer(
+      const actionClient = getClient();
+      if (!actionClient) throw new Error("Runtime endpoint is not connected.");
+      await actionClient.addMcpServer(
         name,
         mType === "local"
           ? { type: "local", command: target.split(/\s+/), enabled: true }
           : { type: "remote", url: target, enabled: true },
       );
+      if (getClient() !== actionClient) return;
       toast.success(t("toast.mcpAdded", { name }));
       setMName("");
       setMTarget("");

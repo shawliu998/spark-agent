@@ -323,32 +323,40 @@ pub fn import_opencode_login(
 /// pack and `skills-core/` contains the product-owned core skills. The
 /// workspace's own `.opencode/skills/` stays reserved for skills the user
 /// installs. Runs before every sidecar start so app upgrades refresh the packs.
-fn deploy_bundled_skills(app: &AppHandle) {
-    let dst = match xdg_config_home(app) {
-        Ok(cfg) => cfg.join("opencode").join("skills"),
-        Err(_) => return,
-    };
+fn deploy_bundled_skills(app: &AppHandle) -> Result<(), String> {
+    let dst = xdg_config_home(app)?.join("opencode").join("skills");
     let mut bundled: std::collections::HashSet<std::ffi::OsString> =
         std::collections::HashSet::new();
-    let mut all_ok = true;
+    let mut all_resources_available = true;
     for resource in ["skills", "skills-core"] {
         let src = match app
             .path()
             .resolve(resource, tauri::path::BaseDirectory::Resource)
         {
             Ok(p) if p.is_dir() => p,
-            _ => {
-                all_ok = false; // dev run without `fetch-skills.sh` — nothing to deploy
+            _ if cfg!(debug_assertions) => {
+                // `tauri dev` may intentionally run before `fetch-skills.sh`.
+                // Keep that workflow usable, but never prune from an incomplete
+                // bundled-name set.
+                all_resources_available = false;
                 continue;
             }
-        };
-        match sync_skill_pack(&src, &dst) {
-            Ok(names) => bundled.extend(names),
-            Err(e) => {
-                all_ok = false;
-                eprintln!("failed to deploy bundled skills ({resource}): {e}");
+            Ok(path) => {
+                return Err(format!(
+                    "bundled skill resource is not a directory ({resource}): {}",
+                    path.display()
+                ));
             }
-        }
+            Err(error) => {
+                return Err(format!(
+                    "failed to resolve bundled skill resource ({resource}): {error}"
+                ));
+            }
+        };
+        let names = sync_skill_pack(&src, &dst)
+            .map_err(|error| format!("failed to deploy bundled skills ({resource}): {error}"))?;
+        all_resources_available &=
+            register_skill_pack_names(resource, names, cfg!(debug_assertions), &mut bundled)?;
     }
     // The global skills dir is exclusively app-managed (the user's own skills
     // live in the workspace's `.opencode/skills/`), so any skill dir not in the
@@ -357,23 +365,76 @@ fn deploy_bundled_skills(app: &AppHandle) {
     // obsolete duplicate can't shadow or confuse the agent. Prune ONLY when all
     // packs deployed cleanly: a partial deploy would make `bundled`
     // incomplete and wrongly delete valid skills.
-    if all_ok {
-        prune_stale_skills(&dst, &bundled);
+    if all_resources_available {
+        prune_stale_skills(&dst, &bundled)
+            .map_err(|error| format!("failed to prune stale bundled skills: {error}"))?;
     }
+    Ok(())
 }
 
-/// Remove every SKILL.md-bearing directory in `dst` whose name is not in
-/// `bundled` (the set just deployed). Non-skill directories are left untouched.
-fn prune_stale_skills(dst: &Path, bundled: &std::collections::HashSet<std::ffi::OsString>) {
-    let Ok(entries) = std::fs::read_dir(dst) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() && path.join("SKILL.md").is_file() && !bundled.contains(&entry.file_name())
-        {
-            let _ = std::fs::remove_dir_all(&path);
+/// Record one pack's deployed names. An existing-but-empty resource is the
+/// same incomplete fetch state as a missing resource: debug keeps prior skills
+/// and skips pruning, while release fails closed instead of shipping an empty
+/// external or core pack.
+fn register_skill_pack_names(
+    resource: &str,
+    names: Vec<std::ffi::OsString>,
+    allow_incomplete: bool,
+    bundled: &mut std::collections::HashSet<std::ffi::OsString>,
+) -> Result<bool, String> {
+    if names.is_empty() {
+        if allow_incomplete {
+            return Ok(false);
         }
+        return Err(format!(
+            "bundled skill resource contains no deployable skills ({resource})"
+        ));
+    }
+    bundled.extend(names);
+    Ok(true)
+}
+
+/// Remove every visible SKILL.md-bearing directory in `dst` whose name is not
+/// in `bundled` (the set just deployed), plus exact app-owned recovery artifacts
+/// for skills that are no longer bundled. Other hidden and non-skill directories
+/// remain untouched.
+fn prune_stale_skills(
+    dst: &Path,
+    bundled: &std::collections::HashSet<std::ffi::OsString>,
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dst)? {
+        let entry = entry?;
+        let path = entry.path();
+        let entry_name = entry.file_name();
+        if let Some((skill_name, _)) = parse_skill_recovery_artifact(&entry_name) {
+            if !bundled.contains(std::ffi::OsStr::new(skill_name)) {
+                remove_app_managed_path_without_following(&path)?;
+            }
+            continue;
+        }
+        if entry_name.to_string_lossy().starts_with('.') || bundled.contains(&entry_name) {
+            continue;
+        }
+        if path_is_skill_dir(&path)? {
+            remove_app_managed_path_without_following(&path)?;
+        }
+    }
+    Ok(())
+}
+
+fn path_is_skill_dir(path: &Path) -> std::io::Result<bool> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_dir() {
+        return Ok(false);
+    }
+    match std::fs::metadata(path.join("SKILL.md")) {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -408,7 +469,20 @@ fn replace_skill_dir(src: &Path, target: &Path) -> std::io::Result<()> {
     let name = target
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or("skill");
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "skill destination name must be non-empty UTF-8",
+            )
+        })?;
+
+    // A process can die after publishing either side of the two-rename
+    // replacement. Recover those exact, app-owned artifacts before starting a
+    // new attempt. Tauri single-instance plus the runtime lifecycle/config
+    // transaction makes this a single-writer operation.
+    recover_skill_replacement(target)?;
+
     let suffix = random_hex(8);
     let staging = parent.join(format!(".{name}.{suffix}.staging"));
     let backup = parent.join(format!(".{name}.{suffix}.backup"));
@@ -418,7 +492,7 @@ fn replace_skill_dir(src: &Path, target: &Path) -> std::io::Result<()> {
         return Err(error);
     }
 
-    let had_previous = std::fs::symlink_metadata(target).is_ok();
+    let had_previous = path_exists_without_following(target)?;
     if had_previous {
         if let Err(error) = std::fs::rename(target, &backup) {
             let _ = std::fs::remove_dir_all(&staging);
@@ -441,13 +515,233 @@ fn replace_skill_dir(src: &Path, target: &Path) -> std::io::Result<()> {
             None => Err(install_error),
         };
     }
-    if had_previous {
-        std::fs::remove_dir_all(backup)?;
+    // Re-validate the published tree and clean both this attempt's backup and
+    // any retained invalid backup that a trusted bundled source just repaired.
+    recover_skill_replacement(target)
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SkillRecoveryArtifact {
+    Staging,
+    Backup,
+}
+
+/// Recognize only names emitted by `replace_skill_dir`. Similar-looking or
+/// malformed hidden entries are user data and must remain untouched.
+fn skill_recovery_artifact(
+    entry_name: &std::ffi::OsStr,
+    skill_name: &str,
+) -> Option<SkillRecoveryArtifact> {
+    let (artifact_skill, artifact) = parse_skill_recovery_artifact(entry_name)?;
+    (artifact_skill == skill_name).then_some(artifact)
+}
+
+fn parse_skill_recovery_artifact(
+    entry_name: &std::ffi::OsStr,
+) -> Option<(&str, SkillRecoveryArtifact)> {
+    let entry_name = entry_name.to_str()?;
+    let remainder = entry_name.strip_prefix('.')?;
+    let (stem, kind) = if let Some(stem) = remainder.strip_suffix(".staging") {
+        (stem, SkillRecoveryArtifact::Staging)
+    } else {
+        (
+            remainder.strip_suffix(".backup")?,
+            SkillRecoveryArtifact::Backup,
+        )
+    };
+    let (skill_name, token) = stem.rsplit_once('.')?;
+    (token.len() == 16
+        && !skill_name.is_empty()
+        && token
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then_some((skill_name, kind))
+}
+
+fn path_exists_without_following(path: &Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Remove an app-managed skill or recovery path without ever traversing a
+/// top-level symlink. `remove_dir_all` itself does not follow nested directory
+/// symlinks.
+fn remove_app_managed_path_without_following(path: &Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// A backup is recoverable only when it is a complete, self-contained skill
+/// tree. Refuse links and special resources instead of restoring an object that
+/// later deployment code would not accept.
+fn validate_complete_skill_dir(path: &Path, require_manifest: bool) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("skill directory is not a directory: {}", path.display()),
+        ));
+    }
+    if require_manifest {
+        let manifest = std::fs::symlink_metadata(path.join("SKILL.md")).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "skill directory has no regular SKILL.md ({}): {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        if !manifest.file_type().is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "skill directory has no regular SKILL.md: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            validate_complete_skill_dir(&entry.path(), false)?;
+        } else if !file_type.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "skill directory contains a link or special resource: {}",
+                    entry.path().display()
+                ),
+            ));
+        }
     }
     Ok(())
 }
 
+fn recover_skill_replacement(target: &Path) -> std::io::Result<()> {
+    let parent = target.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "skill destination has no parent",
+        )
+    })?;
+    let skill_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "skill destination name must be non-empty UTF-8",
+            )
+        })?;
+    let mut staging = Vec::new();
+    let mut backups = Vec::new();
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        match skill_recovery_artifact(&entry.file_name(), skill_name) {
+            Some(SkillRecoveryArtifact::Staging) => staging.push(entry.path()),
+            Some(SkillRecoveryArtifact::Backup) => backups.push(entry.path()),
+            None => {}
+        }
+    }
+    staging.sort();
+    backups.sort();
+
+    // Staging is never authoritative: before promotion it is partial or merely
+    // a candidate; after promotion the path no longer exists.
+    for path in staging {
+        remove_app_managed_path_without_following(&path)?;
+    }
+
+    if path_exists_without_following(target)? {
+        // A complete published target wins. Any backup is then from a crash
+        // after promotion and can be removed safely, even if several earlier
+        // cleanups failed. Validate first so corruption can never discard the
+        // last good backup or remain visible to OpenCode.
+        if validate_complete_skill_dir(target, true).is_err() {
+            let complete_backups = backups
+                .iter()
+                .filter(|backup| validate_complete_skill_dir(backup, true).is_ok())
+                .collect::<Vec<_>>();
+            match complete_backups.as_slice() {
+                [backup] => {
+                    // The only complete backup is authoritative. Removing the
+                    // invalid target never follows links; if the process dies
+                    // before the rename, the next pass sees a missing target
+                    // and restores this same backup.
+                    remove_app_managed_path_without_following(target)?;
+                    std::fs::rename(backup, target)?;
+                    return recover_skill_replacement(target);
+                }
+                [] => {
+                    // Neither the target nor any backup is safe to publish.
+                    // Remove only the app-managed invalid target, retain the
+                    // backups, and let the trusted bundled source install a
+                    // fresh tree. They are discarded only after validation.
+                    remove_app_managed_path_without_following(target)?;
+                    return Ok(());
+                }
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "ambiguous skill recovery for {}: {} complete backups retained",
+                            target.display(),
+                            complete_backups.len()
+                        ),
+                    ));
+                }
+            }
+        }
+        for backup in backups {
+            remove_app_managed_path_without_following(&backup)?;
+        }
+        return Ok(());
+    }
+
+    let complete_backups = backups
+        .iter()
+        .filter(|backup| validate_complete_skill_dir(backup, true).is_ok())
+        .collect::<Vec<_>>();
+    match complete_backups.as_slice() {
+        [] => Ok(()),
+        [backup] => {
+            std::fs::rename(backup, target)?;
+            recover_skill_replacement(target)
+        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "ambiguous skill recovery for {}: {} complete backups retained",
+                target.display(),
+                complete_backups.len()
+            ),
+        )),
+    }
+}
+
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let source_type = std::fs::symlink_metadata(src)?.file_type();
+    if !source_type.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("skill source is not a directory: {}", src.display()),
+        ));
+    }
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -458,8 +752,16 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         let to = dst.join(entry.file_name());
         if file_type.is_dir() {
             copy_dir(&entry.path(), &to)?;
-        } else {
+        } else if file_type.is_file() {
             copy_file_without_clone(&entry.path(), &to)?;
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "skill source contains a link or special resource: {}",
+                    entry.path().display()
+                ),
+            ));
         }
     }
     Ok(())
@@ -1085,7 +1387,7 @@ fn spawn_sidecar(
             std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
         // Ship the bundled scientific skills into the app-private OpenCode profile.
-        deploy_bundled_skills(app);
+        deploy_bundled_skills(app)?;
         // Safety default (AGENTS.md non-negotiable): enforce the internal safe
         // policy on every start, repairing legacy full/partial permission configs.
         let cfg_file = effective_config_file(app)?;
@@ -1636,8 +1938,9 @@ mod tests {
     use super::{
         base64_encode, before_startup_deadline, config_transaction, current_sidecar_matches,
         parse_scutil_proxy, parse_sidecar_health_response, prune_stale_skills, random_hex,
-        remove_key_from_config, resolve_proxy_env, server_password, sidecar_health_ready,
-        start_once, start_with_port_retry, sync_skill_pack, terminate_checked, termination_outcome,
+        recover_skill_replacement, register_skill_pack_names, remove_key_from_config,
+        resolve_proxy_env, server_password, sidecar_health_ready, start_once,
+        start_with_port_retry, sync_skill_pack, terminate_checked, termination_outcome,
         validate_proxy_url, wait_until_ready, with_lifecycle, write_private_atomic,
         SpawnAttemptError, EXPECTED_OPENCODE_VERSION,
     };
@@ -2215,10 +2518,23 @@ mod tests {
         }
         // A directory without a SKILL.md must never be touched.
         fs::create_dir_all(dst.join("notes")).unwrap();
+        // Hidden directories belong to no stale-skill namespace. In
+        // particular, malformed recovery-like names must not be pruned by the
+        // broader stale skill cleanup.
+        fs::create_dir_all(dst.join(".hpc-slurm.not-ours.backup")).unwrap();
+        fs::write(
+            dst.join(".hpc-slurm.not-ours.backup").join("SKILL.md"),
+            b"---\n",
+        )
+        .unwrap();
+        let stale_recovery = dst.join(".hpc-slurm.1111111111111111.backup");
+        let current_recovery = dst.join(".remote-compute.2222222222222222.backup");
+        fs::create_dir_all(&stale_recovery).unwrap();
+        fs::create_dir_all(&current_recovery).unwrap();
 
         let mut bundled = std::collections::HashSet::new();
         bundled.insert(std::ffi::OsString::from("remote-compute"));
-        prune_stale_skills(&dst, &bundled);
+        prune_stale_skills(&dst, &bundled).unwrap();
 
         assert!(dst.join("remote-compute").is_dir(), "bundled skill kept");
         assert!(
@@ -2226,7 +2542,39 @@ mod tests {
             "stale renamed skill removed"
         );
         assert!(dst.join("notes").is_dir(), "non-skill dir left alone");
+        assert!(
+            dst.join(".hpc-slurm.not-ours.backup").is_dir(),
+            "hidden dir left alone"
+        );
+        assert!(
+            !stale_recovery.exists(),
+            "exact recovery artifact for removed skill pruned"
+        );
+        assert!(
+            current_recovery.exists(),
+            "recovery artifact for current skill left to recovery"
+        );
         let _ = fs::remove_dir_all(&dst);
+    }
+
+    #[test]
+    fn empty_skill_pack_skips_debug_prune_and_fails_release() {
+        let mut bundled = std::collections::HashSet::new();
+        assert!(!register_skill_pack_names("skills", Vec::new(), true, &mut bundled).unwrap());
+        assert!(bundled.is_empty());
+
+        let error =
+            register_skill_pack_names("skills-core", Vec::new(), false, &mut bundled).unwrap_err();
+        assert!(error.contains("no deployable skills (skills-core)"));
+
+        assert!(register_skill_pack_names(
+            "skills-core",
+            vec![std::ffi::OsString::from("research")],
+            false,
+            &mut bundled,
+        )
+        .unwrap());
+        assert!(bundled.contains(std::ffi::OsStr::new("research")));
     }
 
     #[cfg(unix)]
@@ -2286,6 +2634,471 @@ mod tests {
     fn write(path: &std::path::Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
+    }
+
+    fn skill_test_root(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("{label}-{}-{}", std::process::id(), random_hex(4)))
+    }
+
+    #[test]
+    fn skill_recovery_restores_one_complete_backup_and_discards_staging() {
+        let tmp = skill_test_root("skill-recovery-restore");
+        let dst = tmp.join("skills");
+        fs::create_dir_all(&dst).unwrap();
+        let target = dst.join("paper-writer");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        let staging = dst.join(".paper-writer.2222222222222222.staging");
+        write(&backup.join("SKILL.md"), "last-good");
+        write(&backup.join("references/guide.md"), "complete");
+        write(&staging.join("SKILL.md"), "partial-new");
+
+        recover_skill_replacement(&target).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "last-good"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("references/guide.md")).unwrap(),
+            "complete"
+        );
+        assert!(!backup.exists());
+        assert!(!staging.exists());
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn skill_recovery_keeps_published_target_and_cleans_all_exact_artifacts() {
+        let tmp = skill_test_root("skill-recovery-published");
+        let dst = tmp.join("skills");
+        let target = dst.join("paper-writer");
+        write(&target.join("SKILL.md"), "published");
+        let exact_staging = dst.join(".paper-writer.1111111111111111.staging");
+        let exact_backup_a = dst.join(".paper-writer.2222222222222222.backup");
+        let exact_backup_b = dst.join(".paper-writer.3333333333333333.backup");
+        write(&exact_staging.join("SKILL.md"), "candidate");
+        write(&exact_backup_a.join("SKILL.md"), "old-a");
+        write(&exact_backup_b.join("SKILL.md"), "old-b");
+
+        recover_skill_replacement(&target).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "published"
+        );
+        assert!(!exact_staging.exists());
+        assert!(!exact_backup_a.exists());
+        assert!(!exact_backup_b.exists());
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn skill_recovery_restores_only_complete_backup_over_incomplete_target() {
+        let tmp = skill_test_root("skill-recovery-corrupt-target");
+        let dst = tmp.join("skills");
+        let target = dst.join("paper-writer");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        let incomplete_backup = dst.join(".paper-writer.2222222222222222.backup");
+        write(&target.join("partial.txt"), "not-a-complete-skill");
+        write(&backup.join("SKILL.md"), "last-good");
+        write(
+            &incomplete_backup.join("references/partial.md"),
+            "incomplete-backup",
+        );
+
+        recover_skill_replacement(&target).unwrap();
+        recover_skill_replacement(&target).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "last-good"
+        );
+        assert!(!target.join("partial.txt").exists());
+        assert!(!backup.exists());
+        assert!(!incomplete_backup.exists());
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn skill_recovery_is_fail_closed_when_missing_target_has_multiple_backups() {
+        let tmp = skill_test_root("skill-recovery-ambiguous");
+        let dst = tmp.join("skills");
+        fs::create_dir_all(&dst).unwrap();
+        let target = dst.join("paper-writer");
+        let backup_a = dst.join(".paper-writer.1111111111111111.backup");
+        let backup_b = dst.join(".paper-writer.2222222222222222.backup");
+        let staging = dst.join(".paper-writer.3333333333333333.staging");
+        write(&backup_a.join("SKILL.md"), "old-a");
+        write(&backup_b.join("SKILL.md"), "old-b");
+        write(&staging.join("SKILL.md"), "candidate");
+
+        let error = recover_skill_replacement(&target).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("ambiguous skill recovery"));
+        assert!(!target.exists());
+        assert!(backup_a.exists(), "ambiguous backups must be retained");
+        assert!(backup_b.exists(), "ambiguous backups must be retained");
+        assert!(!staging.exists(), "staging is never authoritative");
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn sync_fails_closed_when_invalid_target_has_multiple_complete_backups() {
+        let tmp = skill_test_root("skill-recovery-ambiguous-target");
+        let src = tmp.join("src");
+        let dst = tmp.join("skills");
+        let target = dst.join("paper-writer");
+        let backup_a = dst.join(".paper-writer.1111111111111111.backup");
+        let backup_b = dst.join(".paper-writer.2222222222222222.backup");
+        write(&src.join("paper-writer/SKILL.md"), "trusted-new");
+        write(&target.join("partial.txt"), "unverified-target");
+        write(&backup_a.join("SKILL.md"), "old-a");
+        write(&backup_b.join("SKILL.md"), "old-b");
+
+        let error = sync_skill_pack(&src, &dst).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("ambiguous skill recovery"));
+        assert!(target.join("partial.txt").is_file());
+        assert!(!target.join("SKILL.md").exists());
+        assert!(backup_a.exists());
+        assert!(backup_b.exists());
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn skill_recovery_retains_incomplete_backup_for_bundled_repair() {
+        let tmp = skill_test_root("skill-recovery-incomplete");
+        let dst = tmp.join("skills");
+        fs::create_dir_all(&dst).unwrap();
+        let target = dst.join("paper-writer");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        write(&backup.join("references/guide.md"), "not-a-complete-skill");
+
+        recover_skill_replacement(&target).unwrap();
+
+        assert!(!target.exists());
+        assert!(
+            backup.exists(),
+            "invalid backup remains until a replacement is validated"
+        );
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn sync_repairs_incomplete_target_when_no_backup_exists() {
+        let tmp = skill_test_root("skill-recovery-repair-target");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        write(&src.join("paper-writer/SKILL.md"), "trusted-new");
+        write(
+            &dst.join("paper-writer/partial.txt"),
+            "incomplete-published-tree",
+        );
+
+        sync_skill_pack(&src, &dst).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst.join("paper-writer/SKILL.md")).unwrap(),
+            "trusted-new"
+        );
+        assert!(!dst.join("paper-writer/partial.txt").exists());
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn sync_repairs_and_cleans_one_incomplete_backup() {
+        let tmp = skill_test_root("skill-recovery-repair-backup");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        write(&src.join("paper-writer/SKILL.md"), "trusted-new");
+        write(&backup.join("partial.txt"), "incomplete-backup");
+
+        sync_skill_pack(&src, &dst).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst.join("paper-writer/SKILL.md")).unwrap(),
+            "trusted-new"
+        );
+        assert!(!backup.exists());
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn sync_repairs_invalid_target_with_only_invalid_backup_twice() {
+        let tmp = skill_test_root("skill-recovery-invalid-target-and-backup");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let target = dst.join("paper-writer");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        write(&src.join("paper-writer/SKILL.md"), "trusted-new");
+        write(&target.join("partial.txt"), "invalid-target");
+        write(&backup.join("references/partial.md"), "invalid-backup");
+
+        sync_skill_pack(&src, &dst).unwrap();
+        sync_skill_pack(&src, &dst).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "trusted-new"
+        );
+        assert!(!target.join("partial.txt").exists());
+        assert!(!backup.exists());
+        assert_eq!(
+            fs::read_dir(&dst)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".paper-writer."))
+                .count(),
+            0,
+            "successful repeated deploys must remove invalid recovery state"
+        );
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn skill_recovery_ignores_malformed_and_other_skill_names() {
+        let tmp = skill_test_root("skill-recovery-names");
+        let dst = tmp.join("skills");
+        let target = dst.join("paper");
+        write(&target.join("SKILL.md"), "published");
+        let untouched = [
+            ".paper.111111111111111.staging",
+            ".paper.AAAAAAAAAAAAAAAA.backup",
+            ".paper.1111111111111111.backup.extra",
+            ".paper-writer.1111111111111111.backup",
+            ".other.1111111111111111.staging",
+        ];
+        for name in untouched {
+            write(&dst.join(name).join("marker"), name);
+        }
+
+        recover_skill_replacement(&target).unwrap();
+
+        for name in untouched {
+            assert!(
+                dst.join(name).exists(),
+                "must not touch malformed artifact {name}"
+            );
+        }
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn sync_recovers_interrupted_replacement_before_deploying_new_skill() {
+        let tmp = skill_test_root("skill-recovery-integrated");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        write(&src.join("paper-writer/SKILL.md"), "new");
+        write(
+            &dst.join(".paper-writer.1111111111111111.backup/SKILL.md"),
+            "last-good",
+        );
+        write(
+            &dst.join(".paper-writer.2222222222222222.staging/SKILL.md"),
+            "interrupted",
+        );
+
+        sync_skill_pack(&src, &dst).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(dst.join("paper-writer/SKILL.md")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            fs::read_dir(&dst)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".paper-writer."))
+                .count(),
+            0
+        );
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_recovery_unlinks_backup_symlink_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = skill_test_root("skill-recovery-symlink-cleanup");
+        let dst = tmp.join("skills");
+        let target = dst.join("paper-writer");
+        let outside = tmp.join("outside");
+        write(&target.join("SKILL.md"), "published");
+        write(&outside.join("keep.txt"), "keep");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        symlink(&outside, &backup).unwrap();
+
+        recover_skill_replacement(&target).unwrap();
+
+        assert!(!backup.exists());
+        assert_eq!(
+            fs::read_to_string(outside.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_repairs_symlink_backup_without_touching_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = skill_test_root("skill-recovery-symlink-restore");
+        let src = tmp.join("src");
+        let dst = tmp.join("skills");
+        fs::create_dir_all(&dst).unwrap();
+        let target = dst.join("paper-writer");
+        let outside = tmp.join("outside");
+        write(&src.join("paper-writer/SKILL.md"), "trusted-new");
+        write(&outside.join("SKILL.md"), "outside");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        symlink(&outside, &backup).unwrap();
+
+        sync_skill_pack(&src, &dst).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "trusted-new"
+        );
+        assert!(!backup.exists());
+        assert_eq!(
+            fs::read_to_string(outside.join("SKILL.md")).unwrap(),
+            "outside"
+        );
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_recovers_nested_symlink_target_and_two_deployments_stay_clean() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = skill_test_root("skill-recovery-target-symlink");
+        let src = tmp.join("src");
+        let dst = tmp.join("skills");
+        let target = dst.join("paper-writer");
+        let backup = dst.join(".paper-writer.1111111111111111.backup");
+        let outside = tmp.join("outside.txt");
+        write(&src.join("paper-writer/SKILL.md"), "trusted-new");
+        write(
+            &src.join("paper-writer/references/guide.md"),
+            "trusted-reference",
+        );
+        write(&target.join("SKILL.md"), "unverified-target");
+        write(&outside, "outside");
+        fs::create_dir_all(target.join("references")).unwrap();
+        symlink(&outside, target.join("references/guide.md")).unwrap();
+        write(&backup.join("SKILL.md"), "last-good");
+
+        sync_skill_pack(&src, &dst).unwrap();
+        sync_skill_pack(&src, &dst).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("SKILL.md")).unwrap(),
+            "trusted-new"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("references/guide.md")).unwrap(),
+            "trusted-reference"
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+        assert_eq!(
+            fs::read_dir(&dst)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".paper-writer."))
+                .count(),
+            0,
+            "successful repeated deploys must leave no recovery artifacts"
+        );
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_rejects_symlink_source_and_preserves_previous_skill() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = skill_test_root("skillsync-source-symlink");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let outside = tmp.join("outside.txt");
+        write(&src.join("paper-writer/SKILL.md"), "new");
+        write(&outside, "outside");
+        symlink(&outside, src.join("paper-writer/reference-link")).unwrap();
+        write(&dst.join("paper-writer/SKILL.md"), "old");
+
+        let error = sync_skill_pack(&src, &dst).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            fs::read_to_string(dst.join("paper-writer/SKILL.md")).unwrap(),
+            "old"
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+        assert_eq!(
+            fs::read_dir(&dst)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".paper-writer."))
+                .count(),
+            0,
+            "failed copy must not leave recovery artifacts"
+        );
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sync_rejects_fifo_source_and_preserves_previous_skill() {
+        let tmp = skill_test_root("skillsync-source-fifo");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        write(&src.join("paper-writer/SKILL.md"), "new");
+        let fifo = src.join("paper-writer/events.fifo");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        write(&dst.join("paper-writer/SKILL.md"), "old");
+
+        let error = sync_skill_pack(&src, &dst).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            fs::read_to_string(dst.join("paper-writer/SKILL.md")).unwrap(),
+            "old"
+        );
+        assert_eq!(
+            fs::read_dir(&dst)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".paper-writer."))
+                .count(),
+            0,
+            "failed copy must not leave recovery artifacts"
+        );
+        fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   resolveSetup: (() => {}) as () => void,
   setupJupyter: vi.fn(),
   setupScienceMcp: vi.fn(async () => "/env/bin/python"),
+  client: null as null | { addMcpServer: ReturnType<typeof vi.fn> },
 }));
 
 mocks.setupJupyter.mockImplementation(
@@ -18,7 +19,7 @@ mocks.setupJupyter.mockImplementation(
 );
 
 vi.mock("./runtime", () => ({
-  getClient: () => ({ addMcpServer: mocks.addMcpServer }),
+  getClient: () => mocks.client,
   useRuntimeStore: { getState: () => ({ loadCatalog: mocks.loadCatalog }) },
 }));
 vi.mock("./tauri", () => ({
@@ -43,6 +44,7 @@ import { useSetupStore } from "./setup";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.client = { addMcpServer: mocks.addMcpServer };
   mocks.setupJupyter.mockImplementation(
     () => new Promise<void>((r) => (mocks.resolveSetup = () => r())),
   );
@@ -76,11 +78,35 @@ describe("setup store", () => {
     expect(mocks.setupJupyter).toHaveBeenCalledTimes(1);
   });
 
+  it("does not expose Jupyter credentials to a replacement endpoint", async () => {
+    const run = useSetupStore.getState().enableJupyter();
+    const replacementAdd = vi.fn(async () => {});
+    mocks.client = { addMcpServer: replacementAdd };
+    mocks.resolveSetup();
+
+    await run;
+
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
+    expect(replacementAdd).not.toHaveBeenCalled();
+    expect(useSetupStore.getState().jupyterBusy).toBe(false);
+  });
+
   it("tracks the connector being provisioned and clears it when done", async () => {
     const run = useSetupStore.getState().enableConnector("papers", "key123");
     expect(useSetupStore.getState().connectorId).toBe("papers");
     await run;
     expect(useSetupStore.getState().connectorId).toBeNull();
     expect(mocks.addMcpServer).toHaveBeenCalledWith("papers", expect.anything());
+  });
+
+  it("does not register a provisioned connector on a replacement endpoint", async () => {
+    const run = useSetupStore.getState().enableConnector("papers", "key123");
+    mocks.client = { addMcpServer: vi.fn(async () => {}) };
+
+    await run;
+
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
+    expect(mocks.client!.addMcpServer).not.toHaveBeenCalled();
+    expect(useSetupStore.getState().connectorId).toBeNull();
   });
 });

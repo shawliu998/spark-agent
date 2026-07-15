@@ -3,7 +3,13 @@ set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TAURI_MANIFEST="$ROOT/apps/desktop/src-tauri/Cargo.toml"
-PYTHON_BIN="${PYTHON:-python3}"
+if [[ -n "${PYTHON:-}" ]]; then
+  PYTHON_BIN="$PYTHON"
+elif [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PYTHON_BIN="$ROOT/.venv/bin/python"
+else
+  PYTHON_BIN="python3"
+fi
 PYTHON_PATH=""
 
 usage() {

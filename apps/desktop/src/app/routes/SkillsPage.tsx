@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Bot, Boxes, Check, Package, Puzzle, X } from "lucide-react";
@@ -12,10 +12,19 @@ import { cn } from "@/lib/cn";
 export function SkillsPage() {
   const { t } = useTranslation(["pages", "common"]);
   const navigate = useNavigate();
-  const { skills, agents, tools, status, loadCatalog, detectTools, installSkill } = useRuntimeStore();
+  const { skills, agents, tools, status, switching, loadCatalog, detectTools, installSkill } =
+    useRuntimeStore();
   const connected = status === "ready";
   const [text, setText] = useState("");
   const [installing, setInstalling] = useState(false);
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (connected) void loadCatalog();
@@ -26,6 +35,7 @@ export function SkillsPage() {
     if (!text.trim()) return;
     setInstalling(true);
     const id = await installSkill(text.trim());
+    if (!mounted.current) return;
     setInstalling(false);
     if (id) {
       setText("");
@@ -57,7 +67,7 @@ export function SkillsPage() {
             <div className="mt-2 flex items-center gap-3">
               <button
                 onClick={onInstall}
-                disabled={!connected || !text.trim() || installing}
+                disabled={!connected || switching || !text.trim() || installing}
                 className="rounded-input bg-accent px-3 py-1.5 text-sm font-medium text-accent-fg hover:opacity-90 disabled:opacity-40"
               >
                 {installing ? t("skills.install.starting") : t("skills.install.cta")}
