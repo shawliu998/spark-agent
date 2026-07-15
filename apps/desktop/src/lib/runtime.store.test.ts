@@ -37,9 +37,26 @@ const mocks = vi.hoisted(() => ({
   dropCommandPost: false,
   /** Approval mode the Rust config currently holds. */
   approvalMode: "approve" as string,
+  startRuntimeUrl: "http://127.0.0.1:1",
+  restartUrl: "http://127.0.0.1:1",
+  clientOpen: false,
+  mutationSawClosedClient: false,
   setApprovalMode: vi.fn(async (mode: string) => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
     mocks.approvalMode = mode;
-    return "http://127.0.0.1:1";
+    return { runtimeUrl: mocks.restartUrl };
+  }),
+  setProxySetting: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { runtimeUrl: mocks.restartUrl };
+  }),
+  removeConfigEntry: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { runtimeUrl: mocks.restartUrl };
+  }),
+  importOpenCodeLogin: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { imported: true, runtimeUrl: mocks.restartUrl };
   }),
   /** Constructor options every OpenCodeClient was created with. */
   clientOpts: [] as Record<string, unknown>[],
@@ -49,7 +66,7 @@ vi.mock("./tauri", () => ({
   isTauri: true,
   logDebug: async () => {},
   detectTools: async () => [],
-  startRuntime: async () => "http://127.0.0.1:1",
+  startRuntime: async () => mocks.startRuntimeUrl,
   workspacePath: async () => "/ws/base",
   setWorkspace: mocks.setWorkspace,
   newDatedWorkspace: mocks.newDatedWorkspace,
@@ -57,6 +74,9 @@ vi.mock("./tauri", () => ({
   commitWorkspaceSnapshot: mocks.commitWorkspaceSnapshot,
   getApprovalMode: async () => mocks.approvalMode,
   setApprovalMode: mocks.setApprovalMode,
+  setProxySetting: mocks.setProxySetting,
+  removeConfigEntry: mocks.removeConfigEntry,
+  importOpenCodeLogin: mocks.importOpenCodeLogin,
   runtimePassword: async () => "pw-test",
 }));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
@@ -65,6 +85,7 @@ vi.mock("@ai4s/sdk", () => {
     private statusCb: (s: string) => void = () => {};
     constructor(opts: Record<string, unknown>) {
       mocks.clientOpts.push(opts);
+      mocks.clientOpen = true;
     }
     onStatus(cb: (s: string) => void) {
       this.statusCb = cb;
@@ -161,6 +182,7 @@ vi.mock("@ai4s/sdk", () => {
     // The real client emits "offline" on teardown — the store must keep that
     // away from the UI while reconnecting (first-boot flicker regression).
     close() {
+      mocks.clientOpen = false;
       this.statusCb("offline");
     }
   }
@@ -181,8 +203,13 @@ beforeEach(async () => {
   mocks.messages = [];
   mocks.failMessages = false;
   mocks.approvalMode = "approve";
+  mocks.startRuntimeUrl = "http://127.0.0.1:1";
+  mocks.restartUrl = "http://127.0.0.1:1";
+  mocks.clientOpen = false;
+  mocks.mutationSawClosedClient = false;
   mocks.currentModel = null;
   useRuntimeStore.setState({
+    serverUrl: "http://127.0.0.1:1",
     currentId: null,
     workspacePinned: false,
     threads: {},
@@ -750,6 +777,59 @@ describe("approval mode", () => {
     expect(s.switching).toBe(false);
     expect(s.status).toBe("ready");
     expect(s.error).toContain("Full access is disabled");
+  });
+
+  it("closes the old client and adopts the proxy restart's changed port", async () => {
+    mocks.restartUrl = "http://127.0.0.1:43124";
+    const before = mocks.clientOpts.length;
+
+    await useRuntimeStore.getState().setProxySetting("none", "");
+
+    expect(mocks.setProxySetting).toHaveBeenCalledWith("none", "");
+    expect(mocks.mutationSawClosedClient).toBe(true);
+    expect(useRuntimeStore.getState().serverUrl).toBe(mocks.restartUrl);
+    expect(mocks.clientOpts.slice(before)).toHaveLength(1);
+    expect(mocks.clientOpts[mocks.clientOpts.length - 1]).toMatchObject({
+      baseUrl: mocks.restartUrl,
+    });
+    expect(useRuntimeStore.getState().status).toBe("ready");
+  });
+
+  it("file-backed removal and login import use the same safe restart handoff", async () => {
+    mocks.restartUrl = "http://127.0.0.1:43125";
+    await useRuntimeStore.getState().removeConfigEntry("mcp", "demo");
+    expect(mocks.removeConfigEntry).toHaveBeenCalledWith("mcp", "demo");
+    expect(mocks.mutationSawClosedClient).toBe(true);
+    expect(mocks.clientOpts[mocks.clientOpts.length - 1]).toMatchObject({
+      baseUrl: mocks.restartUrl,
+    });
+
+    mocks.restartUrl = "http://127.0.0.1:43126";
+    expect(await useRuntimeStore.getState().importOpenCodeLogin()).toBe(true);
+    expect(mocks.mutationSawClosedClient).toBe(true);
+    expect(mocks.clientOpts[mocks.clientOpts.length - 1]).toMatchObject({
+      baseUrl: mocks.restartUrl,
+    });
+  });
+
+  it("restores an authoritative connection before surfacing a mutation failure", async () => {
+    mocks.startRuntimeUrl = "http://127.0.0.1:43127";
+    mocks.setProxySetting.mockImplementationOnce(async () => {
+      mocks.mutationSawClosedClient = !mocks.clientOpen;
+      throw new Error("config rejected");
+    });
+
+    await expect(useRuntimeStore.getState().setProxySetting("none", "")).rejects.toThrow(
+      "config rejected",
+    );
+
+    expect(mocks.mutationSawClosedClient).toBe(true);
+    expect(useRuntimeStore.getState().serverUrl).toBe(mocks.startRuntimeUrl);
+    expect(mocks.clientOpts[mocks.clientOpts.length - 1]).toMatchObject({
+      baseUrl: mocks.startRuntimeUrl,
+    });
+    expect(useRuntimeStore.getState().status).toBe("ready");
+    expect(useRuntimeStore.getState().switching).toBe(false);
   });
 
   it("setDefaultModel applies the model and reconnects seamlessly (no manual Connect)", async () => {

@@ -190,33 +190,430 @@ install_sidecar_atomically() {
   fi
 }
 
+# Bash 3.2 has no BASHPID and $$ does not change in a `( ... )` subshell. Run a
+# child directly (without command substitution) so its PPID is the shell that
+# actually owns the transaction, and let it write that PID to the journal.
+_transaction_write_process_owner() {
+  local directory="$1"
+  command sh -c 'printf "%s\n" "$PPID" >"$1/owner"' sh "$directory"
+}
+
+# Verify ownership without command substitution: on Bash 3.2, a directly
+# invoked child's PPID is the calling transaction/recovery shell, while $$ is
+# inherited by `( ... )` subshells and cannot identify that shell.
+_transaction_owner_is_current_process() {
+  local directory="$1"
+
+  [[ -f "$directory/owner" && ! -L "$directory/owner" ]] || return 1
+  command sh -c '
+    IFS= read -r owner <"$1/owner" || exit 1
+    [ -n "$owner" ] && [ "$owner" = "$PPID" ]
+  ' sh "$directory"
+}
+
+_transaction_process_is_alive() {
+  local pid="$1"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  command kill -0 "$pid" >/dev/null 2>&1
+}
+
+_transaction_read_field() {
+  local directory="$1"
+  local field="$2"
+  local path="$directory/$field"
+  local value
+
+  [[ -f "$path" && ! -L "$path" ]] || return 1
+  value="$(command cat "$path")" || return 1
+  [[ -n "$value" && "$value" != *$'\n'* ]] || return 1
+  printf '%s\n' "$value"
+}
+
+_transaction_write_field() {
+  local directory="$1"
+  local field="$2"
+  local value="$3"
+
+  printf '%s\n' "$value" >"$directory/$field"
+}
+
+# A torn phase write during process termination could make an otherwise
+# recoverable transaction ambiguous. Publish phase changes with a same-directory
+# rename so process/SIGKILL recovery sees either the complete old value or the
+# complete new value. This does not claim power-loss durability because no
+# fsync is performed. The platform path bypasses directory-rename fault shims.
+_transaction_write_phase() {
+  local directory="$1"
+  local phase="$2"
+  local temporary
+
+  temporary="$(mktemp "$directory/.phase.XXXXXX")" || return 1
+  if ! printf '%s\n' "$phase" >"$temporary"; then
+    command rm -f "$temporary"
+    return 1
+  fi
+  if ! command /bin/mv -f "$temporary" "$directory/phase"; then
+    command rm -f "$temporary"
+    return 1
+  fi
+}
+
+# Recover an interrupted directory swap before a new verified archive is
+# downloaded. Recovery only rolls back to `backup/previous`; it never promotes
+# the abandoned staging tree or a partially installed destination. Ambiguous or
+# malformed state is retained for inspection and fails closed.
+recover_directory_transaction() (
+  set -Eeuo pipefail
+  shopt -s nullglob
+
+  local destination="$1"
+  local parent name lock claim
+  local owner recovery_owner schema staging_name backup_name previous_expected phase
+  local staging backup_root previous candidate basename rest staging_owner suffix
+  local claim_acquired=0
+  local lock_entries
+
+  parent="$(dirname "$destination")"
+  name="$(basename "$destination")"
+  lock="$parent/.${name}.install.lock"
+  claim="$lock/recovery"
+
+  cleanup_recovery_claim() {
+    trap - EXIT INT TERM HUP
+    if [[ "$claim_acquired" -eq 1 && -d "$claim" && ! -L "$claim" ]]; then
+      command rm -rf "$claim" || true
+    fi
+  }
+  trap cleanup_recovery_claim EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+
+  if [[ -e "$lock" || -L "$lock" ]]; then
+    if [[ ! -d "$lock" || -L "$lock" ]]; then
+      printf 'Invalid transaction lock: %s\n' "$lock" >&2
+      return 1
+    fi
+
+    if ! owner="$(_transaction_read_field "$lock" owner)"; then
+      printf 'Incomplete transaction owner metadata in %s\n' "$lock" >&2
+      return 1
+    fi
+    if _transaction_process_is_alive "$owner"; then
+      printf 'Another installer holds %s (pid %s)\n' "$lock" "$owner" >&2
+      return 1
+    fi
+
+    if [[ -e "$claim" || -L "$claim" ]]; then
+      if [[ ! -d "$claim" || -L "$claim" ]] ||
+        ! recovery_owner="$(_transaction_read_field "$claim" owner)"; then
+        printf 'Invalid recovery claim in %s\n' "$claim" >&2
+        return 1
+      fi
+      if _transaction_process_is_alive "$recovery_owner"; then
+        printf 'Another recovery holds %s (pid %s)\n' \
+          "$claim" "$recovery_owner" >&2
+      else
+        # Never replace a stale claim in place. Two recoverers could both read
+        # its dead owner, then one could delete the other's newly created claim.
+        printf 'Stale recovery claim requires manual cleanup: %s\n' \
+          "$claim" >&2
+      fi
+      return 1
+    fi
+    command mkdir "$claim" || return 1
+    claim_acquired=1
+    _transaction_write_process_owner "$claim" || return 1
+    if ! _transaction_owner_is_current_process "$claim" ||
+      ! recovery_owner="$(_transaction_read_field "$claim" owner)" ||
+      ! _transaction_process_is_alive "$recovery_owner"; then
+      printf 'Failed to establish recovery ownership in %s\n' "$claim" >&2
+      return 1
+    fi
+
+    # An untrappable kill can leave only the unpublished side of an atomic
+    # phase update. It is never interpreted as state; the canonical phase file
+    # remains authoritative.
+    for candidate in "$lock"/.phase.*; do
+      [[ -f "$candidate" && ! -L "$candidate" ]] || {
+        printf 'Invalid transaction phase temporary: %s\n' "$candidate" >&2
+        return 1
+      }
+      command rm -f "$candidate" || return 1
+    done
+
+    if ! schema="$(_transaction_read_field "$lock" schema)" || [[ "$schema" != 1 ]] ||
+      ! staging_name="$(_transaction_read_field "$lock" staging)" ||
+      ! backup_name="$(_transaction_read_field "$lock" backup)" ||
+      ! previous_expected="$(_transaction_read_field "$lock" previous)" ||
+      ! phase="$(_transaction_read_field "$lock" phase)"; then
+      printf 'Incomplete transaction journal in %s\n' "$lock" >&2
+      return 1
+    fi
+    [[ "$previous_expected" == 0 || "$previous_expected" == 1 ]] || {
+      printf 'Invalid transaction previous-state marker in %s\n' "$lock" >&2
+      return 1
+    }
+    case "$phase" in
+      prepared | old-moved | new-installed | committed | cleanup | recovering | restored) ;;
+      *)
+        printf 'Invalid transaction phase in %s\n' "$lock" >&2
+        return 1
+        ;;
+    esac
+    case "$staging_name" in
+      ".${name}.staging."*) ;;
+      *)
+        printf 'Invalid transaction staging name in %s\n' "$lock" >&2
+        return 1
+        ;;
+    esac
+    case "$backup_name" in
+      ".${name}.backup."*) ;;
+      *)
+        printf 'Invalid transaction backup name in %s\n' "$lock" >&2
+        return 1
+        ;;
+    esac
+    [[ "$staging_name" != */* && "$backup_name" != */* ]] || {
+      printf 'Transaction journal paths must be sibling basenames\n' >&2
+      return 1
+    }
+
+    if ! lock_entries="$(find "$lock" -mindepth 1 -maxdepth 1 \
+      ! -name owner ! -name schema ! -name staging ! -name backup \
+      ! -name previous ! -name phase ! -name recovery -print -quit)"; then
+      return 1
+    fi
+    [[ -z "$lock_entries" ]] || {
+      printf 'Unexpected transaction journal content in %s\n' "$lock" >&2
+      return 1
+    }
+
+    staging="$parent/$staging_name"
+    backup_root="$parent/$backup_name"
+    previous="$backup_root/previous"
+
+    for candidate in "$parent/.${name}.backup."*; do
+      [[ "$candidate" == "$backup_root" ]] || {
+        printf 'Ambiguous transaction backups beside %s\n' "$destination" >&2
+        return 1
+      }
+    done
+    if [[ -e "$backup_root" || -L "$backup_root" ]]; then
+      [[ -d "$backup_root" && ! -L "$backup_root" ]] || {
+        printf 'Invalid transaction backup root: %s\n' "$backup_root" >&2
+        return 1
+      }
+      if ! candidate="$(find "$backup_root" -mindepth 1 -maxdepth 1 \
+        ! -name previous -print -quit)"; then
+        return 1
+      fi
+      [[ -z "$candidate" ]] || {
+        printf 'Unexpected content in transaction backup: %s\n' "$backup_root" >&2
+        return 1
+      }
+    fi
+    if [[ -e "$previous" || -L "$previous" ]]; then
+      [[ -d "$previous" && ! -L "$previous" ]] || {
+        printf 'Invalid previous directory in transaction backup\n' >&2
+        return 1
+      }
+    fi
+    if [[ -e "$destination" || -L "$destination" ]]; then
+      [[ -d "$destination" && ! -L "$destination" ]] || {
+        printf 'Invalid transaction destination: %s\n' "$destination" >&2
+        return 1
+      }
+    fi
+    if [[ -e "$staging" || -L "$staging" ]]; then
+      [[ -d "$staging" && ! -L "$staging" ]] || {
+        printf 'Invalid abandoned transaction staging: %s\n' "$staging" >&2
+        return 1
+      }
+    fi
+
+    if [[ "$phase" == committed || "$phase" == cleanup ]]; then
+      # The verified candidate became authoritative before backup cleanup
+      # began. The backup may now be only a fragment of the old tree, so it is
+      # disposal-only and must never be used as a rollback source.
+      [[ -d "$destination" && ! -L "$destination" ]] || {
+        printf 'Committed transaction is missing its destination: %s\n' \
+          "$destination" >&2
+        return 1
+      }
+      [[ ! -e "$staging" && ! -L "$staging" ]] || {
+        printf 'Committed transaction unexpectedly retains staging: %s\n' \
+          "$staging" >&2
+        return 1
+      }
+      if [[ "$previous_expected" == 0 && ( -e "$previous" || -L "$previous" ) ]]; then
+        printf 'Fresh committed transaction unexpectedly has a previous tree\n' >&2
+        return 1
+      fi
+      _transaction_write_phase "$lock" cleanup || return 1
+      if [[ -e "$backup_root" || -L "$backup_root" ]]; then
+        command rm -rf "$backup_root" || return 1
+      fi
+    elif [[ "$previous_expected" == 1 && "$phase" == restored &&
+      ( -e "$previous" || -L "$previous" ) ]]; then
+      printf 'Restored transaction unexpectedly retains its previous tree\n' >&2
+      return 1
+    elif [[ "$previous_expected" == 1 && -d "$previous" ]]; then
+      _transaction_write_phase "$lock" recovering || return 1
+      if [[ -d "$destination" ]]; then
+        [[ ! -e "$staging" && ! -L "$staging" ]] || {
+          printf 'Cannot quarantine destination; staging already exists: %s\n' \
+            "$staging" >&2
+          return 1
+        }
+        command mv "$destination" "$staging" || return 1
+      fi
+      [[ ! -e "$destination" && ! -L "$destination" ]] || return 1
+      command mv "$previous" "$destination" || return 1
+      _transaction_write_phase "$lock" restored || return 1
+      if [[ -e "$staging" || -L "$staging" ]]; then
+        command rm -rf "$staging" || return 1
+      fi
+    elif [[ "$previous_expected" == 1 && "$phase" == prepared &&
+      -d "$destination" && ! -e "$previous" && ! -L "$previous" ]]; then
+      # The process died before the first rename; the installed tree is still
+      # the previously accepted one. Discard only the abandoned staging tree.
+      if [[ -e "$staging" || -L "$staging" ]]; then
+        command rm -rf "$staging" || return 1
+      fi
+    elif [[ "$previous_expected" == 1 &&
+      ( "$phase" == recovering || "$phase" == restored ) &&
+      -d "$destination" && -d "$staging" &&
+      ! -e "$previous" && ! -L "$previous" ]]; then
+      # Recovery was killed after restoring the backup but before discarding
+      # the quarantined new tree.
+      _transaction_write_phase "$lock" restored || return 1
+      command rm -rf "$staging" || return 1
+    elif [[ "$previous_expected" == 1 && "$phase" == restored &&
+      -d "$destination" && ! -e "$staging" && ! -L "$staging" &&
+      ! -e "$previous" && ! -L "$previous" ]]; then
+      # Recovery already restored the accepted tree and removed the quarantined
+      # candidate before the process stopped. Keep the restored destination and
+      # finish only the empty backup/lock cleanup below.
+      :
+    elif [[ "$previous_expected" == 1 &&
+      ( "$phase" == recovering || "$phase" == restored ) ]]; then
+      # Other no-backup layouts cannot prove whether destination is the old tree
+      # or the candidate. Preserve all evidence and require manual inspection.
+      printf 'Ambiguous %s transaction state in %s\n' "$phase" "$lock" >&2
+      return 1
+    elif [[ "$previous_expected" == 1 && ! -e "$previous" && ! -L "$previous" ]]; then
+      # The old backup was already removed but cleanup crashed before the lock
+      # disappeared. Do not trust the installed candidate: discard it and let
+      # this invocation perform a fresh verified download.
+      if [[ -e "$destination" || -L "$destination" ]]; then
+        [[ ! -e "$staging" && ! -L "$staging" ]] || {
+          printf 'Ambiguous destination and staging without a backup\n' >&2
+          return 1
+        }
+        command mv "$destination" "$staging" || return 1
+      fi
+      if [[ -e "$staging" || -L "$staging" ]]; then
+        command rm -rf "$staging" || return 1
+      fi
+    elif [[ "$previous_expected" == 0 && ! -e "$previous" && ! -L "$previous" ]]; then
+      # A fresh install had no rollback source. Never accept the abandoned
+      # destination or staging; a new verified archive will replace it.
+      if [[ -e "$destination" || -L "$destination" ]]; then
+        [[ ! -e "$staging" && ! -L "$staging" ]] || {
+          printf 'Ambiguous fresh-install destination and staging\n' >&2
+          return 1
+        }
+        command mv "$destination" "$staging" || return 1
+      fi
+      if [[ -e "$staging" || -L "$staging" ]]; then
+        command rm -rf "$staging" || return 1
+      fi
+    else
+      printf 'Ambiguous interrupted transaction state in %s\n' "$lock" >&2
+      return 1
+    fi
+
+    if [[ -d "$backup_root" ]]; then
+      if ! candidate="$(find "$backup_root" -mindepth 1 -maxdepth 1 -print -quit)"; then
+        return 1
+      fi
+      [[ -z "$candidate" ]] || {
+        printf 'Transaction backup is not empty after recovery: %s\n' \
+          "$backup_root" >&2
+        return 1
+      }
+      command rmdir "$backup_root" || return 1
+    fi
+    command rm -rf "$lock" || return 1
+    claim_acquired=0
+  fi
+
+  # Backups without a lock are never guessed at or deleted.
+  for candidate in "$parent/.${name}.backup."*; do
+    printf 'Orphan transaction backup requires manual recovery: %s\n' \
+      "$candidate" >&2
+    return 1
+  done
+
+  # Staging is never promoted. The PID embedded by fetch-skills lets a later
+  # run remove only directories whose creating process is definitely gone.
+  for candidate in "$parent/.${name}.staging."*; do
+    [[ -d "$candidate" && ! -L "$candidate" ]] || {
+      printf 'Invalid orphan transaction staging: %s\n' "$candidate" >&2
+      return 1
+    }
+    basename="$(basename "$candidate")"
+    rest="${basename#.${name}.staging.}"
+    staging_owner="${rest%%.*}"
+    suffix="${rest#*.}"
+    [[ "$staging_owner" =~ ^[1-9][0-9]*$ && -n "$suffix" && "$suffix" != "$rest" ]] || {
+      printf 'Unrecognized orphan transaction staging: %s\n' "$candidate" >&2
+      return 1
+    }
+    if ! _transaction_process_is_alive "$staging_owner"; then
+      command rm -rf "$candidate" || return 1
+    fi
+  done
+)
+
 # Install a fully prepared sibling directory while serializing competing
-# installers. If the final rename fails or the process is interrupted after the
-# old tree moves aside, the EXIT trap restores the backup before releasing the
-# lock. A failed restore deliberately leaves both backup and lock for recovery.
+# installers. Before publication starts, the EXIT trap can restore the backup;
+# once publication starts without a committed phase, it retains backup and lock
+# so recovery can inspect the physical rename state. Failed cleanup fails closed.
 install_directory_transactionally() (
   set -Eeuo pipefail
 
   local staging="$1"
   local destination="$2"
-  local parent name lock
+  local parent name lock staging_name backup_name previous_expected
   local backup_root=''
   local backup=''
   local lock_acquired=0
   local had_previous=0
   local installed=0
+  local committed=0
 
-  [[ -d "$staging" ]] || {
-    printf 'Directory install source is not a directory: %s\n' "$staging" >&2
+  [[ -d "$staging" && ! -L "$staging" ]] || {
+    printf 'Directory install source is not a real directory: %s\n' "$staging" >&2
     return 1
   }
 
   parent="$(dirname "$destination")"
   name="$(basename "$destination")"
+  staging_name="$(basename "$staging")"
   if [[ "$(dirname "$staging")" != "$parent" ]]; then
     printf 'Directory staging path must be a sibling of %s\n' "$destination" >&2
     return 1
   fi
+  case "$staging_name" in
+    ".${name}.staging."*) ;;
+    *)
+      printf 'Directory staging name is not recoverable: %s\n' "$staging" >&2
+      return 1
+      ;;
+  esac
   lock="$parent/.${name}.install.lock"
   if ! command mkdir -p "$parent"; then
     return 1
@@ -228,7 +625,15 @@ install_directory_transactionally() (
     trap - EXIT INT TERM HUP
 
     if [[ "$lock_acquired" -eq 1 ]]; then
-      if [[ "$installed" -eq 0 && "$had_previous" -eq 1 ]]; then
+      if [[ "$installed" -eq 1 && "$committed" -eq 0 ]]; then
+        # Destination publication began, but no committed phase was published
+        # before process termination. Retain all state so recovery can inspect
+        # whether the atomic rename happened and safely roll back.
+        restore_failed=1
+        exit_code=1
+        printf 'Install reached an uncommitted destination; transaction retained at %s\n' \
+          "$lock" >&2
+      elif [[ "$installed" -eq 0 && "$had_previous" -eq 1 ]]; then
         if [[ ! -e "$destination" && ! -L "$destination" ]]; then
           if ! command mv "$backup" "$destination"; then
             restore_failed=1
@@ -244,11 +649,15 @@ install_directory_transactionally() (
         fi
       fi
 
-      if [[ "$restore_failed" -eq 0 ]]; then
-        if [[ -n "$backup_root" ]]; then
-          command rm -rf "$backup_root" || exit_code=1
+      if [[ "$restore_failed" -eq 0 && -n "$backup_root" ]]; then
+        if ! command rm -rf "$backup_root"; then
+          restore_failed=1
+          exit_code=1
+          printf 'Failed to remove transaction backup %s\n' "$backup_root" >&2
         fi
-        command rmdir "$lock" || exit_code=1
+      fi
+      if [[ "$restore_failed" -eq 0 ]]; then
+        command rm -rf "$lock" || exit_code=1
       else
         printf 'Install lock retained for manual recovery: %s\n' "$lock" >&2
       fi
@@ -268,15 +677,42 @@ install_directory_transactionally() (
   lock_acquired=1
   backup_root="$(mktemp -d "$parent/.${name}.backup.XXXXXX")" || return 1
   backup="$backup_root/previous"
-
   if [[ -e "$destination" || -L "$destination" ]]; then
+    previous_expected=1
+  else
+    previous_expected=0
+  fi
+  backup_name="$(basename "$backup_root")" || return 1
+  _transaction_write_process_owner "$lock" || return 1
+  _transaction_write_field "$lock" schema 1 || return 1
+  _transaction_write_field "$lock" staging "$staging_name" || return 1
+  _transaction_write_field "$lock" backup "$backup_name" || return 1
+  _transaction_write_field "$lock" previous "$previous_expected" || return 1
+  _transaction_write_phase "$lock" prepared || return 1
+
+  if [[ "$previous_expected" == 1 ]]; then
+    # Set the conservative state before the destructive rename. A catchable
+    # signal may run the EXIT trap after mv succeeds but before the next shell
+    # assignment executes.
+    had_previous=1
     if ! command mv "$destination" "$backup"; then
       return 1
     fi
-    had_previous=1
   fi
+  _transaction_write_phase "$lock" old-moved || return 1
+  # Revalidate immediately before publication in case the sibling staging root
+  # was exchanged after the entry check.
+  [[ -d "$staging" && ! -L "$staging" ]] || {
+    printf 'Directory staging root changed before install: %s\n' "$staging" >&2
+    return 1
+  }
+  # Likewise, once publication starts an uncommitted process exit must retain
+  # the journal and let recovery decide which side of the rename is present.
+  installed=1
   if ! command mv "$staging" "$destination"; then
     return 1
   fi
-  installed=1
+  _transaction_write_phase "$lock" committed || return 1
+  committed=1
+  _transaction_write_phase "$lock" cleanup || return 1
 )

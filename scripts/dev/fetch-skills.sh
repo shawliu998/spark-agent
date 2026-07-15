@@ -24,6 +24,11 @@ fi
 OUT_PARENT="$(dirname "$OUT_DIR")"
 OUT_NAME="$(basename "$OUT_DIR")"
 
+# Normalize any interrupted prior swap before downloading new content. The
+# recovery path only restores the previous accepted tree or discards abandoned
+# candidates; it never promotes stale staging.
+recover_directory_transaction "$OUT_DIR"
+
 URL="https://codeload.github.com/ai4s-research/ai4s-skills/tar.gz/${AI4S_SKILLS_COMMIT}"
 TMP="$(mktemp -d)"
 STAGING=''
@@ -48,7 +53,7 @@ SRC="$TMP/ai4s-skills-$AI4S_SKILLS_COMMIT"
 [ -f "$SRC/LICENSE" ] || { echo "No root LICENSE in ai4s-skills archive" >&2; exit 1; }
 
 mkdir -p "$OUT_PARENT"
-STAGING="$(mktemp -d "$OUT_PARENT/.${OUT_NAME}.staging.XXXXXX")"
+STAGING="$(mktemp -d "$OUT_PARENT/.${OUT_NAME}.staging.$$.XXXXXX")"
 cp -R "$SRC/skills/." "$STAGING/"
 diff -qr "$SRC/skills" "$STAGING" >/dev/null || {
   echo "Staged skills differ from the verified archive" >&2

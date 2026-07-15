@@ -24,14 +24,12 @@ import { shippedLocales } from "@/i18n/config";
 import { getClient, useRuntimeStore } from "@/lib/runtime";
 import { useUpdateStore } from "@/lib/update";
 import {
-  importOpenCodeLogin,
   isTauri,
   jupyterStatus,
   openExternal,
   openWorkspaceBase,
   pickFolder,
   pythonInterpreter,
-  removeConfigEntry,
   setPythonPath,
   setWorkspaceBase,
   workspaceBase,
@@ -72,6 +70,8 @@ export function SettingsPage() {
   const disconnect = useRuntimeStore((s) => s.disconnect);
   const defaultModel = useRuntimeStore((s) => s.defaultModel);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
+  const removeConfigEntry = useRuntimeStore((s) => s.removeConfigEntry);
+  const importOpenCodeLogin = useRuntimeStore((s) => s.importOpenCodeLogin);
   const connected = status === "ready";
   const updateEnabled = useUpdateStore((s) => s.enabled);
   const setUpdateEnabled = useUpdateStore((s) => s.setEnabled);
@@ -388,7 +388,6 @@ export function SettingsPage() {
       if (customIds.includes(providerID)) {
         // Custom endpoints live in the config file; removal restarts the sidecar.
         await removeConfigEntry("provider", providerID);
-        await useRuntimeStore.getState().connectRetry();
       } else {
         await getClient()!.removeProviderAuth(providerID);
       }
@@ -452,7 +451,6 @@ export function SettingsPage() {
   const removeMcp = (name: string) =>
     run(t("toast.couldNotRemoveMcp"), async () => {
       await removeConfigEntry("mcp", name);
-      await useRuntimeStore.getState().connectRetry();
       toast.success(t("toast.mcpRemoved", { name }));
     });
 
@@ -463,8 +461,6 @@ export function SettingsPage() {
         toast.error(t("toast.noOpenCodeLoginFound"));
         return;
       }
-      // The sidecar restarted with the imported credentials — reconnect.
-      await useRuntimeStore.getState().connectRetry();
       toast.success(t("toast.importedLogin"));
     });
 

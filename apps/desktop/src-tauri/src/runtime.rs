@@ -17,6 +17,10 @@ const SIDECAR_START_TIMEOUT: Duration = Duration::from_secs(300);
 const SIDECAR_PROBE_INTERVAL: Duration = Duration::from_millis(75);
 const SIDECAR_HTTP_TIMEOUT: Duration = Duration::from_millis(250);
 const SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(3);
+const SIDECAR_PORT_ATTEMPTS: usize = 3;
+const EXPECTED_OPENCODE_VERSION: &str = "1.17.13";
+const SIDECAR_START_TIMEOUT_ERROR: &str =
+    "OpenCode did not become ready before the startup timeout";
 
 #[derive(Default)]
 struct ExitSignal {
@@ -41,19 +45,72 @@ impl ExitSignal {
             .unwrap();
         *exited
     }
+
+    fn is_exited(&self) -> bool {
+        *self.exited.lock().unwrap()
+    }
 }
 
 struct ManagedSidecar {
-    process: CommandChild,
+    /// `CommandChild::kill(self)` consumes the only process handle. Keep the
+    /// remaining identity and exit signal after a failed or timed-out request so
+    /// no replacement can spawn until the watcher proves this process exited.
+    process: Option<CommandChild>,
     pid: u32,
     generation: u64,
     exit: Arc<ExitSignal>,
+    expected_exit: Arc<AtomicBool>,
 }
 
 struct SpawnedSidecar {
     process: CommandChild,
     events: tauri::async_runtime::Receiver<CommandEvent>,
     pid: u32,
+}
+
+struct TerminationFailure<T> {
+    retained: T,
+    message: String,
+}
+
+struct SpawnAttemptError {
+    message: String,
+    retryable_early_exit: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeRestartResult {
+    runtime_url: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportOpenCodeLoginResult {
+    imported: bool,
+    runtime_url: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigureOpenCodeResult {
+    path: String,
+    runtime_url: Option<String>,
+}
+
+impl SpawnAttemptError {
+    fn fatal(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            retryable_early_exit: false,
+        }
+    }
+}
+
+impl From<String> for SpawnAttemptError {
+    fn from(message: String) -> Self {
+        Self::fatal(message)
+    }
 }
 
 #[derive(Default)]
@@ -232,17 +289,20 @@ fn user_auth_source() -> Option<PathBuf> {
 }
 
 /// Copy the user's OpenCode CLI login into the app-private data dir, EXPLICITLY
-/// (from the Settings page) — never silently. Returns false when there is no
-/// CLI login to import. Restarts the sidecar so it picks the credentials up.
+/// (from the Settings page) — never silently. Reports whether credentials were
+/// found plus the authoritative post-restart URL.
 #[tauri::command(async)]
 pub fn import_opencode_login(
     app: AppHandle,
     state: State<'_, RuntimeState>,
-) -> Result<bool, String> {
+) -> Result<ImportOpenCodeLoginResult, String> {
     let Some(src) = user_auth_source() else {
-        return Ok(false);
+        return Ok(ImportOpenCodeLoginResult {
+            imported: false,
+            runtime_url: None,
+        });
     };
-    let (imported, _) = with_config_transaction(&app, &state, || {
+    let (imported, runtime_url) = with_config_transaction(&app, &state, || {
         let dst = runtime_root(&app)?
             .join("xdg-data")
             .join("opencode")
@@ -251,7 +311,10 @@ pub fn import_opencode_login(
         write_private_atomic(&dst, &contents)?;
         Ok(true)
     })?;
-    Ok(imported)
+    Ok(ImportOpenCodeLoginResult {
+        imported,
+        runtime_url,
+    })
 }
 
 /// Deploy the bundled skill packs (Tauri resources) into the app-private
@@ -388,14 +451,45 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let file_type = entry.file_type()?;
+        if is_python_cache_entry(&entry.path(), file_type.is_dir()) {
+            continue;
+        }
         let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        if file_type.is_dir() {
             copy_dir(&entry.path(), &to)?;
         } else {
-            std::fs::copy(entry.path(), &to)?;
+            copy_file_without_clone(&entry.path(), &to)?;
         }
     }
     Ok(())
+}
+
+/// Stream skill files explicitly instead of using platform clone/copyfile
+/// optimizations, which can block when a macOS app copies quarantined build
+/// artifacts. Restore the source permissions so executable helper scripts stay
+/// executable after deployment.
+fn copy_file_without_clone(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let mut source = std::fs::File::open(src)?;
+    let permissions = source.metadata()?.permissions();
+    let mut destination = std::fs::File::create(dst)?;
+    std::io::copy(&mut source, &mut destination)?;
+    destination.set_permissions(permissions)
+}
+
+/// Python bytecode is generated local state, not part of a skill definition.
+/// Exclude it defensively even if a development checkout accidentally contains
+/// ignored cache files; all other files, including legitimate hidden files,
+/// remain deployable.
+fn is_python_cache_entry(path: &Path, is_dir: bool) -> bool {
+    if is_dir {
+        return path
+            .file_name()
+            .is_some_and(|name| name == std::ffi::OsStr::new("__pycache__"));
+    }
+    path.extension().is_some_and(|extension| {
+        extension == std::ffi::OsStr::new("pyc") || extension == std::ffi::OsStr::new("pyo")
+    })
 }
 
 /// PATH for the sidecar (and everything the agent runs through it). Apps
@@ -728,7 +822,7 @@ fn system_proxy_url() -> Option<String> {
 fn wait_until_ready(
     mut is_shutting_down: impl FnMut() -> bool,
     mut startup_failure: impl FnMut() -> Option<String>,
-    mut is_ready: impl FnMut() -> bool,
+    mut is_ready: impl FnMut() -> Result<bool, String>,
     mut wait_for_next_probe: impl FnMut() -> bool,
 ) -> Result<(), String> {
     loop {
@@ -738,13 +832,17 @@ fn wait_until_ready(
         if let Some(error) = startup_failure() {
             return Err(error);
         }
-        if is_ready() {
+        if is_ready()? {
             return Ok(());
         }
         if !wait_for_next_probe() {
-            return Err("OpenCode did not become ready before the startup timeout".into());
+            return Err(SIDECAR_START_TIMEOUT_ERROR.into());
         }
     }
+}
+
+fn before_startup_deadline(now: Instant, deadline: Instant) -> bool {
+    now < deadline
 }
 
 fn base64_encode(input: &[u8]) -> String {
@@ -773,24 +871,53 @@ fn base64_encode(input: &[u8]) -> String {
     output
 }
 
-fn sidecar_health_ready(port: u16) -> bool {
+fn parse_sidecar_health_response(response: &str) -> Result<bool, String> {
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return Ok(false);
+    };
+    let status_ok = headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.starts_with("HTTP/1.1 200 ") || line.starts_with("HTTP/1.0 200 "));
+    if !status_ok {
+        return Ok(false);
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Ok(false);
+    };
+    if value.get("healthy").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Ok(false);
+    }
+    let actual_version = value
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<missing>");
+    if actual_version != EXPECTED_OPENCODE_VERSION {
+        return Err(format!(
+            "OpenCode health version mismatch: expected {EXPECTED_OPENCODE_VERSION}, got {actual_version}"
+        ));
+    }
+    Ok(true)
+}
+
+fn sidecar_health_ready(port: u16) -> Result<bool, String> {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     let Ok(mut stream) = TcpStream::connect_timeout(&address, SIDECAR_HTTP_TIMEOUT) else {
-        return false;
+        return Ok(false);
     };
     if stream.set_read_timeout(Some(SIDECAR_HTTP_TIMEOUT)).is_err()
         || stream
             .set_write_timeout(Some(SIDECAR_HTTP_TIMEOUT))
             .is_err()
     {
-        return false;
+        return Ok(false);
     }
     let credential = base64_encode(format!("opencode:{}", server_password()).as_bytes());
     let request = format!(
         "GET /global/health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Basic {credential}\r\nConnection: close\r\n\r\n"
     );
     if stream.write_all(request.as_bytes()).is_err() {
-        return false;
+        return Ok(false);
     }
     // Health responses are tiny. A hard cap prevents a wrong listener from
     // making startup allocate unbounded memory.
@@ -809,44 +936,37 @@ fn sidecar_health_ready(port: u16) -> bool {
             {
                 break;
             }
-            Err(_) => return false,
+            Err(_) => return Ok(false),
         }
     }
     let Ok(response) = std::str::from_utf8(&response) else {
-        return false;
+        return Ok(false);
     };
-    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
-        return false;
-    };
-    let status_ok = headers
-        .lines()
-        .next()
-        .is_some_and(|line| line.starts_with("HTTP/1.1 200 ") || line.starts_with("HTTP/1.0 200 "));
-    let healthy = serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|value| value.get("healthy").and_then(serde_json::Value::as_bool));
-    status_ok && healthy == Some(true)
+    parse_sidecar_health_response(response)
 }
 
 fn startup_event_failure(
     events: &mut tauri::async_runtime::Receiver<CommandEvent>,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     loop {
         match events.try_recv() {
             Ok(CommandEvent::Terminated(status)) => {
-                return Some(format!(
-                    "OpenCode exited during startup (code {:?}, signal {:?})",
-                    status.code, status.signal
+                return Some((
+                    format!(
+                        "OpenCode exited during startup (code {:?}, signal {:?})",
+                        status.code, status.signal
+                    ),
+                    true,
                 ));
             }
             Ok(CommandEvent::Error(error)) => {
-                return Some(format!("OpenCode startup event error: {error}"));
+                return Some((format!("OpenCode startup event error: {error}"), false));
             }
             Ok(CommandEvent::Stdout(_) | CommandEvent::Stderr(_)) => {}
             Ok(_) => {}
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return None,
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                return Some("OpenCode event channel closed during startup".into());
+                return Some(("OpenCode event channel closed during startup".into(), true));
             }
         }
     }
@@ -862,58 +982,92 @@ fn terminate_checked<T, E: std::fmt::Display>(
         .map_err(|error| format!("failed to {context} OpenCode process {pid}: {error}"))
 }
 
-fn terminate_unpublished(sidecar: SpawnedSidecar, context: &str) -> Result<(), String> {
-    let SpawnedSidecar {
-        process,
-        mut events,
-        pid,
-    } = sidecar;
-    let exit = Arc::new(ExitSignal::default());
-    let watcher_exit = Arc::clone(&exit);
-    std::thread::spawn(move || {
-        while let Some(event) = events.blocking_recv() {
-            if matches!(event, CommandEvent::Terminated(_)) {
-                break;
+fn termination_outcome<T>(
+    retained: T,
+    pid: u32,
+    context: &str,
+    request: Result<(), String>,
+    exit_confirmed: bool,
+) -> Result<(), TerminationFailure<T>> {
+    if exit_confirmed {
+        return Ok(());
+    }
+    let unconfirmed = format!(
+        "termination of OpenCode process {pid} remains unconfirmed after {}s",
+        SIDECAR_STOP_TIMEOUT.as_secs()
+    );
+    let message = match request {
+        Ok(()) => format!("OpenCode process {pid} accepted {context}; {unconfirmed}"),
+        Err(error) => format!("{error}; {unconfirmed}"),
+    };
+    Err(TerminationFailure { retained, message })
+}
+
+fn terminate_managed(
+    mut sidecar: ManagedSidecar,
+    context: &str,
+) -> Result<(), TerminationFailure<ManagedSidecar>> {
+    sidecar.expected_exit.store(true, Ordering::Release);
+    if sidecar.exit.is_exited() {
+        return Ok(());
+    }
+    let pid = sidecar.pid;
+    let request = match sidecar.process.take() {
+        Some(process) => terminate_checked(process, pid, context, CommandChild::kill),
+        None => Err(format!(
+            "cannot retry {context} for OpenCode process {pid}: its process handle was consumed by an earlier termination request"
+        )),
+    };
+    let exit_confirmed = sidecar.exit.wait(SIDECAR_STOP_TIMEOUT);
+    termination_outcome(sidecar, pid, context, request, exit_confirmed)
+}
+
+/// Terminate the currently-owned child while lifecycle is held. A failed or
+/// timed-out request restores a handle-less tombstone to `state.child`; starts,
+/// restarts, and config transactions therefore fail closed until the watcher
+/// observes the matching pid+generation exit and clears it.
+fn terminate_current_sidecar(state: &RuntimeState, context: &str) -> Result<(), String> {
+    let Some(sidecar) = state.child.lock().unwrap().take() else {
+        return Ok(());
+    };
+    match terminate_managed(sidecar, context) {
+        Ok(()) => Ok(()),
+        Err(TerminationFailure { retained, message }) => {
+            let mut current = state.child.lock().unwrap();
+            debug_assert!(
+                current.is_none(),
+                "lifecycle must serialize child ownership"
+            );
+            if current.is_none() {
+                *current = Some(retained);
             }
+            Err(message)
         }
-        watcher_exit.mark_exited();
-    });
-    let result = terminate_checked(process, pid, context, CommandChild::kill).and_then(|()| {
-        if exit.wait(SIDECAR_STOP_TIMEOUT) {
-            Ok(())
-        } else {
-            Err(format!(
-                "OpenCode process {} accepted {context} but did not report termination within {}s",
-                pid,
-                SIDECAR_STOP_TIMEOUT.as_secs()
-            ))
-        }
-    });
+    }
+}
+
+fn terminate_unpublished(
+    state: &RuntimeState,
+    sidecar: SpawnedSidecar,
+    context: &str,
+) -> Result<(), String> {
+    // Attach the normal pid+generation watcher before requesting termination.
+    // If the request cannot be proven, terminate_current_sidecar retains the
+    // same guarded identity rather than allowing a replacement to overwrite it.
+    publish_sidecar(state, sidecar);
+    let result = terminate_current_sidecar(state, context);
     if let Err(error) = &result {
         eprintln!("OpenCode unpublished-process cleanup failed: {error}");
     }
     result
 }
 
-fn terminate_managed(sidecar: ManagedSidecar, context: &str) -> Result<(), String> {
-    let ManagedSidecar {
-        process, pid, exit, ..
-    } = sidecar;
-    terminate_checked(process, pid, context, CommandChild::kill)?;
-    if !exit.wait(SIDECAR_STOP_TIMEOUT) {
-        return Err(format!(
-            "OpenCode process {pid} accepted {context} but did not report termination within {}s",
-            SIDECAR_STOP_TIMEOUT.as_secs()
-        ));
-    }
-    Ok(())
-}
-
 fn spawn_sidecar(
     app: &AppHandle,
     port: u16,
     state: &RuntimeState,
-) -> Result<SpawnedSidecar, String> {
+    deadline: Instant,
+) -> Result<SpawnedSidecar, SpawnAttemptError> {
     // lifecycle is held by every caller before this function acquires config.
     // Keep config locked only through profile preparation and process spawn;
     // readiness may legitimately wait on a macOS TCC prompt for minutes.
@@ -993,24 +1147,38 @@ fn spawn_sidecar(
     };
 
     let pid = process.pid();
-    let deadline = Instant::now() + SIDECAR_START_TIMEOUT;
+    let mut early_exit = false;
     let mut consecutive_healthy_probes = 0_u8;
     let readiness = wait_until_ready(
         || state.shutting_down.load(Ordering::Acquire),
-        || startup_event_failure(&mut events),
         || {
-            if sidecar_health_ready(port) {
+            startup_event_failure(&mut events).map(|(error, exited)| {
+                early_exit |= exited;
+                error
+            })
+        },
+        || {
+            if !before_startup_deadline(Instant::now(), deadline) {
+                return Err(SIDECAR_START_TIMEOUT_ERROR.into());
+            }
+            let healthy = sidecar_health_ready(port)?;
+            // A probe can itself consume the final HTTP timeout window. Never
+            // publish a response that completed after the shared deadline.
+            if !before_startup_deadline(Instant::now(), deadline) {
+                return Err(SIDECAR_START_TIMEOUT_ERROR.into());
+            }
+            if healthy {
                 consecutive_healthy_probes += 1;
             } else {
                 consecutive_healthy_probes = 0;
             }
             // A second authenticated response gives the process event channel
             // time to report an immediate bind/config failure before publish.
-            consecutive_healthy_probes >= 2
+            Ok(consecutive_healthy_probes >= 2)
         },
         || {
             let now = Instant::now();
-            if now >= deadline {
+            if !before_startup_deadline(now, deadline) {
                 return false;
             }
             std::thread::sleep(SIDECAR_PROBE_INTERVAL.min(deadline - now));
@@ -1023,10 +1191,19 @@ fn spawn_sidecar(
             events,
             pid,
         };
-        return match terminate_unpublished(sidecar, "clean up unready") {
-            Ok(()) => Err(startup_error),
-            Err(kill_error) => Err(format!("{startup_error}; {kill_error}")),
+        let cleanup = terminate_unpublished(state, sidecar, "clean up unready");
+        let cleanup_confirmed = cleanup.is_ok();
+        let message = match cleanup {
+            Ok(()) => startup_error,
+            Err(kill_error) => format!("{startup_error}; {kill_error}"),
         };
+        return Err(SpawnAttemptError {
+            message,
+            retryable_early_exit: early_exit
+                && cleanup_confirmed
+                && !state.shutting_down.load(Ordering::Acquire)
+                && Instant::now() < deadline,
+        });
     }
 
     Ok(SpawnedSidecar {
@@ -1056,12 +1233,20 @@ fn publish_sidecar(state: &RuntimeState, sidecar: SpawnedSidecar) {
         .fetch_add(1, Ordering::Relaxed)
         .wrapping_add(1);
     let exit = Arc::new(ExitSignal::default());
-    *state.child.lock().unwrap() = Some(ManagedSidecar {
-        process,
+    let expected_exit = Arc::new(AtomicBool::new(false));
+    let mut current = state.child.lock().unwrap();
+    debug_assert!(
+        current.is_none(),
+        "lifecycle must prevent child replacement"
+    );
+    *current = Some(ManagedSidecar {
+        process: Some(process),
         pid,
         generation,
         exit: Arc::clone(&exit),
+        expected_exit: Arc::clone(&expected_exit),
     });
+    drop(current);
 
     let lifecycle = Arc::clone(&state.lifecycle);
     let child = Arc::clone(&state.child);
@@ -1100,10 +1285,39 @@ fn publish_sidecar(state: &RuntimeState, sidecar: SpawnedSidecar) {
             }
             matches
         });
-        if cleared {
+        if cleared && !expected_exit.load(Ordering::Acquire) {
             eprintln!("OpenCode process {pid} exited unexpectedly ({reason})");
         }
     });
+}
+
+fn start_with_port_retry<T>(
+    preferred_port: Option<u16>,
+    mut fresh_port: impl FnMut() -> Result<u16, String>,
+    mut attempt: impl FnMut(u16) -> Result<T, SpawnAttemptError>,
+    mut can_retry: impl FnMut() -> bool,
+) -> Result<(u16, T), String> {
+    let mut preferred_port = preferred_port;
+    for attempt_index in 0..SIDECAR_PORT_ATTEMPTS {
+        let port = match preferred_port.take() {
+            Some(port) => port,
+            None => fresh_port()?,
+        };
+        match attempt(port) {
+            Ok(value) => return Ok((port, value)),
+            Err(error)
+                if error.retryable_early_exit
+                    && attempt_index + 1 < SIDECAR_PORT_ATTEMPTS
+                    && can_retry() =>
+            {
+                // A listener can claim the free port between discovery and the
+                // sidecar bind. Only a process that exited during readiness is
+                // retried, always on a newly-discovered port.
+            }
+            Err(error) => return Err(error.message),
+        }
+    }
+    unreachable!("the bounded port-attempt loop always returns")
 }
 
 /// Kill and respawn the sidecar on its stable port. The caller must hold the
@@ -1112,30 +1326,28 @@ fn restart_sidecar_locked(app: &AppHandle, state: &RuntimeState) -> Result<Strin
     if state.shutting_down.load(Ordering::Acquire) {
         return Err("runtime is shutting down".into());
     }
-    let port = {
-        let mut published_port = state.port.lock().unwrap();
-        match *published_port {
-            Some(port) => port,
-            None => {
-                let port = free_port()?;
-                *published_port = Some(port);
-                port
-            }
-        }
-    };
+    let preferred_port = *state.port.lock().unwrap();
     *state.url.lock().unwrap() = None;
-    if let Some(sidecar) = state.child.lock().unwrap().take() {
-        if let Err(error) = terminate_managed(sidecar, "restart") {
-            *state.port.lock().unwrap() = None;
-            return Err(error);
-        }
+    if let Err(error) = terminate_current_sidecar(state, "restart") {
+        *state.port.lock().unwrap() = None;
+        return Err(error);
     }
     if state.shutting_down.load(Ordering::Acquire) {
         *state.port.lock().unwrap() = None;
         return Err("runtime is shutting down".into());
     }
-    let sidecar = match spawn_sidecar(app, port, state) {
-        Ok(sidecar) => sidecar,
+    let deadline = Instant::now() + SIDECAR_START_TIMEOUT;
+    let (port, sidecar) = match start_with_port_retry(
+        preferred_port,
+        free_port,
+        |port| spawn_sidecar(app, port, state, deadline),
+        || {
+            !state.shutting_down.load(Ordering::Acquire)
+                && state.child.lock().unwrap().is_none()
+                && Instant::now() < deadline
+        },
+    ) {
+        Ok(started) => started,
         Err(error) => {
             *state.port.lock().unwrap() = None;
             return Err(error);
@@ -1143,10 +1355,13 @@ fn restart_sidecar_locked(app: &AppHandle, state: &RuntimeState) -> Result<Strin
     };
     if state.shutting_down.load(Ordering::Acquire) {
         *state.port.lock().unwrap() = None;
-        terminate_unpublished(sidecar, "cancel restart during shutdown")?;
-        return Err("runtime is shutting down".into());
+        return match terminate_unpublished(state, sidecar, "cancel restart during shutdown") {
+            Ok(()) => Err("runtime is shutting down".into()),
+            Err(error) => Err(format!("runtime is shutting down; {error}")),
+        };
     }
     let url = format!("http://127.0.0.1:{port}");
+    *state.port.lock().unwrap() = Some(port);
     publish_sidecar(state, sidecar);
     *state.url.lock().unwrap() = Some(url.clone());
     Ok(url)
@@ -1196,11 +1411,9 @@ fn with_config_transaction<T>(
             was_running,
             || {
                 *state.url.lock().unwrap() = None;
-                if let Some(sidecar) = state.child.lock().unwrap().take() {
-                    if let Err(error) = terminate_managed(sidecar, "pause for config update") {
-                        *state.port.lock().unwrap() = None;
-                        return Err(error);
-                    }
+                if let Err(error) = terminate_current_sidecar(state, "pause for config update") {
+                    *state.port.lock().unwrap() = None;
+                    return Err(error);
                 }
                 Ok(())
             },
@@ -1223,29 +1436,39 @@ pub fn start_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Result<S
         &state.url,
         || state.shutting_down.load(Ordering::Acquire),
         || {
-            // Reuse a stable port across restarts so the frontend URL doesn't change.
-            let port = {
-                let mut published_port = state.port.lock().unwrap();
-                match *published_port {
-                    Some(port) => port,
-                    None => {
-                        let port = free_port()?;
-                        *published_port = Some(port);
-                        port
-                    }
-                }
-            };
-            let sidecar = match spawn_sidecar(&app, port, &state) {
-                Ok(sidecar) => sidecar,
+            // A tombstone from an unconfirmed termination blocks every spawn.
+            // A late watcher signal makes this check succeed without another kill.
+            if state.child.lock().unwrap().is_some() {
+                terminate_current_sidecar(&state, "finish previous termination")?;
+            }
+            let preferred_port = *state.port.lock().unwrap();
+            let deadline = Instant::now() + SIDECAR_START_TIMEOUT;
+            let (port, sidecar) = match start_with_port_retry(
+                preferred_port,
+                free_port,
+                |port| spawn_sidecar(&app, port, &state, deadline),
+                || {
+                    !state.shutting_down.load(Ordering::Acquire)
+                        && state.child.lock().unwrap().is_none()
+                        && Instant::now() < deadline
+                },
+            ) {
+                Ok(started) => started,
                 Err(error) => {
                     *state.port.lock().unwrap() = None;
                     return Err(error);
                 }
             };
-            Ok((format!("http://127.0.0.1:{port}"), sidecar))
+            Ok((format!("http://127.0.0.1:{port}"), (port, sidecar)))
         },
-        |sidecar| publish_sidecar(&state, sidecar),
-        |sidecar| terminate_unpublished(sidecar, "cancel startup during shutdown"),
+        |(port, sidecar)| {
+            *state.port.lock().unwrap() = Some(port);
+            publish_sidecar(&state, sidecar);
+        },
+        |(_, sidecar)| {
+            *state.port.lock().unwrap() = None;
+            terminate_unpublished(&state, sidecar, "cancel startup during shutdown")
+        },
     )
 }
 
@@ -1404,20 +1627,19 @@ fn stop_runtime_inner(state: &RuntimeState) -> Result<(), String> {
     with_lifecycle(&state.lifecycle, || {
         *state.url.lock().unwrap() = None;
         *state.port.lock().unwrap() = None;
-        match state.child.lock().unwrap().take() {
-            Some(sidecar) => terminate_managed(sidecar, "stop"),
-            None => Ok(()),
-        }
+        terminate_current_sidecar(state, "stop")
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        base64_encode, config_transaction, current_sidecar_matches, parse_scutil_proxy,
-        prune_stale_skills, random_hex, remove_key_from_config, resolve_proxy_env, server_password,
-        sidecar_health_ready, start_once, sync_skill_pack, terminate_checked, validate_proxy_url,
-        wait_until_ready, with_lifecycle, write_private_atomic,
+        base64_encode, before_startup_deadline, config_transaction, current_sidecar_matches,
+        parse_scutil_proxy, parse_sidecar_health_response, prune_stale_skills, random_hex,
+        remove_key_from_config, resolve_proxy_env, server_password, sidecar_health_ready,
+        start_once, start_with_port_retry, sync_skill_pack, terminate_checked, termination_outcome,
+        validate_proxy_url, wait_until_ready, with_lifecycle, write_private_atomic,
+        SpawnAttemptError, EXPECTED_OPENCODE_VERSION,
     };
     use std::cell::{Cell, RefCell};
     use std::fs;
@@ -1428,6 +1650,7 @@ mod tests {
         Arc, Barrier, Mutex,
     };
     use std::thread;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn start_once_makes_concurrent_start_single_flight() {
@@ -1598,31 +1821,50 @@ mod tests {
 
     #[test]
     fn readiness_is_bounded_and_observes_failure_and_shutdown() {
+        let deadline = Instant::now();
+        assert!(!before_startup_deadline(deadline, deadline));
+        assert!(before_startup_deadline(
+            deadline.checked_sub(Duration::from_nanos(1)).unwrap(),
+            deadline
+        ));
+
         let probes = Cell::new(0);
         wait_until_ready(
             || false,
             || None,
             || {
                 probes.set(probes.get() + 1);
-                probes.get() == 3
+                Ok(probes.get() == 3)
             },
             || true,
         )
         .unwrap();
         assert_eq!(probes.get(), 3);
 
-        let failure =
-            wait_until_ready(|| false, || Some("process exited".into()), || true, || true);
+        let failure = wait_until_ready(
+            || false,
+            || Some("process exited".into()),
+            || Ok(true),
+            || true,
+        );
         assert_eq!(failure, Err("process exited".into()));
 
-        let timeout = wait_until_ready(|| false, || None, || false, || false);
+        let timeout = wait_until_ready(|| false, || None, || Ok(false), || false);
         assert!(timeout.unwrap_err().contains("startup timeout"));
+
+        let incompatible = wait_until_ready(
+            || false,
+            || None,
+            || Err("version mismatch".into()),
+            || true,
+        );
+        assert_eq!(incompatible, Err("version mismatch".into()));
 
         let shutdown = Cell::new(false);
         let cancelled = wait_until_ready(
             || shutdown.get(),
             || None,
-            || false,
+            || Ok(false),
             || {
                 shutdown.set(true);
                 true
@@ -1662,17 +1904,37 @@ mod tests {
             (port, handle)
         };
 
-        let (healthy_port, healthy_server) = serve(r#"{"healthy": true}"#);
-        assert!(sidecar_health_ready(healthy_port));
+        let (healthy_port, healthy_server) = serve(r#"{"healthy": true, "version": "1.17.13"}"#);
+        assert!(sidecar_health_ready(healthy_port).unwrap());
         healthy_server.join().unwrap();
 
-        let (unhealthy_port, unhealthy_server) = serve(r#"{"healthy": false}"#);
-        assert!(!sidecar_health_ready(unhealthy_port));
+        let (unhealthy_port, unhealthy_server) =
+            serve(r#"{"healthy": false, "version": "1.17.13"}"#);
+        assert!(!sidecar_health_ready(unhealthy_port).unwrap());
         unhealthy_server.join().unwrap();
 
         let (spoofed_port, spoofed_server) = serve(r#"{"message":"\"healthy\":true"}"#);
-        assert!(!sidecar_health_ready(spoofed_port));
+        assert!(!sidecar_health_ready(spoofed_port).unwrap());
         spoofed_server.join().unwrap();
+
+        let (wrong_port, wrong_server) = serve(r#"{"healthy": true, "version": "1.17.12"}"#);
+        assert!(sidecar_health_ready(wrong_port)
+            .unwrap_err()
+            .contains("expected 1.17.13, got 1.17.12"));
+        wrong_server.join().unwrap();
+    }
+
+    #[test]
+    fn health_protocol_requires_the_sdk_pinned_version() {
+        let missing = "HTTP/1.1 200 OK\r\n\r\n{\"healthy\":true}";
+        assert!(parse_sidecar_health_response(missing)
+            .unwrap_err()
+            .contains("got <missing>"));
+
+        let sdk_types = include_str!("../../../../packages/sdk/src/types.ts");
+        let expected_declaration =
+            format!(r#"export const OPENCODE_VERSION = "{EXPECTED_OPENCODE_VERSION}";"#);
+        assert!(sdk_types.lines().any(|line| line == expected_declaration));
     }
 
     #[test]
@@ -1681,6 +1943,74 @@ mod tests {
         assert!(error.contains("restart"));
         assert!(error.contains("4242"));
         assert!(error.contains("denied"));
+    }
+
+    #[test]
+    fn unconfirmed_termination_retains_ownership_until_exit_is_proven() {
+        let failure = termination_outcome(7, 4242, "stop", Ok(()), false).unwrap_err();
+        assert_eq!(failure.retained, 7);
+        assert!(failure.message.contains("4242"));
+        assert!(failure.message.contains("remains unconfirmed"));
+
+        // An observed exit is authoritative even when kill raced an already
+        // exiting process and returned an error.
+        assert!(termination_outcome(9, 4242, "stop", Err("already exited".into()), true).is_ok());
+    }
+
+    #[test]
+    fn early_exit_retries_on_fresh_ports_but_fatal_failures_do_not() {
+        let attempted = RefCell::new(Vec::new());
+        let fresh = RefCell::new(vec![41001_u16, 41002].into_iter());
+        let failures = Cell::new(0);
+        let started = start_with_port_retry(
+            Some(41000),
+            || Ok(fresh.borrow_mut().next().unwrap()),
+            |port| {
+                attempted.borrow_mut().push(port);
+                if failures.get() < 2 {
+                    failures.set(failures.get() + 1);
+                    Err(SpawnAttemptError {
+                        message: "process exited".into(),
+                        retryable_early_exit: true,
+                    })
+                } else {
+                    Ok("ready")
+                }
+            },
+            || true,
+        )
+        .unwrap();
+        assert_eq!(started, (41002, "ready"));
+        assert_eq!(*attempted.borrow(), [41000, 41001, 41002]);
+
+        let fatal_attempts = Cell::new(0);
+        let fatal = start_with_port_retry(
+            None,
+            || Ok(42000),
+            |_| {
+                fatal_attempts.set(fatal_attempts.get() + 1);
+                Err::<(), _>(SpawnAttemptError::fatal("version mismatch"))
+            },
+            || true,
+        );
+        assert_eq!(fatal, Err("version mismatch".into()));
+        assert_eq!(fatal_attempts.get(), 1);
+
+        let guarded_attempts = Cell::new(0);
+        let guarded = start_with_port_retry(
+            None,
+            || Ok(43000),
+            |_| {
+                guarded_attempts.set(guarded_attempts.get() + 1);
+                Err::<(), _>(SpawnAttemptError {
+                    message: "early exit".into(),
+                    retryable_early_exit: true,
+                })
+            },
+            || false,
+        );
+        assert_eq!(guarded, Err("early exit".into()));
+        assert_eq!(guarded_attempts.get(), 1);
     }
 
     #[test]
@@ -1767,6 +2097,34 @@ mod tests {
         .unwrap();
         assert_eq!(result, (7, Some("http://127.0.0.1:54321".to_string())));
         assert_eq!(*events.borrow(), ["stop", "mutate", "restart"]);
+    }
+
+    #[test]
+    fn restart_result_serializes_the_authoritative_runtime_url() {
+        let value = serde_json::to_value(super::RuntimeRestartResult {
+            runtime_url: Some("http://127.0.0.1:43123".into()),
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({ "runtimeUrl": "http://127.0.0.1:43123" })
+        );
+    }
+
+    #[test]
+    fn config_transaction_never_mutates_behind_an_unconfirmed_stop() {
+        let mutated = Cell::new(false);
+        let result = config_transaction(
+            true,
+            || Err("termination remains unconfirmed".into()),
+            || {
+                mutated.set(true);
+                Ok(())
+            },
+            || Ok("http://127.0.0.1:54321".into()),
+        );
+        assert_eq!(result, Err("termination remains unconfirmed".into()));
+        assert!(!mutated.get());
     }
 
     #[test]
@@ -1996,6 +2354,62 @@ mod tests {
         );
         fs::remove_dir_all(&tmp).unwrap();
     }
+
+    #[test]
+    fn sync_skips_python_cache_artifacts_and_copies_normal_files() {
+        let tmp = std::env::temp_dir().join(format!("skillsync-pycache-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+
+        write(&src.join("domain-check/SKILL.md"), "skill");
+        write(&src.join("domain-check/scripts/check.py"), "print('ok')");
+        write(&src.join("domain-check/.skill-config"), "enabled=true");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(
+                src.join("domain-check/scripts/check.py"),
+                fs::Permissions::from_mode(0o751),
+            )
+            .unwrap();
+        }
+        write(
+            &src.join("domain-check/__pycache__/domain_check.cpython-314.pyc"),
+            "bytecode",
+        );
+        write(&src.join("domain-check/scripts/check.pyc"), "bytecode");
+        write(&src.join("domain-check/scripts/check.pyo"), "bytecode");
+
+        sync_skill_pack(&src, &dst).unwrap();
+
+        let installed = dst.join("domain-check");
+        assert_eq!(
+            fs::read_to_string(installed.join("scripts/check.py")).unwrap(),
+            "print('ok')"
+        );
+        assert_eq!(
+            fs::read_to_string(installed.join(".skill-config")).unwrap(),
+            "enabled=true"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(installed.join("scripts/check.py"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o751
+            );
+        }
+        assert!(!installed.join("__pycache__").exists());
+        assert!(!installed.join("scripts/check.pyc").exists());
+        assert!(!installed.join("scripts/check.pyo").exists());
+
+        fs::remove_dir_all(&tmp).unwrap();
+    }
 }
 
 /// Remove an entry from a map section of the app-private global OpenCode
@@ -2007,11 +2421,11 @@ pub fn remove_config_entry(
     state: State<'_, RuntimeState>,
     section: String,
     key: String,
-) -> Result<(), String> {
+) -> Result<RuntimeRestartResult, String> {
     if !matches!(section.as_str(), "provider" | "mcp") {
         return Err(format!("section \"{section}\" is not removable"));
     }
-    with_config_transaction(&app, &state, || {
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
         let dir = xdg_config_home(&app)?.join("opencode");
         // The server writes opencode.jsonc; older configs may be opencode.json.
         let path = ["opencode.jsonc", "opencode.json"]
@@ -2024,7 +2438,7 @@ pub fn remove_config_entry(
         write_private_atomic(&path, updated.as_bytes())?;
         Ok(())
     })?;
-    Ok(())
+    Ok(RuntimeRestartResult { runtime_url })
 }
 
 /// Drop `key` from the config JSON's `section` map, erroring when the config
@@ -2053,21 +2467,21 @@ pub fn get_approval_mode(_app: AppHandle) -> Result<String, String> {
 }
 
 /// Switch the approval mode and restart the sidecar so the permission rules
-/// take effect. Returns the (stable-port) base URL when it was running.
+/// take effect. The returned URL may use a fresh port after a bind race.
 #[tauri::command(async)]
 pub fn set_approval_mode(
     app: AppHandle,
     state: State<'_, RuntimeState>,
     mode: String,
-) -> Result<String, String> {
-    let (path, restarted_url) = with_config_transaction(&app, &state, || {
+) -> Result<RuntimeRestartResult, String> {
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
         let path = effective_config_file(&app)?;
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let updated = crate::opencode_config::set_permission_mode(&existing, &mode)?;
         write_private_atomic(&path, updated.as_bytes())?;
         Ok(path)
     })?;
-    Ok(restarted_url.unwrap_or_else(|| path.to_string_lossy().to_string()))
+    Ok(RuntimeRestartResult { runtime_url })
 }
 
 /// The persisted proxy setting plus the proxy the sidecar would use right now.
@@ -2090,7 +2504,7 @@ pub fn set_proxy_setting(
     state: State<'_, RuntimeState>,
     mode: String,
     url: String,
-) -> Result<String, String> {
+) -> Result<RuntimeRestartResult, String> {
     let line = match mode.as_str() {
         "system" => "system".to_string(),
         "none" => "none".to_string(),
@@ -2101,16 +2515,17 @@ pub fn set_proxy_setting(
         }
         other => return Err(format!("unknown proxy mode: {other}")),
     };
-    let (path, restarted_url) = with_config_transaction(&app, &state, || {
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
         let path = proxy_setting_file(&app)?;
         write_private_atomic(&path, line.as_bytes())?;
         Ok(path)
     })?;
-    Ok(restarted_url.unwrap_or_else(|| path.to_string_lossy().to_string()))
+    Ok(RuntimeRestartResult { runtime_url })
 }
 
 /// Write the provider key/model into the app-private OpenCode config and restart
-/// the sidecar so it picks them up. Returns the same base URL (stable port).
+/// the sidecar so it picks them up, returning its authoritative URL separately
+/// from the written config path.
 #[tauri::command(async)]
 pub fn configure_opencode(
     app: AppHandle,
@@ -2119,13 +2534,16 @@ pub fn configure_opencode(
     api_key: String,
     model: String,
     base_url: Option<String>,
-) -> Result<String, String> {
-    let (path, restarted_url) = with_config_transaction(&app, &state, || {
+) -> Result<ConfigureOpenCodeResult, String> {
+    let (path, runtime_url) = with_config_transaction(&app, &state, || {
         let path = opencode_config_file(&app)?;
         let existing = std::fs::read_to_string(&path).unwrap_or_default();
         let merged = merge_config(&existing, &provider, &api_key, &model, base_url.as_deref())?;
         write_private_atomic(&path, merged.as_bytes())?;
         Ok(path)
     })?;
-    Ok(restarted_url.unwrap_or_else(|| path.to_string_lossy().to_string()))
+    Ok(ConfigureOpenCodeResult {
+        path: path.to_string_lossy().to_string(),
+        runtime_url,
+    })
 }

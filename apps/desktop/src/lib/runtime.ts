@@ -17,10 +17,12 @@ import type { ArtifactBlock, RuntimeStatus, ThreadBlock, ToolVerb } from "@ai4s/
 import {
   detectTools as probeTools,
   commitWorkspaceSnapshot,
+  importOpenCodeLogin as persistOpenCodeLogin,
   isTauri,
   logDebug,
   markSession,
   newDatedWorkspace,
+  removeConfigEntry as persistConfigRemoval,
   runtimePassword,
   setApprovalMode as persistApprovalMode,
   setProxySetting as persistProxySetting,
@@ -93,6 +95,11 @@ interface RuntimeState {
   setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   /** Persist the network-proxy setting (restarts the sidecar) and reconnect. */
   setProxySetting: (mode: ProxyMode, url: string) => Promise<void>;
+  /** Remove a file-backed provider/MCP config entry and reconnect to the
+   *  authoritative post-restart endpoint. */
+  removeConfigEntry: (section: "provider" | "mcp", key: string) => Promise<void>;
+  /** Import the user's CLI login and reconnect when the runtime restarts. */
+  importOpenCodeLogin: () => Promise<boolean>;
   tools: ToolStatus[];
   hiddenExamples: string[];
   error: string | null;
@@ -173,6 +180,62 @@ function teardownClient() {
   client?.close();
   client = null;
 }
+
+interface RestartMutationResult {
+  runtimeUrl: string | null;
+}
+
+let runtimeMutationQueue: Promise<void> = Promise.resolve();
+
+async function reconnectToAuthoritativeRuntime(runtimeUrl: string | null): Promise<void> {
+  // A mutation made while the runtime was stopped has no restart URL. Starting
+  // idempotently is the only safe way to obtain an endpoint in that case; a
+  // cached URL may now belong to an unrelated loopback listener.
+  const authoritativeUrl = runtimeUrl ?? (await startRuntime());
+  if (authoritativeUrl) useRuntimeStore.getState().setServerUrl(authoritativeUrl);
+  await useRuntimeStore.getState().connectRetry();
+}
+
+async function performMaskedRuntimeMutation<T extends RestartMutationResult>(
+  mutation: () => Promise<T>,
+): Promise<T> {
+  useRuntimeStore.setState({ switching: true });
+  // Close EventSource before Rust stops the sidecar. Its auth_token must never
+  // auto-reconnect to the old port if another listener claims that port while
+  // Rust selects a fresh one.
+  teardownClient();
+  try {
+    const result = await mutation();
+    await reconnectToAuthoritativeRuntime(result.runtimeUrl);
+    return result;
+  } catch (error) {
+    // Rust restores the sidecar after most mutation failures. Re-read its
+    // authoritative URL and rebuild the client before surfacing the original
+    // error; recovery failure must not hide the mutation diagnostic.
+    try {
+      await reconnectToAuthoritativeRuntime(null);
+    } catch {
+      // Best effort: the original mutation/restart error remains actionable.
+    }
+    throw error;
+  } finally {
+    useRuntimeStore.setState({ switching: false });
+  }
+}
+
+function runMaskedRuntimeMutation<T extends RestartMutationResult>(
+  mutation: () => Promise<T>,
+): Promise<T> {
+  // Rust serializes lifecycle transitions; mirror that ordering here so two UI
+  // mutations cannot adopt their returned URLs in reverse order.
+  const run = runtimeMutationQueue.then(() => performMaskedRuntimeMutation(mutation));
+  runtimeMutationQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 const emptyThread = (): Thread => ({ blocks: [], index: {}, loaded: false });
 /** Threads key for the draft conversation — its blocks move to the real
  *  session id once the session exists, so the page never visibly resets. */
@@ -559,27 +622,21 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       });
       return;
     }
-    // A deliberate restart, like switchWorkspace: `switching` keeps the UI
-    // rendering as connected — no status flip, no page flash.
-    set({ switching: true });
-    try {
-      await persistApprovalMode(mode); // writes the config; restarts the sidecar
-      set({ approvalMode: mode });
-      await get().connectRetry();
-    } finally {
-      set({ switching: false });
-    }
+    await runMaskedRuntimeMutation(() => persistApprovalMode(mode));
+    set({ approvalMode: mode });
   },
 
   setProxySetting: async (mode, url) => {
-    // Same masked restart as setApprovalMode: the proxy env applies at spawn.
-    set({ switching: true });
-    try {
-      await persistProxySetting(mode, url); // persists; restarts the sidecar
-      await get().connectRetry();
-    } finally {
-      set({ switching: false });
-    }
+    await runMaskedRuntimeMutation(() => persistProxySetting(mode, url));
+  },
+
+  removeConfigEntry: async (section, key) => {
+    await runMaskedRuntimeMutation(() => persistConfigRemoval(section, key));
+  },
+
+  importOpenCodeLogin: async () => {
+    const result = await runMaskedRuntimeMutation(persistOpenCodeLogin);
+    return result.imported;
   },
 
   setDefaultModel: async (model) => {

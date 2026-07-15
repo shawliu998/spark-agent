@@ -12,9 +12,18 @@ export interface OpenCodeCredentials {
 }
 
 export type ConfigureResult =
-  | { ok: true; path: string }
+  | { ok: true; path: string; runtimeUrl: string | null }
   | { ok: false; reason: "not-desktop" }
   | { ok: false; reason: "error"; message: string };
+
+export interface RuntimeRestartResult {
+  /** Authoritative loopback URL after the mutation; null when no runtime was running. */
+  runtimeUrl: string | null;
+}
+
+export interface ImportOpenCodeLoginResult extends RuntimeRestartResult {
+  imported: boolean;
+}
 
 /** Start the bundled OpenCode sidecar (desktop only). Returns its base URL. */
 export async function startRuntime(): Promise<string | null> {
@@ -59,10 +68,10 @@ export async function addTextToWorkspace(filename: string, content: string): Pro
  * runtime (desktop only). Returns false when no CLI login exists; the sidecar
  * is restarted on success.
  */
-export async function importOpenCodeLogin(): Promise<boolean> {
-  if (!isTauri) return false;
+export async function importOpenCodeLogin(): Promise<ImportOpenCodeLoginResult> {
+  if (!isTauri) return { imported: false, runtimeUrl: null };
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<boolean>("import_opencode_login");
+  return invoke<ImportOpenCodeLoginResult>("import_opencode_login");
 }
 
 /** Legacy approval-mode shape kept for config migration compatibility.
@@ -78,13 +87,13 @@ export async function getApprovalMode(): Promise<ApprovalMode> {
 }
 
 /** Switch the approval mode; the sidecar restarts — the caller must reconnect. */
-export async function setApprovalMode(mode: ApprovalMode): Promise<void> {
+export async function setApprovalMode(mode: ApprovalMode): Promise<RuntimeRestartResult> {
   if (mode !== "approve") {
     throw new Error("Full access is disabled by the internal safety policy.");
   }
-  if (!isTauri) return;
+  if (!isTauri) return { runtimeUrl: null };
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_approval_mode", { mode });
+  return invoke<RuntimeRestartResult>("set_approval_mode", { mode });
 }
 
 /** Network proxy for the sidecar: follow the OS, a fixed URL, or direct. */
@@ -105,17 +114,20 @@ export async function getProxySetting(): Promise<ProxySetting | null> {
 }
 
 /** Persist the proxy setting; the sidecar restarts — the caller must reconnect. */
-export async function setProxySetting(mode: ProxyMode, url: string): Promise<void> {
-  if (!isTauri) return;
+export async function setProxySetting(mode: ProxyMode, url: string): Promise<RuntimeRestartResult> {
+  if (!isTauri) return { runtimeUrl: null };
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("set_proxy_setting", { mode, url });
+  return invoke<RuntimeRestartResult>("set_proxy_setting", { mode, url });
 }
 
 /** Remove a provider/mcp entry from the global OpenCode config (restarts the sidecar). */
-export async function removeConfigEntry(section: "provider" | "mcp", key: string): Promise<void> {
+export async function removeConfigEntry(
+  section: "provider" | "mcp",
+  key: string,
+): Promise<RuntimeRestartResult> {
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("remove_config_entry", { section, key });
+  return invoke<RuntimeRestartResult>("remove_config_entry", { section, key });
 }
 
 export interface JupyterStatus {
@@ -528,13 +540,13 @@ export async function configureOpenCode(
   if (!isTauri) return { ok: false, reason: "not-desktop" };
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const path = await invoke<string>("configure_opencode", {
+    const result = await invoke<{ path: string; runtimeUrl: string | null }>("configure_opencode", {
       provider: creds.provider,
       apiKey: creds.apiKey,
       model: creds.model,
       baseUrl: creds.baseUrl ?? null,
     });
-    return { ok: true, path };
+    return { ok: true, ...result };
   } catch (e) {
     return { ok: false, reason: "error", message: e instanceof Error ? e.message : String(e) };
   }
