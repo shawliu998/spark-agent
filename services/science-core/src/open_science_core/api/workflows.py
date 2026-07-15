@@ -1,23 +1,29 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from typing import Never
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from ..db import database_session
 from ..models import ProjectRecord, WorkflowRecord
 from ..workflow.schemas import (
+    AcceptReviewWarningsIn,
     ApprovePlanIn,
+    ResearchWorkflowCreateIn,
     ResearchWorkflowSnapshot,
     RetryWorkflowIn,
-    WorkflowCreateIn,
+    WorkflowAnalysisDecisionIn,
     WorkflowEventsOut,
     WorkflowMutationIn,
 )
 from ..workflow.service import (
     WorkflowConflict,
+    accept_review_warnings,
     approve_plan,
+    decide_analysis_execution,
     list_workflows,
     request_cancel,
     resume_workflow,
@@ -26,7 +32,6 @@ from ..workflow.service import (
     workflow_events,
     workflow_snapshot,
 )
-
 
 router = APIRouter(tags=["research-workflows"])
 
@@ -49,7 +54,7 @@ def _workflow_or_404(session: Session, workflow_id: str) -> WorkflowRecord:
     return workflow
 
 
-def _raise_conflict(error: WorkflowConflict) -> None:
+def _raise_conflict(error: WorkflowConflict) -> Never:
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail={
@@ -68,6 +73,13 @@ def _snapshot_or_conflict(
         return workflow_snapshot(session, workflow)
     except WorkflowConflict as error:
         _raise_conflict(error)
+    except ValidationError:
+        _raise_conflict(
+            WorkflowConflict(
+                "workflow-snapshot-integrity-failed",
+                "The stored workflow does not satisfy its public snapshot contract.",
+            )
+        )
 
 
 @router.post(
@@ -77,7 +89,7 @@ def _snapshot_or_conflict(
 )
 def create_workflow(
     project_id: str,
-    payload: WorkflowCreateIn,
+    payload: ResearchWorkflowCreateIn,
     idempotency_key: str = Header(
         alias="Idempotency-Key", min_length=8, max_length=200
     ),
@@ -87,6 +99,57 @@ def create_workflow(
     try:
         workflow = start_workflow(session, project, payload, idempotency_key)
     except WorkflowConflict as error:
+        _raise_conflict(error)
+    return _snapshot_or_conflict(session, workflow)
+
+
+@router.post(
+    "/v1/workflows/{workflow_id}/analysis-intents/{intent_id}/decision",
+    response_model=ResearchWorkflowSnapshot,
+)
+def decide_workflow_analysis(
+    workflow_id: str,
+    intent_id: str,
+    payload: WorkflowAnalysisDecisionIn,
+    session: Session = Depends(get_workflow_session),
+) -> ResearchWorkflowSnapshot:
+    workflow = _workflow_or_404(session, workflow_id)
+    try:
+        workflow = decide_analysis_execution(
+            session,
+            workflow,
+            approval_id=payload.approval_id,
+            intent_id=intent_id,
+            decision=payload.decision,
+            payload_sha256=payload.payload_sha256,
+            expected_revision=payload.expected_workflow_revision,
+        )
+    except WorkflowConflict as error:
+        session.rollback()
+        _raise_conflict(error)
+    return _snapshot_or_conflict(session, workflow)
+
+
+@router.post(
+    "/v1/workflows/{workflow_id}/accept-review-warnings",
+    response_model=ResearchWorkflowSnapshot,
+)
+def accept_workflow_review_warnings(
+    workflow_id: str,
+    payload: AcceptReviewWarningsIn,
+    session: Session = Depends(get_workflow_session),
+) -> ResearchWorkflowSnapshot:
+    workflow = _workflow_or_404(session, workflow_id)
+    try:
+        workflow = accept_review_warnings(
+            session,
+            workflow,
+            review_id=payload.review_id,
+            review_input_sha256=payload.review_input_sha256,
+            expected_revision=payload.expected_workflow_revision,
+        )
+    except WorkflowConflict as error:
+        session.rollback()
         _raise_conflict(error)
     return _snapshot_or_conflict(session, workflow)
 

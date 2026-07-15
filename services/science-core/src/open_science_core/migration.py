@@ -12,7 +12,6 @@ from sqlalchemy.engine import URL
 
 from .config import settings
 
-
 BASELINE_REVISION = "0001_legacy_baseline"
 
 ColumnSignature = tuple[str, str, int, int, str | None]
@@ -315,14 +314,14 @@ def _legacy_schema_mismatch(connection: sqlite3.Connection) -> str | None:
             elif origin == "u":
                 actual_unique_constraints.add((table, index_columns))
 
-    if actual_explicit_indexes != LEGACY_EXPLICIT_INDEXES:
+    if actual_explicit_indexes != set(LEGACY_EXPLICIT_INDEXES):
         return "explicit index set differs"
-    if actual_unique_constraints != LEGACY_UNIQUE_CONSTRAINTS:
+    if actual_unique_constraints != set(LEGACY_UNIQUE_CONSTRAINTS):
         return "unique constraint set differs"
     return None
 
 
-def _alembic_config(database_path: Path) -> Config:
+def alembic_config(database_path: Path) -> Config:
     service_root = Path(__file__).resolve().parents[2]
     ini_path = service_root / "alembic.ini"
     migrations_path = service_root / "migrations"
@@ -337,7 +336,7 @@ def _alembic_config(database_path: Path) -> Config:
     return config
 
 
-def _single_head(config: Config) -> str:
+def single_head(config: Config) -> str:
     heads = ScriptDirectory.from_config(config).get_heads()
     if len(heads) != 1:
         raise DatabaseMigrationError(f"Expected one Alembic head, found {len(heads)}")
@@ -419,8 +418,8 @@ def ensure_database(database_path: Path | None = None) -> None:
 
     path = (database_path or settings.database_path).expanduser().resolve()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    config = _alembic_config(path)
-    head = _single_head(config)
+    config = alembic_config(path)
+    head = single_head(config)
 
     with sqlite3.connect(path, timeout=5) as connection:
         _validate_integrity(connection)

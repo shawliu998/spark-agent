@@ -6,7 +6,9 @@ import socket
 import stat
 import sys
 import threading
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import uvicorn
 
@@ -53,13 +55,13 @@ def _healthcheck(socket_path: Path) -> None:
     try:
         headers, body = bytes(response).split(b"\r\n\r\n", maxsplit=1)
         status_line = headers.split(b"\r\n", maxsplit=1)[0]
-        health = json.loads(body)
+        health_object: object = json.loads(body)
     except ValueError as error:
         raise RuntimeError("Runtime healthcheck returned an invalid HTTP response") from error
     if (
         b" 200 " not in status_line
-        or not isinstance(health, dict)
-        or health.get("status") != "ok"
+        or not isinstance(health_object, dict)
+        or cast(Mapping[str, object], health_object).get("status") != "ok"
     ):
         raise RuntimeError(f"Runtime healthcheck failed: {status_line!r} {body!r}")
 

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from pydantic import (
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictBool,
@@ -13,7 +14,6 @@ from pydantic import (
 )
 
 from ..schemas import ApiModel, BoundingBoxOut
-
 
 WorkflowStatus = Literal[
     "planning",
@@ -26,22 +26,55 @@ WorkflowStatus = Literal[
     "cancelled",
 ]
 PlanStatus = Literal["pending-approval", "approved", "rejected", "superseded"]
+WorkflowType = Literal["literature-synthesis", "dataset-analysis"]
 TaskStepType = Literal[
     "inspect-sources",
     "extract-local-evidence",
     "synthesize-extractive-claims",
+    "dataset-inspection",
+    "prepare-analysis",
+    "python-data-analysis",
+    "collect-artifacts",
 ]
 TaskStatus = Literal[
     "pending",
     "queued",
     "running",
+    "waiting-approval",
     "completed",
     "blocked",
     "failed",
     "cancelled",
 ]
-AllowedAction = Literal["approve-plan", "cancel", "retry", "resume"]
-ReviewVerdict = Literal["passed", "revision-required", "blocked", "failed"]
+AllowedAction = Literal[
+    "approve-plan",
+    "approve-analysis",
+    "reject-analysis",
+    "accept-review-warnings",
+    "cancel",
+    "retry",
+    "resume",
+]
+LiteratureAllowedAction = Literal["approve-plan", "cancel", "retry", "resume"]
+LiteratureReviewVerdict = Literal[
+    "passed",
+    "revision-required",
+    "blocked",
+    "failed",
+]
+DatasetAnalysisReviewVerdict = Literal[
+    "passed",
+    "passed-with-warnings",
+    "revision-required",
+    "blocked",
+    "failed",
+]
+ReviewVerdict = LiteratureReviewVerdict | DatasetAnalysisReviewVerdict
+ReviewType = Literal[
+    "deterministic-claims-v1",
+    "deterministic-claims-v2",
+    "deterministic-analysis-v1",
+]
 ClaimSupportStatus = Literal[
     "pending-review",
     "supported",
@@ -51,6 +84,129 @@ ClaimSupportStatus = Literal[
     "not-applicable",
 ]
 GenerationMode = Literal["local-deterministic", "remote-model-assisted"]
+WorkflowRiskLevel = Literal["low", "medium", "high"]
+
+DatasetAnalysisStepKey = Literal[
+    "inspect-dataset",
+    "prepare-analysis",
+    "execute-analysis",
+    "collect-artifacts",
+]
+DatasetAnalysisArtifactKind = Literal[
+    "dataset-profile",
+    "analysis-intent",
+    "executed-notebook",
+    "summary-table",
+    "figure",
+    "analysis-log",
+    "environment-manifest",
+]
+DatasetAnalysisExpectedOutput = Literal[
+    "dataset-profile",
+    "analysis-code",
+    "executed-notebook",
+    "summary-table",
+    "figures",
+    "analysis-log",
+    "environment-manifest",
+]
+DatasetAnalysisRuntimeArtifactType = Literal[
+    "notebook-input",
+    "notebook-executed",
+    "environment",
+    "stdout",
+    "stderr",
+    "log",
+    "figure",
+    "dataset",
+    "structured-data",
+]
+DatasetColumnInferredType = Literal[
+    "boolean",
+    "integer",
+    "number",
+    "datetime",
+    "categorical",
+    "string",
+    "empty",
+    "mixed",
+]
+DatasetInspectionWarningCode = Literal[
+    "encoding-fallback",
+    "duplicate-column-name",
+    "mixed-column-type",
+    "malformed-row",
+    "sample-limited",
+    "other",
+]
+
+_DATASET_ANALYSIS_EXECUTION_OUTPUT_SEQUENCES = {
+    ("executed-notebook", "analysis-log", "environment-manifest"),
+    (
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+    ),
+    (
+        "executed-notebook",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+    ),
+    (
+        "executed-notebook",
+        "summary-table",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+    ),
+}
+_DATASET_ANALYSIS_EXECUTION_ARTIFACT_SEQUENCES: dict[
+    tuple[DatasetAnalysisExpectedOutput, ...],
+    tuple[DatasetAnalysisArtifactKind, ...],
+] = {
+    ("executed-notebook", "analysis-log", "environment-manifest"): (
+        "executed-notebook",
+        "analysis-log",
+        "environment-manifest",
+    ),
+    (
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+    ): (
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+    ),
+    (
+        "executed-notebook",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+    ): (
+        "executed-notebook",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+    ),
+    (
+        "executed-notebook",
+        "summary-table",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+    ): (
+        "executed-notebook",
+        "summary-table",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+    ),
+}
 
 StepKey = Annotated[
     str,
@@ -61,10 +217,112 @@ StepKey = Annotated[
         pattern=r"^[a-z][a-z0-9-]*$",
     ),
 ]
+NonEmptyPlanText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=1_000),
+]
 
 
 class StrictApiModel(ApiModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class DatasetNumericRange(StrictApiModel):
+    minimum: float | None
+    maximum: float | None
+
+    @model_validator(mode="after")
+    def validate_range(self) -> DatasetNumericRange:
+        if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
+            raise ValueError("numeric range minimum cannot exceed maximum")
+        return self
+
+
+class DatasetLowCardinalitySummary(StrictApiModel):
+    values: list[str] = Field(max_length=50)
+    truncated: bool
+
+    @field_validator("values")
+    @classmethod
+    def validate_bounded_values(cls, value: list[str]) -> list[str]:
+        if any(len(item) > 200 or "\x00" in item for item in value):
+            raise ValueError("low-cardinality values must be safe bounded display strings")
+        if len(set(value)) != len(value):
+            raise ValueError("low-cardinality values must be unique")
+        return value
+
+
+class DatasetColumnProfile(StrictApiModel):
+    index: int = Field(ge=0)
+    name: str = Field(min_length=1, max_length=1_000)
+    inferred_type: DatasetColumnInferredType
+    missing_count: int = Field(ge=0)
+    unique_count: int = Field(ge=0)
+    numeric_range: DatasetNumericRange | None
+    low_cardinality: DatasetLowCardinalitySummary | None
+    potential_date: bool
+    potential_id: bool
+    mixed_type: bool
+
+
+class DatasetInspectionWarning(StrictApiModel):
+    code: DatasetInspectionWarningCode
+    message: str = Field(min_length=1, max_length=1_000)
+    column_name: str | None = Field(default=None, max_length=1_000)
+
+
+class DatasetSamplingRecord(StrictApiModel):
+    method: Literal["head-and-reservoir-v1"]
+    rows_read: int = Field(ge=0)
+    rows_profiled: int = Field(ge=0)
+    max_sample_rows: int = Field(ge=1, le=10_000)
+    seed: int = Field(ge=0, le=2**32 - 1)
+
+    @model_validator(mode="after")
+    def validate_sampling_counts(self) -> DatasetSamplingRecord:
+        if self.rows_profiled > self.rows_read:
+            raise ValueError("rows_profiled cannot exceed rows_read")
+        if self.rows_profiled > self.max_sample_rows:
+            raise ValueError("rows_profiled cannot exceed max_sample_rows")
+        return self
+
+
+class DatasetProfile(StrictApiModel):
+    schema_version: Literal["1"]
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    filename: str = Field(min_length=1, max_length=255)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    file_size_bytes: int = Field(ge=1)
+    encoding: str = Field(min_length=1, max_length=100)
+    delimiter: str = Field(min_length=1, max_length=1)
+    row_count: int = Field(ge=0)
+    column_count: int = Field(ge=1, le=10_000)
+    columns: list[DatasetColumnProfile] = Field(min_length=1, max_length=10_000)
+    sampling: DatasetSamplingRecord
+    warnings: list[DatasetInspectionWarning] = Field(max_length=1_000)
+
+    @field_validator("filename")
+    @classmethod
+    def validate_basename(cls, value: str) -> str:
+        if "/" in value or "\\" in value or value in {".", ".."}:
+            raise ValueError("filename must be a basename, not a path")
+        return value
+
+    @model_validator(mode="after")
+    def validate_profile_shape(self) -> DatasetProfile:
+        if self.column_count != len(self.columns):
+            raise ValueError("column_count must match the number of column profiles")
+        indexes = [column.index for column in self.columns]
+        if indexes != list(range(self.column_count)):
+            raise ValueError("column profile indexes must be contiguous and ordered")
+        if self.sampling.rows_read != self.row_count:
+            raise ValueError("sampling rows_read must match the streamed row_count")
+        if any(
+            column.missing_count > self.row_count or column.unique_count > self.row_count
+            for column in self.columns
+        ):
+            raise ValueError("column counts cannot exceed the dataset row_count")
+        return self
 
 
 class FrozenSourceDescriptor(StrictApiModel):
@@ -147,9 +405,7 @@ class PlanSpec(StrictApiModel):
 
     @field_validator("steps")
     @classmethod
-    def validate_frozen_sequence(
-        cls, value: list[SequentialStepSpec]
-    ) -> list[SequentialStepSpec]:
+    def validate_frozen_sequence(cls, value: list[SequentialStepSpec]) -> list[SequentialStepSpec]:
         expected = [
             "inspect-sources",
             "extract-local-evidence",
@@ -164,9 +420,172 @@ class PlanSpec(StrictApiModel):
             ExtractLocalEvidenceInput,
             SynthesizeExtractiveClaimsInput,
         )
-        if any(not isinstance(step.inputs, kind) for step, kind in zip(value, expected_input_types)):
+        if any(type(step.inputs) is not kind for step, kind in zip(value, expected_input_types)):
             raise ValueError("step input does not match its step type")
         return value
+
+
+class DatasetInspectionStepInput(StrictApiModel):
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    sampling_method: Literal["head-and-reservoir-v1"]
+    max_sample_rows: int = Field(ge=1, le=10_000)
+
+
+class PrepareAnalysisStepInput(StrictApiModel):
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    profile_step_key: Literal["inspect-dataset"]
+
+
+class ExecuteAnalysisStepInput(StrictApiModel):
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    preparation_step_key: Literal["prepare-analysis"]
+    expected_outputs: tuple[DatasetAnalysisExpectedOutput, ...] = Field(min_length=1)
+    timeout_seconds: int = Field(ge=1, le=3_600)
+
+    @field_validator("expected_outputs")
+    @classmethod
+    def validate_execution_outputs(
+        cls,
+        value: tuple[DatasetAnalysisExpectedOutput, ...],
+    ) -> tuple[DatasetAnalysisExpectedOutput, ...]:
+        if value not in _DATASET_ANALYSIS_EXECUTION_OUTPUT_SEQUENCES:
+            raise ValueError(
+                "expected_outputs must use the canonical sequence with notebook, "
+                "analysis log, and environment manifest"
+            )
+        return value
+
+
+class CollectArtifactsStepInput(StrictApiModel):
+    execution_step_key: Literal["execute-analysis"]
+    expected_outputs: tuple[DatasetAnalysisExpectedOutput, ...] = Field(min_length=1)
+
+    @field_validator("expected_outputs")
+    @classmethod
+    def validate_execution_outputs(
+        cls,
+        value: tuple[DatasetAnalysisExpectedOutput, ...],
+    ) -> tuple[DatasetAnalysisExpectedOutput, ...]:
+        if value not in _DATASET_ANALYSIS_EXECUTION_OUTPUT_SEQUENCES:
+            raise ValueError(
+                "expected_outputs must use the canonical sequence with notebook, "
+                "analysis log, and environment manifest"
+            )
+        return value
+
+
+class DatasetAnalysisStepBase(StrictApiModel):
+    objective: str = Field(min_length=1, max_length=8_000)
+    expected_artifacts: tuple[DatasetAnalysisArtifactKind, ...] = Field(min_length=1)
+    acceptance_criteria: tuple[NonEmptyPlanText, ...] = Field(min_length=1)
+
+    @field_validator("expected_artifacts", "acceptance_criteria")
+    @classmethod
+    def validate_unique_step_requirements(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("step requirements must be unique")
+        return value
+
+
+class DatasetInspectionPlanStep(DatasetAnalysisStepBase):
+    key: Literal["inspect-dataset"]
+    type: Literal["dataset-inspection"]
+    dependencies: tuple[()]
+    inputs: DatasetInspectionStepInput
+    risk_level: Literal["low"]
+
+
+class PrepareAnalysisPlanStep(DatasetAnalysisStepBase):
+    key: Literal["prepare-analysis"]
+    type: Literal["prepare-analysis"]
+    dependencies: tuple[Literal["inspect-dataset"]]
+    inputs: PrepareAnalysisStepInput
+    risk_level: Literal["medium"]
+
+
+class ExecuteAnalysisPlanStep(DatasetAnalysisStepBase):
+    key: Literal["execute-analysis"]
+    type: Literal["python-data-analysis"]
+    dependencies: tuple[Literal["prepare-analysis"]]
+    inputs: ExecuteAnalysisStepInput
+    risk_level: Literal["high"]
+
+
+class CollectArtifactsPlanStep(DatasetAnalysisStepBase):
+    key: Literal["collect-artifacts"]
+    type: Literal["collect-artifacts"]
+    dependencies: tuple[Literal["execute-analysis"]]
+    inputs: CollectArtifactsStepInput
+    risk_level: Literal["low"]
+
+
+class DatasetAnalysisPlanSpec(StrictApiModel):
+    schema_version: Literal["1"]
+    workflow_type: Literal["dataset-analysis"]
+    goal: str = Field(min_length=2, max_length=8_000)
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    assumptions: list[NonEmptyPlanText]
+    questions_for_user: list[NonEmptyPlanText]
+    steps: tuple[
+        DatasetInspectionPlanStep,
+        PrepareAnalysisPlanStep,
+        ExecuteAnalysisPlanStep,
+        CollectArtifactsPlanStep,
+    ]
+
+    @field_validator("assumptions", "questions_for_user")
+    @classmethod
+    def validate_unique_plan_notes(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("plan assumptions and questions must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def validate_dataset_bindings(self) -> DatasetAnalysisPlanSpec:
+        dataset_inputs = (self.steps[0].inputs, self.steps[1].inputs, self.steps[2].inputs)
+        if any(
+            step_input.dataset_source_id != self.dataset_source_id
+            or step_input.dataset_content_hash != self.dataset_content_hash
+            for step_input in dataset_inputs
+        ):
+            raise ValueError("every dataset-bound step must use the plan's dataset identity")
+        if self.steps[2].inputs.expected_outputs != self.steps[3].inputs.expected_outputs:
+            raise ValueError("artifact collection must bind the execution expected outputs")
+        if self.steps[0].expected_artifacts != ("dataset-profile",):
+            raise ValueError("dataset inspection must produce exactly the dataset profile")
+        if self.steps[1].expected_artifacts != ("analysis-intent",):
+            raise ValueError("analysis preparation must produce exactly one analysis intent")
+
+        execution_output_sequence = self.steps[2].inputs.expected_outputs
+        execution_outputs = set(execution_output_sequence)
+        required_outputs = {
+            "executed-notebook",
+            "analysis-log",
+            "environment-manifest",
+        }
+        if not required_outputs.issubset(execution_outputs):
+            raise ValueError(
+                "execution outputs must include the notebook, analysis log, and "
+                "environment manifest"
+            )
+        if execution_outputs & {"dataset-profile", "analysis-code"}:
+            raise ValueError("execution outputs cannot claim planning-stage outputs")
+
+        required_artifacts = _DATASET_ANALYSIS_EXECUTION_ARTIFACT_SEQUENCES[
+            execution_output_sequence
+        ]
+        if self.steps[2].expected_artifacts != required_artifacts:
+            raise ValueError("execution artifacts must exactly match the declared outputs")
+        if self.steps[3].expected_artifacts != self.steps[2].expected_artifacts:
+            raise ValueError("artifact collection must bind the execution artifacts")
+        return self
+
+
+ResearchPlanSpec = PlanSpec | DatasetAnalysisPlanSpec
 
 
 class ModelInspectStepProposal(StrictApiModel):
@@ -198,9 +617,7 @@ class ModelSynthesisStepProposal(StrictApiModel):
 class ModelPlanProposal(StrictApiModel):
     schema_version: Literal["1"] = "1"
     steps: list[
-        ModelInspectStepProposal
-        | ModelEvidenceStepProposal
-        | ModelSynthesisStepProposal
+        ModelInspectStepProposal | ModelEvidenceStepProposal | ModelSynthesisStepProposal
     ] = Field(min_length=3, max_length=3)
 
     @field_validator("steps")
@@ -208,15 +625,9 @@ class ModelPlanProposal(StrictApiModel):
     def validate_frozen_sequence(
         cls,
         value: list[
-            ModelInspectStepProposal
-            | ModelEvidenceStepProposal
-            | ModelSynthesisStepProposal
+            ModelInspectStepProposal | ModelEvidenceStepProposal | ModelSynthesisStepProposal
         ],
-    ) -> list[
-        ModelInspectStepProposal
-        | ModelEvidenceStepProposal
-        | ModelSynthesisStepProposal
-    ]:
+    ) -> list[ModelInspectStepProposal | ModelEvidenceStepProposal | ModelSynthesisStepProposal]:
         expected = [
             "inspect-sources",
             "extract-local-evidence",
@@ -283,6 +694,53 @@ class WorkflowCreateIn(StrictApiModel):
         return self
 
 
+class DatasetWorkflowCreateIn(StrictApiModel):
+    goal: str = Field(min_length=2, max_length=8_000)
+    workflow_type: Literal["dataset-analysis"]
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    generation_mode: GenerationMode = "local-deterministic"
+    remote_data_approved: StrictBool = False
+
+    @field_validator("goal")
+    @classmethod
+    def reject_blank_goal(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("goal must not be blank")
+        return value.strip()
+
+    @model_validator(mode="after")
+    def require_explicit_remote_approval(self) -> DatasetWorkflowCreateIn:
+        if self.generation_mode != "local-deterministic":
+            raise ValueError("dataset-analysis currently supports local-deterministic only")
+        if self.remote_data_approved:
+            raise ValueError(
+                "remote_data_approved is not valid for local dataset analysis"
+            )
+        return self
+
+
+def _default_literature_workflow_type(value: object) -> object:
+    if (
+        isinstance(value, dict)
+        and "workflow_type" not in value
+        and "workflowType" not in value
+    ):
+        return {
+            **cast(dict[str, object], value),
+            "workflowType": "literature-synthesis",
+        }
+    if isinstance(value, dict):
+        return cast(dict[object, object], value)
+    return value
+
+
+ResearchWorkflowCreateIn = Annotated[
+    WorkflowCreateIn | DatasetWorkflowCreateIn,
+    Field(discriminator="workflow_type"),
+    BeforeValidator(_default_literature_workflow_type),
+]
+
+
 class ApprovePlanIn(StrictApiModel):
     approval_id: str = Field(min_length=1, max_length=36)
     plan_id: str = Field(min_length=1, max_length=36)
@@ -299,6 +757,20 @@ class RetryWorkflowIn(WorkflowMutationIn):
     task_id: str | None = Field(default=None, max_length=36)
 
 
+class WorkflowAnalysisDecisionIn(StrictApiModel):
+    approval_id: str = Field(min_length=1, max_length=36)
+    decision: Literal["approved", "rejected"]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_workflow_revision: int = Field(ge=1)
+
+
+class AcceptReviewWarningsIn(StrictApiModel):
+    review_id: str = Field(min_length=1, max_length=36)
+    review_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_workflow_revision: int = Field(ge=1)
+    decision: Literal["accepted"]
+
+
 class BlockingReasonOut(ApiModel):
     code: str
     user_message: str
@@ -308,7 +780,9 @@ class BlockingReasonOut(ApiModel):
 class WorkflowStateOut(ApiModel):
     id: str
     project_id: str
-    workflow_type: Literal["literature-synthesis"]
+    workflow_type: WorkflowType
+    dataset_source_id: str | None = None
+    dataset_content_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     goal: str
     generation_mode: GenerationMode
     status: WorkflowStatus
@@ -322,51 +796,157 @@ class WorkflowStateOut(ApiModel):
     updated_at: datetime
     completed_at: datetime | None
 
+    @model_validator(mode="after")
+    def validate_dataset_identity(self) -> WorkflowStateOut:
+        has_source = self.dataset_source_id is not None
+        has_hash = self.dataset_content_hash is not None
+        if self.workflow_type == "dataset-analysis" and not (has_source and has_hash):
+            raise ValueError("dataset-analysis workflow snapshots require immutable identity")
+        if self.workflow_type == "literature-synthesis" and (has_source or has_hash):
+            raise ValueError("literature workflow snapshots cannot carry dataset identity")
+        return self
 
-class MaterializedStepOut(ApiModel):
-    id: str
-    key: str
-    order_index: int
+
+class MaterializedStepOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    key: StepKey
+    order_index: int = Field(ge=0)
     type: TaskStepType
-    objective: str
+    objective: str = Field(min_length=1, max_length=2_000)
     status: TaskStatus
-    retry_count: int
+    retry_count: int = Field(ge=0)
     started_at: datetime | None
     completed_at: datetime | None
     output_summary: str | None
 
 
-class PlanSnapshotOut(ApiModel):
-    id: str
-    workflow_id: str
-    version: int
+class PlanSnapshotOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    workflow_id: str = Field(min_length=1, max_length=36)
+    version: int = Field(ge=1)
     status: PlanStatus
-    plan_sha256: str
+    plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     generator: str
     model: str | None
     prompt_version: str | None
-    spec: PlanSpec
+    spec: ResearchPlanSpec
     steps: list[MaterializedStepOut]
     created_at: datetime
     approved_at: datetime | None
 
+    @model_validator(mode="after")
+    def validate_materialized_steps(self) -> PlanSnapshotOut:
+        if not isinstance(self.spec, DatasetAnalysisPlanSpec):
+            return self
+        if len(self.steps) != len(self.spec.steps):
+            raise ValueError("dataset plans require exactly four materialized steps")
+        if len({step.id for step in self.steps}) != len(self.steps):
+            raise ValueError("materialized dataset step identifiers must be unique")
+        for order_index, (materialized, declared) in enumerate(
+            zip(self.steps, self.spec.steps, strict=True)
+        ):
+            if (
+                materialized.order_index != order_index
+                or materialized.key != declared.key
+                or materialized.type != declared.type
+                or materialized.objective != declared.objective
+            ):
+                raise ValueError(
+                    "materialized dataset steps must exactly match the approved plan spec"
+                )
+        return self
 
-class PendingApprovalOut(ApiModel):
+
+class PendingApprovalOut(StrictApiModel):
     id: str
     workflow_id: str
     plan_id: str
-    task_id: str | None
+    task_id: None
     kind: Literal["plan"]
     status: Literal["waiting"]
-    subject_type: str
+    subject_type: Literal["plan"]
     subject_id: str
     action: str
     payload_sha256: str
-    risk_level: str
+    risk_level: WorkflowRiskLevel
     reason: str
     affected_resources: list[str]
     created_at: datetime
     decided_at: datetime | None
+
+
+class DatasetPlanPendingApprovalOut(StrictApiModel):
+    id: str
+    workflow_id: str
+    plan_id: str
+    task_id: None
+    kind: Literal["plan"]
+    status: Literal["waiting"]
+    subject_type: Literal["plan"]
+    subject_id: str
+    workflow_type: Literal["dataset-analysis"]
+    action: Literal["approve-plan"]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    risk_level: Literal["medium"]
+    reason: str
+    affected_resources: list[str]
+    approval_schema_version: Literal["workflow-plan-approval-v3"]
+    plan_version: int = Field(ge=1)
+    plan_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_workflow_revision: int = Field(ge=1)
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+    decided_at: datetime | None
+
+    @model_validator(mode="after")
+    def validate_plan_subject(self) -> DatasetPlanPendingApprovalOut:
+        if self.subject_id != self.plan_id:
+            raise ValueError("dataset plan approval subject must be the exact plan")
+        return self
+
+
+class AnalysisExecutionPendingApprovalOut(StrictApiModel):
+    id: str
+    workflow_id: str
+    plan_id: str
+    task_id: str
+    kind: Literal["analysis-execution"]
+    status: Literal["waiting"]
+    subject_type: Literal["analysis-intent"]
+    subject_id: str
+    action: Literal["execute-python-data-analysis"]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    risk_level: Literal["high"]
+    reason: str
+    affected_resources: list[str]
+    approval_schema_version: Literal["analysis-intent-v2", "analysis-intent-v3"]
+    expected_workflow_revision: int = Field(ge=1)
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    plan_step_id: Literal["execute-analysis"]
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_outputs: tuple[DatasetAnalysisExpectedOutput, ...] = Field(min_length=1)
+    timeout_seconds: int = Field(ge=1, le=3_600)
+    code: str = Field(min_length=1, max_length=100_000)
+    code_diff: str | None = Field(default=None, max_length=200_000)
+    created_at: datetime
+    decided_at: datetime | None
+
+    @model_validator(mode="after")
+    def validate_analysis_subject(self) -> AnalysisExecutionPendingApprovalOut:
+        if self.subject_id != self.analysis_intent_id:
+            raise ValueError("analysis approval subject must be the exact intent")
+        if self.expected_outputs not in _DATASET_ANALYSIS_EXECUTION_OUTPUT_SEQUENCES:
+            raise ValueError(
+                "analysis approval must bind the canonical mandatory execution outputs"
+            )
+        return self
+
+
+WorkflowPendingApprovalOut = (
+    PendingApprovalOut | DatasetPlanPendingApprovalOut | AnalysisExecutionPendingApprovalOut
+)
 
 
 class EvidenceRelationshipOut(ApiModel):
@@ -423,7 +1003,7 @@ class ClaimReviewResult(StrictApiModel):
 
 class DeterministicReviewResult(StrictApiModel):
     schema_version: Literal["1", "2"] = "1"
-    verdict: ReviewVerdict
+    verdict: LiteratureReviewVerdict
     checks: list[ReviewCheck]
     claim_results: list[ClaimReviewResult]
     required_revisions: list[str]
@@ -448,27 +1028,509 @@ class DeterministicReviewResult(StrictApiModel):
         return self
 
 
-class ReviewSnapshotOut(ApiModel):
+class DatasetAnalysisReviewCheck(StrictApiModel):
+    code: str = Field(min_length=1, max_length=100)
+    status: Literal["passed", "warning", "failed"]
+    message: str = Field(min_length=1, max_length=1_000)
+    artifact_id: str | None
+
+
+class DatasetAnalysisReviewIssue(StrictApiModel):
+    code: str = Field(min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=1_000)
+    artifact_id: str | None
+
+
+class DatasetAnalysisReviewResult(StrictApiModel):
+    schema_version: Literal["1"]
+    verdict: DatasetAnalysisReviewVerdict
+    checks: list[DatasetAnalysisReviewCheck]
+    artifact_issues: list[DatasetAnalysisReviewIssue]
+    numeric_issues: list[DatasetAnalysisReviewIssue]
+    method_warnings: list[DatasetAnalysisReviewIssue]
+    required_revisions: list[NonEmptyPlanText]
+    run_id: str = Field(min_length=1, max_length=36)
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    input_dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_verdict_evidence(self) -> DatasetAnalysisReviewResult:
+        has_warning = any(check.status == "warning" for check in self.checks) or bool(
+            self.method_warnings
+        )
+        has_failure = any(check.status == "failed" for check in self.checks) or bool(
+            self.artifact_issues or self.numeric_issues
+        )
+        if self.verdict == "passed" and (has_warning or has_failure):
+            raise ValueError("a passed review cannot contain warnings or failures")
+        if self.verdict == "passed-with-warnings" and (not has_warning or has_failure):
+            raise ValueError("passed-with-warnings requires a warning and cannot contain failures")
+        if self.verdict == "revision-required" and not (has_failure and self.required_revisions):
+            raise ValueError(
+                "revision-required needs a failed check or issue and a required revision"
+            )
+        if self.verdict in {"passed", "passed-with-warnings"} and self.required_revisions:
+            raise ValueError("successful reviews cannot require revisions")
+        return self
+
+
+class ReviewSnapshotOut(StrictApiModel):
     id: str
-    review_type: str
+    review_type: ReviewType
     verdict: ReviewVerdict
-    input_sha256: str
-    result: DeterministicReviewResult
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result: DeterministicReviewResult | DatasetAnalysisReviewResult
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_review_contract(self) -> ReviewSnapshotOut:
+        if self.verdict != self.result.verdict:
+            raise ValueError("review verdict must match the persisted result verdict")
+        if self.review_type == "deterministic-analysis-v1":
+            if not isinstance(self.result, DatasetAnalysisReviewResult):
+                raise ValueError("analysis reviews require an analysis review result")
+            return self
+        if not isinstance(self.result, DeterministicReviewResult):
+            raise ValueError("claims reviews require a claims review result")
+        expected_schema = "1" if self.review_type == "deterministic-claims-v1" else "2"
+        if self.result.schema_version != expected_schema:
+            raise ValueError("claims review type must match its result schema version")
+        return self
+
+
+class AnalysisErrorSummaryOut(StrictApiModel):
+    schema_version: Literal["1"]
+    category: Literal[
+        "policy",
+        "runtime",
+        "timeout",
+        "input-integrity",
+        "artifact-integrity",
+        "unknown",
+    ]
+    code: str = Field(min_length=1, max_length=100)
+    user_message: str = Field(min_length=1, max_length=2_000)
+    stderr_excerpt: str | None = Field(default=None, max_length=4_000)
+    retryable: StrictBool
+
+
+class WorkflowAnalysisIntentOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    task_id: str = Field(min_length=1, max_length=36)
+    project_id: str = Field(min_length=1, max_length=36)
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    objective: str = Field(min_length=1, max_length=8_000)
+    code: str = Field(min_length=1, max_length=100_000)
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    risk_level: Literal["high"]
+    affected_resources: list[str]
+    status: Literal[
+        "waiting-approval",
+        "approved",
+        "rejected",
+        "executing",
+        "completed",
+        "failed",
+    ]
+    decision: Literal["approved", "rejected"] | None
+    workflow_id: str = Field(min_length=1, max_length=36)
+    plan_step_id: Literal["execute-analysis"]
+    previous_intent_id: str | None = Field(default=None, max_length=36)
+    expected_outputs: tuple[DatasetAnalysisExpectedOutput, ...] = Field(min_length=1)
+    timeout_seconds: int = Field(ge=1, le=3_600)
+    repair_attempt: Literal[0, 1, 2]
+    error_summary: AnalysisErrorSummaryOut | None
+    code_diff: str | None = Field(default=None, max_length=200_000)
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def validate_workflow_intent(self) -> WorkflowAnalysisIntentOut:
+        if self.expected_outputs not in _DATASET_ANALYSIS_EXECUTION_OUTPUT_SEQUENCES:
+            raise ValueError("workflow intents require the canonical execution outputs")
+        if self.repair_attempt == 0 and (
+            self.previous_intent_id is not None or self.code_diff is not None
+        ):
+            raise ValueError("the initial analysis intent cannot contain repair lineage")
+        if self.repair_attempt > 0 and (
+            self.previous_intent_id is None
+            or self.error_summary is None
+            or self.code_diff is None
+            or not self.code_diff.strip()
+        ):
+            raise ValueError("repair intents must bind the prior failure and code diff")
+        if self.repair_attempt == 0 and self.status != "failed" and self.error_summary is not None:
+            raise ValueError("an initial intent can record an error only after failure")
+        if self.status == "failed" and self.error_summary is None:
+            raise ValueError("a failed workflow intent requires a safe error summary")
+        if self.status == "rejected" and self.decision != "rejected":
+            raise ValueError("a rejected intent must record the rejected decision")
+        if self.status in {"approved", "executing", "completed", "failed"} and (
+            self.decision != "approved"
+        ):
+            raise ValueError("an executable intent must record the approved decision")
+        if self.status == "waiting-approval" and self.decision is not None:
+            raise ValueError("a waiting intent cannot already have a decision")
+        return self
+
+
+class WorkflowAnalysisArtifactOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    artifact_type: DatasetAnalysisRuntimeArtifactType
+    path: str = Field(min_length=1, max_length=4_096)
+    mime_type: str = Field(min_length=1, max_length=200)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size_bytes: int = Field(ge=0)
     created_at: datetime
 
 
-class ResearchWorkflowSnapshot(ApiModel):
+class WorkflowAnalysisRunOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    intent_id: str = Field(min_length=1, max_length=36)
+    task_id: str = Field(min_length=1, max_length=36)
+    project_id: str = Field(min_length=1, max_length=36)
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    objective: str = Field(min_length=1, max_length=8_000)
+    code: str = Field(min_length=1, max_length=100_000)
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["pending", "running", "completed", "failed"]
+    environment_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    input_artifacts: list[str]
+    output_artifacts: list[str]
+    stdout: str
+    stderr: str
+    log: str
+    logs: str
+    error: str | None
+    artifacts: list[WorkflowAnalysisArtifactOut]
+    created_at: datetime
+    finished_at: datetime | None
+
+    @model_validator(mode="after")
+    def validate_terminal_state(self) -> WorkflowAnalysisRunOut:
+        if len({artifact.id for artifact in self.artifacts}) != len(self.artifacts):
+            raise ValueError("analysis artifact identifiers must be unique")
+        if len({artifact.path for artifact in self.artifacts}) != len(self.artifacts):
+            raise ValueError("analysis artifact paths must be unique")
+        if self.status == "completed" and (
+            self.environment_hash is None or self.finished_at is None or self.error is not None
+        ):
+            raise ValueError("a completed analysis run requires terminal integrity fields")
+        if self.status == "completed":
+            artifact_types = {artifact.artifact_type for artifact in self.artifacts}
+            required_types = {
+                "notebook-executed",
+                "environment",
+                "stdout",
+                "stderr",
+                "log",
+            }
+            if not required_types.issubset(artifact_types):
+                raise ValueError("a completed analysis run requires all runtime audit artifacts")
+            environment_artifacts = [
+                artifact for artifact in self.artifacts if artifact.artifact_type == "environment"
+            ]
+            if (
+                len(environment_artifacts) != 1
+                or environment_artifacts[0].content_hash != self.environment_hash
+            ):
+                raise ValueError(
+                    "the environment artifact must bind the run environment hash"
+                )
+            artifact_paths = {artifact.path for artifact in self.artifacts}
+            if len(self.output_artifacts) != len(set(self.output_artifacts)) or set(
+                self.output_artifacts
+            ) != artifact_paths:
+                raise ValueError("run output_artifacts must exactly list its artifact records")
+        if self.status == "failed" and (self.finished_at is None or not self.error):
+            raise ValueError("a failed analysis run requires a safe terminal error")
+        if self.status in {"pending", "running"} and self.finished_at is not None:
+            raise ValueError("a non-terminal analysis run cannot have a finished time")
+        return self
+
+
+class DatasetReviewWarningAcceptanceOut(StrictApiModel):
+    event_id: str = Field(min_length=1, max_length=36)
+    review_id: str = Field(min_length=1, max_length=36)
+    review_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_workflow_revision: int = Field(ge=1)
+    decision: Literal["accepted"]
+    accepted_at: datetime
+
+
+class ResearchWorkflowSnapshot(StrictApiModel):
     workflow: WorkflowStateOut
     plan: PlanSnapshotOut | None
-    pending_approvals: list[PendingApprovalOut]
+    pending_approvals: list[WorkflowPendingApprovalOut]
     result: WorkflowResultOut | None
     latest_review: ReviewSnapshotOut | None
+    dataset_profile: DatasetProfile | None = None
+    analysis_intent: WorkflowAnalysisIntentOut | None = None
+    analysis_run: WorkflowAnalysisRunOut | None = None
+    review_warning_acceptance: DatasetReviewWarningAcceptanceOut | None = None
     allowed_actions: list[AllowedAction]
-    event_cursor: int
+    event_cursor: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_workflow_contract(self) -> ResearchWorkflowSnapshot:
+        if self.plan is not None and self.plan.workflow_id != self.workflow.id:
+            raise ValueError("the plan must belong to the snapshot workflow")
+        if (self.plan is None) != (self.workflow.plan_version is None):
+            raise ValueError("workflow plan_version and the current plan must appear together")
+        if self.plan is not None and self.workflow.plan_version != self.plan.version:
+            raise ValueError("workflow plan_version must match the current plan")
+        if self.workflow.current_step_id is not None and (
+            self.plan is None
+            or self.workflow.current_step_id not in {step.id for step in self.plan.steps}
+        ):
+            raise ValueError("workflow current_step_id must belong to the current plan")
+        if any(approval.workflow_id != self.workflow.id for approval in self.pending_approvals):
+            raise ValueError("every approval must belong to the snapshot workflow")
+
+        if self.workflow.workflow_type == "dataset-analysis":
+            if any(
+                not isinstance(
+                    approval,
+                    (DatasetPlanPendingApprovalOut, AnalysisExecutionPendingApprovalOut),
+                )
+                for approval in self.pending_approvals
+            ):
+                raise ValueError("dataset workflows require content-bound approval envelopes")
+            if self.result is not None:
+                raise ValueError("dataset workflow results are represented by intent and run data")
+            if self.plan is not None:
+                if not isinstance(self.plan.spec, DatasetAnalysisPlanSpec):
+                    raise ValueError("dataset workflows require the fixed dataset analysis plan")
+                if (
+                    self.plan.spec.goal != self.workflow.goal
+                    or self.plan.spec.dataset_source_id != self.workflow.dataset_source_id
+                    or self.plan.spec.dataset_content_hash != self.workflow.dataset_content_hash
+                ):
+                    raise ValueError("the dataset plan must bind the workflow dataset identity")
+            if self.dataset_profile is not None and (
+                self.dataset_profile.dataset_source_id != self.workflow.dataset_source_id
+                or self.dataset_profile.content_hash != self.workflow.dataset_content_hash
+            ):
+                raise ValueError("the dataset profile must bind the workflow dataset identity")
+            if self.analysis_intent is not None:
+                if self.plan is None:
+                    raise ValueError("a workflow analysis intent requires its materialized plan")
+                if self.plan.status != "approved":
+                    raise ValueError("analysis intents require an approved dataset plan")
+                if not isinstance(self.plan.spec, DatasetAnalysisPlanSpec):
+                    raise ValueError("analysis intents require the fixed dataset plan")
+                execute_task = self.plan.steps[2]
+                execute_spec = self.plan.spec.steps[2]
+                if (
+                    self.analysis_intent.workflow_id != self.workflow.id
+                    or self.analysis_intent.project_id != self.workflow.project_id
+                    or self.analysis_intent.dataset_source_id != self.workflow.dataset_source_id
+                    or self.analysis_intent.dataset_content_hash
+                    != self.workflow.dataset_content_hash
+                    or self.analysis_intent.task_id != execute_task.id
+                    or self.analysis_intent.objective != execute_spec.objective
+                    or self.analysis_intent.expected_outputs
+                    != execute_spec.inputs.expected_outputs
+                    or self.analysis_intent.timeout_seconds
+                    != execute_spec.inputs.timeout_seconds
+                ):
+                    raise ValueError(
+                        "the analysis intent must bind the workflow dataset and execute task"
+                    )
+            if self.analysis_run is not None:
+                if self.analysis_intent is None:
+                    raise ValueError("an analysis run requires its exact workflow intent")
+                if (
+                    self.analysis_run.intent_id != self.analysis_intent.id
+                    or self.analysis_run.task_id != self.analysis_intent.task_id
+                    or self.analysis_run.project_id != self.workflow.project_id
+                    or self.analysis_run.dataset_source_id != self.workflow.dataset_source_id
+                    or self.analysis_run.payload_sha256 != self.analysis_intent.payload_sha256
+                    or self.analysis_run.objective != self.analysis_intent.objective
+                    or self.analysis_run.code != self.analysis_intent.code
+                ):
+                    raise ValueError("the analysis run must bind its exact workflow intent")
+                expected_intent_status = (
+                    "executing"
+                    if self.analysis_run.status in {"pending", "running"}
+                    else self.analysis_run.status
+                )
+                if self.analysis_intent.status != expected_intent_status:
+                    raise ValueError("analysis run and intent lifecycle states must agree")
+                if self.analysis_run.input_artifacts != [self.workflow.dataset_source_id]:
+                    raise ValueError("the analysis run must use only the approved dataset input")
+                actual_artifact_types = {
+                    artifact.artifact_type for artifact in self.analysis_run.artifacts
+                }
+                required_artifact_types = {
+                    "notebook-executed",
+                    "environment",
+                    "stdout",
+                    "stderr",
+                    "log",
+                }
+                allowed_artifact_types = required_artifact_types | {"notebook-input"}
+                if "summary-table" in self.analysis_intent.expected_outputs:
+                    required_artifact_types.add("dataset")
+                    allowed_artifact_types.add("dataset")
+                if "figures" in self.analysis_intent.expected_outputs:
+                    required_artifact_types.add("figure")
+                    allowed_artifact_types.add("figure")
+                if self.analysis_run.status == "completed" and (
+                    not required_artifact_types.issubset(actual_artifact_types)
+                    or not actual_artifact_types.issubset(allowed_artifact_types)
+                ):
+                    raise ValueError(
+                        "completed run artifacts must exactly respect the declared outputs"
+                    )
+            elif self.analysis_intent is not None and self.analysis_intent.status not in {
+                "waiting-approval",
+                "approved",
+                "rejected",
+            }:
+                raise ValueError("an executing or terminal workflow intent requires its run")
+            if self.latest_review is not None:
+                if not isinstance(self.latest_review.result, DatasetAnalysisReviewResult):
+                    raise ValueError("dataset workflows require deterministic analysis reviews")
+                if self.analysis_intent is None or self.analysis_run is None:
+                    raise ValueError("an analysis review requires its exact intent and run")
+                if (
+                    self.latest_review.result.analysis_intent_id != self.analysis_intent.id
+                    or self.latest_review.result.run_id != self.analysis_run.id
+                    or self.latest_review.result.input_dataset_content_hash
+                    != self.workflow.dataset_content_hash
+                ):
+                    raise ValueError("the analysis review must bind the exact reviewed run")
+            if self.review_warning_acceptance is not None:
+                if (
+                    self.latest_review is None
+                    or self.latest_review.verdict != "passed-with-warnings"
+                    or self.review_warning_acceptance.review_id != self.latest_review.id
+                    or self.review_warning_acceptance.review_input_sha256
+                    != self.latest_review.input_sha256
+                ):
+                    raise ValueError(
+                        "warning acceptance must bind a warning-bearing analysis review"
+                    )
+            for approval in self.pending_approvals:
+                if isinstance(approval, DatasetPlanPendingApprovalOut):
+                    if (
+                        self.plan is None
+                        or approval.dataset_source_id != self.workflow.dataset_source_id
+                        or approval.dataset_content_hash != self.workflow.dataset_content_hash
+                        or approval.plan_id != self.plan.id
+                        or approval.plan_version != self.plan.version
+                        or approval.plan_sha256 != self.plan.plan_sha256
+                        or approval.expected_workflow_revision != self.workflow.revision
+                        or self.plan.status != "pending-approval"
+                        or self.analysis_intent is not None
+                        or self.analysis_run is not None
+                    ):
+                        raise ValueError("dataset plan approval identity does not match")
+                elif isinstance(approval, AnalysisExecutionPendingApprovalOut):
+                    if (
+                        self.plan is None
+                        or approval.dataset_source_id != self.workflow.dataset_source_id
+                        or approval.dataset_content_hash != self.workflow.dataset_content_hash
+                        or self.analysis_intent is None
+                        or approval.plan_id != self.plan.id
+                        or approval.analysis_intent_id != self.analysis_intent.id
+                        or approval.task_id != self.analysis_intent.task_id
+                        or approval.payload_sha256 != self.analysis_intent.payload_sha256
+                        or approval.plan_step_id != self.analysis_intent.plan_step_id
+                        or approval.expected_outputs != self.analysis_intent.expected_outputs
+                        or approval.timeout_seconds != self.analysis_intent.timeout_seconds
+                        or approval.code != self.analysis_intent.code
+                        or approval.code_diff != self.analysis_intent.code_diff
+                        or approval.expected_workflow_revision != self.workflow.revision
+                        or self.plan.status != "approved"
+                        or self.analysis_intent.status != "waiting-approval"
+                        or self.analysis_intent.decision is not None
+                        or self.analysis_run is not None
+                    ):
+                        raise ValueError("analysis approval must bind the current exact intent")
+            plan_approvals = [
+                approval
+                for approval in self.pending_approvals
+                if isinstance(approval, DatasetPlanPendingApprovalOut)
+            ]
+            analysis_approvals = [
+                approval
+                for approval in self.pending_approvals
+                if isinstance(approval, AnalysisExecutionPendingApprovalOut)
+            ]
+            plan_waiting = self.plan is not None and self.plan.status == "pending-approval"
+            intent_waiting = (
+                self.analysis_intent is not None
+                and self.analysis_intent.status == "waiting-approval"
+            )
+            if plan_waiting != (len(plan_approvals) == 1):
+                raise ValueError("a pending dataset plan requires its one exact approval")
+            if intent_waiting != (len(analysis_approvals) == 1):
+                raise ValueError("a waiting analysis intent requires its one exact approval")
+            if len(self.pending_approvals) > 1:
+                raise ValueError("dataset workflows can expose only one current approval")
+            if self.workflow.status == "completed":
+                if (
+                    self.plan is None
+                    or self.plan.status != "approved"
+                    or any(step.status != "completed" for step in self.plan.steps)
+                    or self.pending_approvals
+                    or self.dataset_profile is None
+                    or self.analysis_intent is None
+                    or self.analysis_intent.status != "completed"
+                    or self.analysis_run is None
+                    or self.analysis_run.status != "completed"
+                    or self.latest_review is None
+                    or self.latest_review.verdict
+                    not in {"passed", "passed-with-warnings"}
+                    or self.workflow.completed_at is None
+                    or self.workflow.current_step_id is not None
+                    or self.workflow.blocking_reason is not None
+                    or self.workflow.cancel_requested_at is not None
+                    or self.allowed_actions
+                    or (
+                        self.latest_review.verdict == "passed-with-warnings"
+                        and self.review_warning_acceptance is None
+                    )
+                ):
+                    raise ValueError(
+                        "completed dataset workflows require the approved, executed, "
+                        "reviewed, and fully materialized evidence chain"
+                    )
+            return self
+
+        if any(type(approval) is not PendingApprovalOut for approval in self.pending_approvals):
+            raise ValueError("literature workflows cannot contain dataset approvals")
+        if self.plan is not None and not isinstance(self.plan.spec, PlanSpec):
+            raise ValueError("literature workflows require a literature synthesis plan")
+        if self.plan is not None and self.plan.spec.goal != self.workflow.goal:
+            raise ValueError("the literature plan goal must match its workflow")
+        if self.latest_review is not None and not isinstance(
+            self.latest_review.result, DeterministicReviewResult
+        ):
+            raise ValueError("literature workflows require deterministic claims reviews")
+        if any(
+            action not in {"approve-plan", "cancel", "retry", "resume"}
+            for action in self.allowed_actions
+        ):
+            raise ValueError("literature workflows cannot expose dataset-only actions")
+        if any(
+            value is not None
+            for value in (
+                self.dataset_profile,
+                self.analysis_intent,
+                self.analysis_run,
+                self.review_warning_acceptance,
+            )
+        ):
+            raise ValueError("literature workflows cannot contain dataset analysis state")
+        return self
 
 
 class CreatedEventData(StrictApiModel):
-    workflow_type: Literal["literature-synthesis"]
+    workflow_type: WorkflowType
     goal_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     generation_mode: GenerationMode = "local-deterministic"
 
@@ -478,7 +1540,20 @@ class RemoteDataApprovalEventData(StrictApiModel):
     endpoint_host: str = Field(min_length=1, max_length=253)
     endpoint_identity: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     model: str | None = Field(default=None, max_length=200)
-    data_categories: list[Literal["user-goal"]]
+    data_categories: list[Literal["user-goal", "dataset-profile"]]
+
+    @field_validator("data_categories")
+    @classmethod
+    def validate_disclosure_categories(
+        cls,
+        value: list[Literal["user-goal", "dataset-profile"]],
+    ) -> list[Literal["user-goal", "dataset-profile"]]:
+        if value not in (["user-goal"], ["user-goal", "dataset-profile"]):
+            raise ValueError(
+                "data_categories must be exactly user-goal, with dataset-profile "
+                "added only for dataset-assisted planning"
+            )
+        return value
 
 
 class StatusChangedEventData(StrictApiModel):
@@ -524,11 +1599,70 @@ class JobEventData(StrictApiModel):
 class ReviewEventData(StrictApiModel):
     review_id: str
     verdict: ReviewVerdict
-    claim_count: int
+    claim_count: int | None = None
 
 
 class CancelEventData(StrictApiModel):
     requested: bool
+
+
+class AnalysisIntentCreatedEventData(StrictApiModel):
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    task_id: str = Field(min_length=1, max_length=36)
+    job_id: str = Field(min_length=1, max_length=36)
+    plan_step_id: Literal["execute-analysis"]
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    repair_attempt: Literal[0, 1, 2]
+
+
+class AnalysisApprovalEventData(StrictApiModel):
+    approval_id: str = Field(min_length=1, max_length=36)
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    task_id: str = Field(min_length=1, max_length=36)
+    job_id: str | None = Field(default=None, max_length=36)
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approval_schema_version: Literal["analysis-intent-v2", "analysis-intent-v3"]
+    expected_workflow_revision: int = Field(ge=1)
+
+
+class AnalysisRunEventData(StrictApiModel):
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    run_id: str = Field(min_length=1, max_length=36)
+    task_id: str = Field(min_length=1, max_length=36)
+    job_id: str = Field(min_length=1, max_length=36)
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    environment_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    artifact_count: int | None = Field(default=None, ge=0)
+    error_code: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AnalysisRunProgressEventData(StrictApiModel):
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    run_id: str = Field(min_length=1, max_length=36)
+    task_id: str = Field(min_length=1, max_length=36)
+    job_id: str = Field(min_length=1, max_length=36)
+    stage: Literal["preparing-input", "executing-runtime", "collecting-artifacts"]
+    elapsed_seconds: float = Field(ge=0)
+
+
+class AnalysisArtifactCreatedEventData(StrictApiModel):
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    run_id: str = Field(min_length=1, max_length=36)
+    task_id: str = Field(min_length=1, max_length=36)
+    job_id: str = Field(min_length=1, max_length=36)
+    artifact_id: str = Field(min_length=1, max_length=36)
+    artifact_type: DatasetAnalysisRuntimeArtifactType
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    path: str = Field(min_length=1, max_length=4_096)
+
+
+class DatasetReviewWarningsAcceptedEventData(StrictApiModel):
+    review_id: str = Field(min_length=1, max_length=36)
+    review_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_workflow_revision: int = Field(ge=1)
+    decision: Literal["accepted"]
 
 
 WorkflowEventData = (
@@ -541,17 +1675,132 @@ WorkflowEventData = (
     | JobEventData
     | ReviewEventData
     | CancelEventData
+    | AnalysisIntentCreatedEventData
+    | AnalysisApprovalEventData
+    | AnalysisRunEventData
+    | AnalysisRunProgressEventData
+    | AnalysisArtifactCreatedEventData
+    | DatasetReviewWarningsAcceptedEventData
 )
+
+WorkflowEventType = Literal[
+    "workflow.created",
+    "remote-data.approved",
+    "workflow.status-changed",
+    "plan.generated",
+    "plan.approved",
+    "approval.requested",
+    "step.queued",
+    "step.started",
+    "step.completed",
+    "step.failed",
+    "job.failed",
+    "job.retried",
+    "review.completed",
+    "workflow.cancel-requested",
+    "analysis.intent-created",
+    "analysis.approval-requested",
+    "analysis.approved",
+    "analysis.rejected",
+    "analysis.run-started",
+    "analysis.run-progress",
+    "analysis.run-completed",
+    "analysis.run-failed",
+    "artifact.created",
+    "analysis.review-warnings-accepted",
+]
+
+_WORKFLOW_EVENT_DATA_TYPES: dict[str, type[StrictApiModel]] = {
+    "workflow.created": CreatedEventData,
+    "remote-data.approved": RemoteDataApprovalEventData,
+    "workflow.status-changed": StatusChangedEventData,
+    "plan.generated": PlanEventData,
+    "plan.approved": PlanEventData,
+    "approval.requested": ApprovalEventData,
+    "step.queued": TaskEventData,
+    "step.started": TaskEventData,
+    "step.completed": TaskEventData,
+    "step.failed": TaskEventData,
+    "job.failed": JobEventData,
+    "job.retried": JobEventData,
+    "review.completed": ReviewEventData,
+    "workflow.cancel-requested": CancelEventData,
+    "analysis.intent-created": AnalysisIntentCreatedEventData,
+    "analysis.approval-requested": AnalysisApprovalEventData,
+    "analysis.approved": AnalysisApprovalEventData,
+    "analysis.rejected": AnalysisApprovalEventData,
+    "analysis.run-started": AnalysisRunEventData,
+    "analysis.run-progress": AnalysisRunProgressEventData,
+    "analysis.run-completed": AnalysisRunEventData,
+    "analysis.run-failed": AnalysisRunEventData,
+    "artifact.created": AnalysisArtifactCreatedEventData,
+    "analysis.review-warnings-accepted": DatasetReviewWarningsAcceptedEventData,
+}
 
 
 class WorkflowEventOut(ApiModel):
     id: str
     sequence: int
-    type: str
+    type: WorkflowEventType
     task_id: str | None
     job_id: str | None
     data: WorkflowEventData
     created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_event_contract(self) -> WorkflowEventOut:
+        expected_type = _WORKFLOW_EVENT_DATA_TYPES[self.type]
+        if not isinstance(self.data, expected_type):
+            raise ValueError(f"event {self.type} has an incompatible data payload")
+        if (
+            isinstance(
+                self.data,
+                (
+                    TaskEventData,
+                    AnalysisIntentCreatedEventData,
+                    AnalysisApprovalEventData,
+                    AnalysisRunEventData,
+                    AnalysisRunProgressEventData,
+                    AnalysisArtifactCreatedEventData,
+                ),
+            )
+            and self.task_id != self.data.task_id
+        ):
+            raise ValueError("event task_id must match its payload task_id")
+        if (
+            isinstance(
+                self.data,
+                (
+                    JobEventData,
+                    AnalysisIntentCreatedEventData,
+                    AnalysisApprovalEventData,
+                    AnalysisRunEventData,
+                    AnalysisRunProgressEventData,
+                    AnalysisArtifactCreatedEventData,
+                ),
+            )
+            and self.job_id != self.data.job_id
+        ):
+            raise ValueError("event job_id must match its payload job_id")
+        if isinstance(self.data, AnalysisRunEventData):
+            if self.type == "analysis.run-started" and (
+                self.data.environment_hash is not None
+                or self.data.artifact_count is not None
+                or self.data.error_code is not None
+            ):
+                raise ValueError("a started analysis run cannot contain terminal fields")
+            if self.type == "analysis.run-completed" and (
+                self.data.environment_hash is None
+                or self.data.artifact_count is None
+                or self.data.artifact_count < 5
+                or self.data.error_code is not None
+            ):
+                raise ValueError(
+                    "a completed analysis run requires environment and mandatory artifacts"
+                )
+            if self.type == "analysis.run-failed" and self.data.error_code is None:
+                raise ValueError("a failed analysis run requires a stable error code")
+        return self
 
 
 class WorkflowEventsOut(ApiModel):

@@ -3,57 +3,55 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-import shutil
 import socket
-import threading
-import time
 import uuid
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal, cast
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from sqlalchemy import select, text, update
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 
 from . import __version__
 from .analysis import (
-    RuntimeServiceError,
-    canonical_analysis_payload,
-    collect_runtime_artifacts,
-    execute_in_runtime,
-    read_text_file,
     sha256_file,
     validate_csv,
-    validate_python_code,
+)
+from .analysis_service import (
+    AnalysisServiceError,
+    analysis_intent_out,
+    cleanup_stale_analysis_exchange,
+    create_standalone_analysis_intent,
+    decide_standalone_analysis_intent,
+    execute_standalone_analysis_intent,
+    list_project_analysis_runs,
+    recover_interrupted_analysis_state,
 )
 from .api.workflows import router as workflow_router
 from .config import canonical_model_api_endpoint, settings
 from .db import SessionLocal, database_session, engine, initialize_database
 from .literature import paper_qa, paper_qa_available
 from .models import (
-    AnalysisIntentRecord,
     AnswerRecord,
-    ApprovalRecord,
     ArtifactRecord,
     ClaimEvidenceRecord,
     ClaimRecord,
-    EvidenceSpanRecord,
     EventRecord,
+    EvidenceSpanRecord,
     ProjectRecord,
     RunRecord,
     SourcePageRecord,
     SourceRecord,
     TaskRecord,
-    utc_now,
 )
 from .pdf import LocatedQuote, PdfPage, extract_pdf, locate_quote
 from .schemas import (
-    AnalysisArtifactOut,
     AnalysisDecisionIn,
     AnalysisIntentCreate,
     AnalysisIntentOut,
@@ -68,22 +66,23 @@ from .schemas import (
     QuestionIn,
     SourceOut,
 )
+from .secure_download import DownloadErrorDetails, SecureDownloadError, secure_download_response
 from .workflow.worker import WorkflowWorker
-
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     if not settings.bearer_token:
         raise RuntimeError(
             "SPARK_AGENT_CORE_TOKEN is required; science-core will not start without authentication"
         )
     initialize_database()
     with SessionLocal() as session:
-        _recover_interrupted_analysis_state(session)
-    _cleanup_stale_exchange_entries(reject_recent=False)
+        recover_interrupted_analysis_state(session)
+        session.commit()
+    cleanup_stale_analysis_exchange()
     workflow_worker = WorkflowWorker()
     await workflow_worker.start()
     try:
@@ -93,7 +92,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Spark Agent Core", version=__version__, lifespan=lifespan)
-_analysis_execution_slot = threading.Lock()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -124,6 +122,10 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
 
 def get_session() -> Generator[Session, None, None]:
     yield from database_session()
+
+
+def _analysis_http_exception(error: AnalysisServiceError) -> HTTPException:
+    return HTTPException(status_code=error.status_code, detail=error.detail)
 
 
 app.include_router(workflow_router, dependencies=[Depends(require_token)])
@@ -258,8 +260,8 @@ async def import_dataset(
             return existing
         raise HTTPException(status_code=409, detail="Content hash already belongs to another source")
 
-    data_dir = _child_path(Path(project.project_path), "data/raw")
-    target = _child_path(data_dir, f"{content_hash}.csv")
+    data_dir = child_path(Path(project.project_path), "data/raw")
+    target = child_path(data_dir, f"{content_hash}.csv")
     target.write_bytes(content)
     target.chmod(0o444)
     record = SourceRecord(
@@ -324,8 +326,8 @@ async def import_pdf(
         session.delete(existing)
         session.commit()
 
-    papers_dir = _child_path(Path(project.project_path), "papers")
-    target = _child_path(papers_dir, f"{content_hash}.pdf")
+    papers_dir = child_path(Path(project.project_path), "papers")
+    target = child_path(papers_dir, f"{content_hash}.pdf")
     target.write_bytes(content)
     record = SourceRecord(
         id=str(uuid.uuid4()),
@@ -385,81 +387,12 @@ def create_analysis_intent(
     payload: AnalysisIntentCreate,
     session: Session = Depends(get_session),
 ) -> AnalysisIntentOut:
-    _project_or_404(session, project_id)
-    dataset = session.get(SourceRecord, payload.dataset_source_id)
-    if dataset is None or dataset.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Dataset source not found in this project")
-    if dataset.source_kind != "dataset" or dataset.ingestion_status != "ready":
-        raise HTTPException(status_code=409, detail="Analysis requires a ready CSV dataset source")
     try:
-        validate_python_code(payload.code)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
-
-    _canonical, payload_sha256 = canonical_analysis_payload(
-        dataset.id, payload.objective, payload.code
-    )
-    task_id = str(uuid.uuid4())
-    intent_id = str(uuid.uuid4())
-    task = TaskRecord(
-        id=task_id,
-        project_id=project_id,
-        objective=payload.objective,
-        task_type="python-data-analysis",
-        inputs={
-            "datasetSourceId": dataset.id,
-            "objective": payload.objective,
-            "code": payload.code,
-            "payloadSha256": payload_sha256,
-        },
-        expected_outputs=["executed-notebook", "stdout", "stderr", "log", "artifacts"],
-        acceptance_criteria=[
-            "approved payload hash must exactly match executed payload",
-            "runtime output hashes must be independently verified",
-        ],
-        permissions=["dataset:read", "python:execute", "run-artifacts:write"],
-        status="waiting-execution-approval",
-        timeout_seconds=settings.execution_timeout_seconds,
-    )
-    session.add(task)
-    session.flush()
-    intent = AnalysisIntentRecord(
-        id=intent_id,
-        task_id=task_id,
-        project_id=project_id,
-        dataset_source_id=dataset.id,
-        objective=payload.objective,
-        code=payload.code,
-        payload_sha256=payload_sha256,
-        status="waiting-approval",
-    )
-    session.add(intent)
-    session.add(
-        ApprovalRecord(
-            id=str(uuid.uuid4()),
-            task_id=task_id,
-            intent_hash=payload_sha256,
-            requested_action="execute-python-data-analysis",
-            risk_level="high",
-            reason="Execute the displayed Python code against the selected CSV dataset",
-            affected_resources=[dataset.id, "runs/<run-id>"],
-        )
-    )
-    session.add(
-        EventRecord(
-            id=str(uuid.uuid4()),
-            project_id=project_id,
-            event_type="analysis.intent.created",
-            payload={
-                "analysisIntentId": intent_id,
-                "taskId": task_id,
-                "datasetSourceId": dataset.id,
-                "payloadSha256": payload_sha256,
-            },
-        )
-    )
+        intent = create_standalone_analysis_intent(session, project_id, payload)
+    except AnalysisServiceError as error:
+        raise _analysis_http_exception(error) from error
     session.commit()
-    return _analysis_intent_out(intent)
+    return analysis_intent_out(intent)
 
 
 @app.post(
@@ -472,55 +405,13 @@ def decide_analysis_intent(
     payload: AnalysisDecisionIn,
     session: Session = Depends(get_session),
 ) -> AnalysisIntentOut:
-    decided_at = utc_now()
-    decision_result = session.execute(
-        update(AnalysisIntentRecord)
-        .where(
-            AnalysisIntentRecord.id == intent_id,
-            AnalysisIntentRecord.status == "waiting-approval",
-            AnalysisIntentRecord.decision.is_(None),
-        )
-        .values(
-            decision=payload.decision,
-            status=payload.decision,
-            updated_at=decided_at,
-        )
-    )
-    if decision_result.rowcount != 1:
+    try:
+        intent = decide_standalone_analysis_intent(session, intent_id, payload.decision)
+    except AnalysisServiceError as error:
         session.rollback()
-        current = _analysis_intent_or_404(session, intent_id)
-        if current.decision == payload.decision:
-            return _analysis_intent_out(current)
-        raise HTTPException(status_code=409, detail="Analysis intent already has a final decision")
-
-    intent = _analysis_intent_or_404(session, intent_id)
-    approval = session.scalar(
-        select(ApprovalRecord).where(ApprovalRecord.task_id == intent.task_id)
-    )
-    task = session.get(TaskRecord, intent.task_id)
-    if approval is None or task is None:
-        session.rollback()
-        raise HTTPException(status_code=500, detail="Analysis approval audit record is missing")
-    if approval.intent_hash != intent.payload_sha256:
-        session.rollback()
-        raise HTTPException(status_code=409, detail="Stored approval hash does not match the intent")
-    approval.user_decision = payload.decision
-    approval.decided_at = decided_at
-    task.status = "waiting-execution" if payload.decision == "approved" else "rejected"
-    session.add(
-        EventRecord(
-            id=str(uuid.uuid4()),
-            project_id=intent.project_id,
-            event_type=f"analysis.intent.{payload.decision}",
-            payload={
-                "analysisIntentId": intent.id,
-                "taskId": intent.task_id,
-                "payloadSha256": intent.payload_sha256,
-            },
-        )
-    )
+        raise _analysis_http_exception(error) from error
     session.commit()
-    return _analysis_intent_out(intent)
+    return analysis_intent_out(intent)
 
 
 @app.post(
@@ -530,189 +421,14 @@ def decide_analysis_intent(
 )
 async def execute_analysis_intent(
     intent_id: str,
-    session: Session = Depends(get_session),
 ) -> AnalysisRunOut:
-    if not _analysis_execution_slot.acquire(blocking=False):
-        raise HTTPException(status_code=409, detail="Another analysis execution is already active")
     try:
-        _prepare_exchange_for_execution()
-        return await _execute_analysis_intent_locked(intent_id, session)
-    finally:
-        _analysis_execution_slot.release()
-
-
-async def _execute_analysis_intent_locked(
-    intent_id: str,
-    session: Session,
-) -> AnalysisRunOut:
-    intent = _analysis_intent_or_404(session, intent_id)
-    project = _project_or_404(session, intent.project_id)
-    dataset = session.get(SourceRecord, intent.dataset_source_id)
-    task = session.get(TaskRecord, intent.task_id)
-    approval = session.scalar(
-        select(ApprovalRecord).where(ApprovalRecord.task_id == intent.task_id)
-    )
-    if dataset is None or task is None or approval is None:
-        raise HTTPException(status_code=409, detail="Analysis execution records are incomplete")
-    if dataset.source_kind != "dataset" or dataset.ingestion_status != "ready":
-        raise HTTPException(status_code=409, detail="Selected dataset is not ready")
-
-    _canonical, current_hash = canonical_analysis_payload(
-        intent.dataset_source_id, intent.objective, intent.code
-    )
-    if current_hash != intent.payload_sha256 or approval.intent_hash != current_hash:
-        raise HTTPException(status_code=409, detail="Approved payload hash no longer matches the intent")
-    if intent.decision != "approved" or approval.user_decision != "approved":
-        raise HTTPException(status_code=409, detail="Analysis intent must be explicitly approved")
-    if intent.status != "approved":
-        raise HTTPException(status_code=409, detail=f"Analysis intent cannot execute from {intent.status}")
-
-    dataset_path = Path(dataset.local_path).resolve()
-    _assert_beneath(Path(project.project_path), dataset_path)
-    if not dataset_path.is_file():
-        raise HTTPException(status_code=409, detail="Dataset file is missing")
-    if sha256_file(dataset_path) != dataset.content_hash:
-        raise HTTPException(status_code=409, detail="Dataset content hash no longer matches its source")
-
-    claimed_at = utc_now()
-    claim = session.execute(
-        update(AnalysisIntentRecord)
-        .where(
-            AnalysisIntentRecord.id == intent.id,
-            AnalysisIntentRecord.status == "approved",
+        return await execute_standalone_analysis_intent(
+            intent_id,
+            session_factory=SessionLocal,
         )
-        .values(status="executing", updated_at=claimed_at)
-    )
-    if claim.rowcount != 1:
-        session.rollback()
-        raise HTTPException(status_code=409, detail="Analysis intent was already claimed")
-
-    run_id = str(uuid.uuid4())
-    run = RunRecord(
-        id=run_id,
-        task_id=task.id,
-        environment_hash=None,
-        input_artifacts=[dataset.id],
-        output_artifacts=[],
-        status="running",
-    )
-    task.status = "running"
-    session.add(run)
-    session.flush()
-    session.add(
-        EventRecord(
-            id=str(uuid.uuid4()),
-            project_id=project.id,
-            event_type="analysis.run.started",
-            payload={
-                "analysisIntentId": intent.id,
-                "runId": run_id,
-                "payloadSha256": current_hash,
-            },
-        )
-    )
-    session.commit()
-
-    run_dir = _child_path(Path(project.project_path), f"runs/{run_id}")
-    project_dataset_path = _child_path(run_dir, "input.csv")
-    exchange_runs_dir = _child_path(settings.runtime_exchange_dir, "runs")
-    exchange_runs_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    exchange_run_dir = _child_path(exchange_runs_dir, run_id)
-    runtime_dataset_path = _child_path(exchange_run_dir, "input.csv")
-    try:
-        run_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
-        shutil.copyfile(dataset_path, project_dataset_path)
-        project_dataset_path.chmod(0o444)
-        if sha256_file(project_dataset_path) != dataset.content_hash:
-            raise RuntimeServiceError("Project run input copy failed integrity verification")
-
-        exchange_run_dir.mkdir(mode=0o1777, parents=False, exist_ok=False)
-        exchange_run_dir.chmod(0o1777)
-        shutil.copyfile(dataset_path, runtime_dataset_path)
-        runtime_dataset_path.chmod(0o444)
-        if sha256_file(runtime_dataset_path) != dataset.content_hash:
-            raise RuntimeServiceError("Read-only runtime input copy failed integrity verification")
-
-        runtime_result = await execute_in_runtime(
-            run_id=run_id,
-            run_dir=exchange_run_dir,
-            dataset_path=runtime_dataset_path,
-            objective=intent.objective,
-            code=intent.code,
-            payload_sha256=current_hash,
-        )
-        if (
-            runtime_dataset_path.is_symlink()
-            or not runtime_dataset_path.is_file()
-            or sha256_file(runtime_dataset_path) != dataset.content_hash
-        ):
-            raise RuntimeServiceError("Runtime input.csv changed during execution")
-        collected = collect_runtime_artifacts(
-            runtime_result=runtime_result,
-            exchange_run_dir=exchange_run_dir,
-            final_run_dir=run_dir,
-            project_dir=Path(project.project_path),
-        )
-    except (OSError, RuntimeServiceError) as error:
-        _clear_run_outputs(run_dir)
-        _remove_exchange_run(exchange_run_dir)
-        _record_execution_failure(
-            session=session,
-            project=project,
-            intent=intent,
-            task=task,
-            run=run,
-            run_dir=run_dir,
-            error=error,
-        )
-        raise HTTPException(status_code=502, detail=str(error)) from error
-    _remove_exchange_run(exchange_run_dir)
-
-    artifact_records: list[ArtifactRecord] = []
-    for item in collected:
-        artifact = ArtifactRecord(
-            id=str(uuid.uuid4()),
-            run_id=run.id,
-            artifact_type=item.artifact_type,
-            path=item.project_relative_path,
-            mime_type=item.mime_type,
-            content_hash=item.content_hash,
-            parent_artifacts=[dataset.id],
-            metadata_json={
-                "sizeBytes": item.size_bytes,
-                "payloadSha256": current_hash,
-            },
-        )
-        artifact_records.append(artifact)
-        session.add(artifact)
-
-    run.environment_hash = runtime_result.environment_hash
-    run.output_artifacts = [artifact.path for artifact in artifact_records]
-    log_artifact = next(
-        (artifact for artifact in artifact_records if Path(artifact.path).name == "execution.log"),
-        None,
-    )
-    run.logs_path = log_artifact.path if log_artifact is not None else None
-    run.status = runtime_result.status
-    run.finished_at = utc_now()
-    intent.status = runtime_result.status
-    task.status = runtime_result.status
-    session.add(
-        EventRecord(
-            id=str(uuid.uuid4()),
-            project_id=project.id,
-            event_type=f"analysis.run.{runtime_result.status}",
-            payload={
-                "analysisIntentId": intent.id,
-                "runId": run.id,
-                "payloadSha256": current_hash,
-                "environmentHash": runtime_result.environment_hash,
-                "artifactCount": len(artifact_records),
-            },
-        )
-    )
-    session.commit()
-    return _analysis_run_out(session, run, intent, project)
+    except AnalysisServiceError as error:
+        raise _analysis_http_exception(error) from error
 
 
 @app.get(
@@ -724,54 +440,40 @@ def list_analysis_runs(
     project_id: str,
     session: Session = Depends(get_session),
 ) -> list[AnalysisRunOut]:
-    project = _project_or_404(session, project_id)
-    runs = list(
-        session.scalars(
-            select(RunRecord)
-            .join(TaskRecord, RunRecord.task_id == TaskRecord.id)
-            .where(
-                TaskRecord.project_id == project_id,
-                TaskRecord.task_type == "python-data-analysis",
-            )
-            .order_by(RunRecord.created_at.desc())
-        )
-    )
-    response: list[AnalysisRunOut] = []
-    for run in runs:
-        intent = session.scalar(
-            select(AnalysisIntentRecord).where(AnalysisIntentRecord.task_id == run.task_id)
-        )
-        if intent is not None:
-            response.append(_analysis_run_out(session, run, intent, project))
-    return response
+    try:
+        return list_project_analysis_runs(session, project_id)
+    except AnalysisServiceError as error:
+        raise _analysis_http_exception(error) from error
 
 
 @app.get("/v1/sources/{source_id}/file", dependencies=[Depends(require_token)])
-def source_file(source_id: str, session: Session = Depends(get_session)) -> FileResponse:
+def source_file(source_id: str, session: Session = Depends(get_session)) -> StreamingResponse:
     source = session.get(SourceRecord, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Source not found")
-    raw_path = Path(source.local_path)
-    if raw_path.is_symlink():
-        raise HTTPException(status_code=409, detail="Source path may not be a symbolic link")
-    path = raw_path.resolve()
     project = _project_or_404(session, source.project_id)
-    _assert_beneath(Path(project.project_path), path)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Source file is missing")
-    if sha256_file(path) != source.content_hash:
-        raise HTTPException(status_code=409, detail="Source content hash no longer matches its record")
     is_dataset = source.source_kind == "dataset"
-    return FileResponse(
-        path,
-        media_type="text/csv" if is_dataset else "application/pdf",
-        filename=f"{source.title}.csv" if is_dataset else f"{source.title}.pdf",
-        content_disposition_type="attachment" if is_dataset else "inline",
-    )
+    try:
+        return secure_download_response(
+            project_root=Path(project.project_path),
+            source_path=Path(source.local_path),
+            expected_sha256=source.content_hash,
+            media_type="text/csv" if is_dataset else "application/pdf",
+            filename=f"{source.title}.csv" if is_dataset else f"{source.title}.pdf",
+            content_disposition_type="attachment" if is_dataset else "inline",
+            errors=DownloadErrorDetails(
+                missing="Source file is missing",
+                unsafe="Source path may not be a symbolic link",
+                changed="Source file changed while preparing the download",
+                hash_mismatch="Source content hash no longer matches its record",
+            ),
+        )
+    except SecureDownloadError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
 
 
 @app.get("/v1/artifacts/{artifact_id}/file", dependencies=[Depends(require_token)])
-def artifact_file(artifact_id: str, session: Session = Depends(get_session)) -> FileResponse:
+def artifact_file(artifact_id: str, session: Session = Depends(get_session)) -> StreamingResponse:
     artifact = session.get(ArtifactRecord, artifact_id)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
@@ -780,23 +482,50 @@ def artifact_file(artifact_id: str, session: Session = Depends(get_session)) -> 
     project = session.get(ProjectRecord, task.project_id) if task is not None else None
     if run is None or task is None or project is None:
         raise HTTPException(status_code=409, detail="Artifact provenance records are incomplete")
+    artifact_path = Path(artifact.path)
+    run_prefix = Path("runs") / run.id
+    reserved_names = {
+        "input.ipynb",
+        "executed.ipynb",
+        "environment.json",
+        "stdout.txt",
+        "stderr.txt",
+        "execution.log",
+    }
+    if (
+        not artifact.path
+        or artifact_path.is_absolute()
+        or ".." in artifact_path.parts
+        or "\\" in artifact.path
+        or run_prefix not in artifact_path.parents
+        or artifact.path not in run.output_artifacts
+        or artifact_path.name in reserved_names
+        and artifact_path.parent != run_prefix
+    ):
+        raise HTTPException(status_code=409, detail="Artifact provenance path is invalid")
 
-    path = (Path(project.project_path) / artifact.path).resolve()
-    _assert_beneath(Path(project.project_path), path)
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Artifact file is missing")
-    if sha256_file(path) != artifact.content_hash:
-        raise HTTPException(status_code=409, detail="Artifact content hash no longer matches its run")
     inline = artifact.mime_type.startswith(("image/", "text/")) or artifact.mime_type in {
         "application/json",
         "application/pdf",
     }
-    return FileResponse(
-        path,
-        media_type=artifact.mime_type,
-        filename=path.name,
-        content_disposition_type="inline" if inline else "attachment",
-    )
+    path = Path(project.project_path) / artifact_path
+    try:
+        return secure_download_response(
+            project_root=Path(project.project_path),
+            source_path=path,
+            expected_sha256=artifact.content_hash,
+            media_type=artifact.mime_type,
+            filename=path.name,
+            content_disposition_type="inline" if inline else "attachment",
+            errors=DownloadErrorDetails(
+                missing="Artifact file is missing",
+                unsafe="Artifact path is unsafe",
+                changed="Artifact file changed while preparing the download",
+                hash_mismatch="Artifact content hash no longer matches its run",
+            ),
+        )
+    except SecureDownloadError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail) from error
 
 
 def _model_endpoint_identity(api_base: str) -> str:
@@ -996,9 +725,15 @@ async def ask_question(
             ClaimOut(
                 id=claim.id,
                 statement=claim.statement,
-                claim_type=claim.claim_type,
+                claim_type=cast(
+                    Literal["answer", "finding", "limitation", "contradiction"],
+                    claim.claim_type,
+                ),
                 confidence=claim.confidence,
-                review_status=claim.review_status,
+                review_status=cast(
+                    Literal["unreviewed", "verified", "rejected"],
+                    claim.review_status,
+                ),
                 evidence=[EvidenceOut.model_validate(item) for item in evidence_records],
             )
         ],
@@ -1011,288 +746,6 @@ async def ask_question(
     )
 
 
-def _analysis_intent_or_404(session: Session, intent_id: str) -> AnalysisIntentRecord:
-    intent = session.get(AnalysisIntentRecord, intent_id)
-    if intent is None:
-        raise HTTPException(status_code=404, detail="Analysis intent not found")
-    return intent
-
-
-def _recover_interrupted_analysis_state(session: Session) -> None:
-    recovered_at = utc_now()
-    running_runs = list(
-        session.scalars(select(RunRecord).where(RunRecord.status == "running"))
-    )
-    for run in running_runs:
-        task = session.get(TaskRecord, run.task_id)
-        if task is None or task.task_type != "python-data-analysis":
-            continue
-        intent = session.scalar(
-            select(AnalysisIntentRecord).where(AnalysisIntentRecord.task_id == task.id)
-        )
-        run.status = "failed"
-        run.finished_at = recovered_at
-        task.status = "failed"
-        if intent is not None and intent.status == "executing":
-            intent.status = "failed"
-        session.add(
-            EventRecord(
-                id=str(uuid.uuid4()),
-                project_id=task.project_id,
-                event_type="analysis.run.recovered-after-crash",
-                payload={
-                    "analysisIntentId": intent.id if intent is not None else None,
-                    "runId": run.id,
-                    "recoveredAt": recovered_at.isoformat(),
-                },
-            )
-        )
-
-    session.flush()
-    orphaned_intents = list(
-        session.scalars(
-            select(AnalysisIntentRecord).where(AnalysisIntentRecord.status == "executing")
-        )
-    )
-    for intent in orphaned_intents:
-        task = session.get(TaskRecord, intent.task_id)
-        intent.status = "failed"
-        if task is not None:
-            task.status = "failed"
-            session.add(
-                EventRecord(
-                    id=str(uuid.uuid4()),
-                    project_id=intent.project_id,
-                    event_type="analysis.run.recovered-after-crash",
-                    payload={
-                        "analysisIntentId": intent.id,
-                        "runId": None,
-                        "recoveredAt": recovered_at.isoformat(),
-                    },
-                )
-            )
-    session.commit()
-
-
-def _analysis_intent_out(intent: AnalysisIntentRecord) -> AnalysisIntentOut:
-    return AnalysisIntentOut(
-        id=intent.id,
-        task_id=intent.task_id,
-        project_id=intent.project_id,
-        dataset_source_id=intent.dataset_source_id,
-        objective=intent.objective,
-        code=intent.code,
-        payload_sha256=intent.payload_sha256,
-        risk_level="high",
-        affected_resources=[intent.dataset_source_id, "runs/<run-id>"],
-        status=intent.status,
-        decision=intent.decision,
-        created_at=intent.created_at,
-        updated_at=intent.updated_at,
-    )
-
-
-def _prepare_exchange_for_execution() -> None:
-    _cleanup_stale_exchange_entries(reject_recent=True)
-
-
-def _cleanup_stale_exchange_entries(*, reject_recent: bool) -> None:
-    exchange_runs_dir = _child_path(settings.runtime_exchange_dir, "runs")
-    exchange_runs_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    stale_before = time.time() - (settings.execution_timeout_seconds + 30)
-    for entry in exchange_runs_dir.iterdir():
-        try:
-            modified_at = entry.lstat().st_mtime
-        except OSError as error:
-            if reject_recent:
-                raise HTTPException(
-                    status_code=409, detail="Runtime exchange is not inspectable"
-                ) from error
-            continue
-        if modified_at > stale_before:
-            if reject_recent:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Runtime exchange contains a recent unclaimed execution",
-                )
-            continue
-        try:
-            if entry.is_symlink() or entry.is_file():
-                entry.unlink(missing_ok=True)
-            elif entry.is_dir():
-                shutil.rmtree(entry)
-            else:
-                entry.unlink(missing_ok=True)
-        except OSError as error:
-            if reject_recent:
-                raise HTTPException(
-                    status_code=409,
-                    detail="Could not remove a stale runtime exchange entry",
-                ) from error
-
-
-def _clear_run_outputs(run_dir: Path) -> None:
-    if not run_dir.is_dir():
-        return
-    for child in run_dir.iterdir():
-        if child.name == "input.csv":
-            continue
-        if child.is_symlink() or child.is_file():
-            child.unlink(missing_ok=True)
-        elif child.is_dir():
-            shutil.rmtree(child)
-
-
-def _remove_exchange_run(exchange_run_dir: Path) -> None:
-    exchange_root = settings.runtime_exchange_dir.resolve()
-    candidate = exchange_run_dir.resolve()
-    try:
-        candidate.relative_to(exchange_root)
-    except ValueError:
-        return
-    if candidate != exchange_root:
-        shutil.rmtree(candidate, ignore_errors=True)
-
-
-def _record_execution_failure(
-    *,
-    session: Session,
-    project: ProjectRecord,
-    intent: AnalysisIntentRecord,
-    task: TaskRecord,
-    run: RunRecord,
-    run_dir: Path,
-    error: Exception,
-) -> None:
-    error_message = f"{type(error).__name__}: {error}\n"
-    try:
-        if not run_dir.exists():
-            run_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
-        error_path = _child_path(run_dir, "core-execution-error.log")
-        error_path.write_text(error_message, encoding="utf-8")
-        error_path.chmod(0o444)
-        relative_path = error_path.relative_to(Path(project.project_path).resolve()).as_posix()
-        artifact = ArtifactRecord(
-            id=str(uuid.uuid4()),
-            run_id=run.id,
-            artifact_type="log",
-            path=relative_path,
-            mime_type="text/plain",
-            content_hash=sha256_file(error_path),
-            parent_artifacts=[intent.dataset_source_id],
-            metadata_json={
-                "sizeBytes": error_path.stat().st_size,
-                "payloadSha256": intent.payload_sha256,
-                "producer": "science-core",
-            },
-        )
-        session.add(artifact)
-        run.logs_path = relative_path
-        run.output_artifacts = [relative_path]
-    except OSError:
-        # The SQLite event still preserves the failure if the project filesystem
-        # itself is unavailable.
-        run.logs_path = None
-        run.output_artifacts = []
-
-    run.status = "failed"
-    run.finished_at = utc_now()
-    intent.status = "failed"
-    task.status = "failed"
-    session.add(
-        EventRecord(
-            id=str(uuid.uuid4()),
-            project_id=project.id,
-            event_type="analysis.run.failed",
-            payload={
-                "analysisIntentId": intent.id,
-                "runId": run.id,
-                "payloadSha256": intent.payload_sha256,
-                "error": error_message[:2_000],
-            },
-        )
-    )
-    session.commit()
-
-
-def _analysis_run_out(
-    session: Session,
-    run: RunRecord,
-    intent: AnalysisIntentRecord,
-    project: ProjectRecord,
-) -> AnalysisRunOut:
-    artifacts = list(
-        session.scalars(
-            select(ArtifactRecord)
-            .where(ArtifactRecord.run_id == run.id)
-            .order_by(ArtifactRecord.created_at)
-        )
-    )
-    stdout = _read_named_artifact(project, artifacts, ("stdout.txt",))
-    stderr = _read_named_artifact(project, artifacts, ("stderr.txt",))
-    log = _read_named_artifact(
-        project,
-        artifacts,
-        ("execution.log", "core-execution-error.log"),
-    )
-    artifact_outputs: list[AnalysisArtifactOut] = []
-    for artifact in artifacts:
-        raw_size = artifact.metadata_json.get("sizeBytes", 0)
-        size_bytes = raw_size if isinstance(raw_size, int) and raw_size >= 0 else 0
-        artifact_outputs.append(
-            AnalysisArtifactOut(
-                id=artifact.id,
-                artifact_type=artifact.artifact_type,
-                path=artifact.path,
-                mime_type=artifact.mime_type,
-                content_hash=artifact.content_hash,
-                size_bytes=size_bytes,
-                created_at=artifact.created_at,
-            )
-        )
-    return AnalysisRunOut(
-        id=run.id,
-        intent_id=intent.id,
-        task_id=run.task_id,
-        project_id=intent.project_id,
-        dataset_source_id=intent.dataset_source_id,
-        objective=intent.objective,
-        code=intent.code,
-        payload_sha256=intent.payload_sha256,
-        status=run.status,
-        environment_hash=run.environment_hash,
-        input_artifacts=run.input_artifacts,
-        output_artifacts=run.output_artifacts,
-        stdout=stdout,
-        stderr=stderr,
-        log=log,
-        logs=log,
-        error=(stderr.strip() or log.strip() or "Analysis execution failed")
-        if run.status == "failed"
-        else None,
-        artifacts=artifact_outputs,
-        created_at=run.created_at,
-        finished_at=run.finished_at,
-    )
-
-
-def _read_named_artifact(
-    project: ProjectRecord,
-    artifacts: list[ArtifactRecord],
-    preferred_names: tuple[str, ...],
-) -> str:
-    by_name = {Path(artifact.path).name: artifact for artifact in artifacts}
-    for name in preferred_names:
-        artifact = by_name.get(name)
-        if artifact is None:
-            continue
-        path = (Path(project.project_path) / artifact.path).resolve()
-        _assert_beneath(Path(project.project_path), path)
-        if path.is_file():
-            return read_text_file(path)
-    return ""
-
-
 def _project_or_404(session: Session, project_id: str) -> ProjectRecord:
     project = session.get(ProjectRecord, project_id)
     if project is None:
@@ -1300,7 +753,7 @@ def _project_or_404(session: Session, project_id: str) -> ProjectRecord:
     return project
 
 
-def _child_path(parent: Path, child: str) -> Path:
+def child_path(parent: Path, child: str) -> Path:
     parent = parent.resolve()
     candidate = (parent / child).resolve()
     _assert_beneath(parent, candidate)

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import importlib.util
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 from pydantic import field_serializer
 
 from .config import settings as app_settings
-
 
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
 
@@ -27,19 +29,26 @@ class LiteratureResult:
     evidence_candidates: list[str]
 
 
+class _PaperQaDocs(Protocol):
+    async def aadd(self, path: Path, *, settings: Any) -> None: ...
+
+    async def aquery(self, question: str, *, settings: Any) -> object: ...
+
+
+class _PaperQaModule(Protocol):
+    Docs: Callable[[], _PaperQaDocs]
+    Settings: type[Any]
+
+
 def paper_qa_available() -> bool:
-    try:
-        import paperqa  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return importlib.util.find_spec("paperqa") is not None
 
 
 class PaperQaAdapter:
     """Small adapter: PaperQA is an algorithm provider, never the state store."""
 
     def __init__(self) -> None:
-        self._cache: dict[str, tuple[tuple[str, ...], Any]] = {}
+        self._cache: dict[str, tuple[tuple[str, ...], _PaperQaDocs]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def ask(
@@ -50,7 +59,7 @@ class PaperQaAdapter:
         model: str | None,
     ) -> LiteratureResult:
         try:
-            from paperqa import Docs, Settings
+            paperqa = cast(_PaperQaModule, importlib.import_module("paperqa"))
         except ImportError as error:
             raise RuntimeError("PaperQA2 is not installed in science-core") from error
 
@@ -66,30 +75,36 @@ class PaperQaAdapter:
                 app_settings.openai_api_base,
                 *sorted(str(path) for path in source_paths),
             )
-            settings_kwargs = _paperqa_settings_kwargs(
+            settings_kwargs = paperqa_settings_kwargs(
                 selected_model,
                 app_settings.embedding_model,
                 api_key,
                 app_settings.openai_api_base,
             )
-            settings = _create_paperqa_settings(Settings, settings_kwargs)
+            settings = create_paperqa_settings(paperqa.Settings, settings_kwargs)
             cached = self._cache.get(project_id)
             if cached is None or cached[0] != signature:
-                docs = Docs()
+                docs = paperqa.Docs()
                 for path in source_paths:
                     await docs.aadd(path, settings=settings)
                 self._cache[project_id] = (signature, docs)
             else:
                 docs = cached[1]
 
-            response = await docs.aquery(question, settings=settings)
+            response: object = await docs.aquery(question, settings=settings)
             answer = str(
                 getattr(response, "answer", None)
                 or getattr(response, "formatted_answer", None)
                 or response
             )
-            contexts = getattr(response, "contexts", None) or []
-            used_contexts = set(getattr(response, "used_contexts", None) or [])
+            raw_contexts: object = getattr(response, "contexts", None) or []
+            contexts = cast(list[object], raw_contexts) if isinstance(raw_contexts, list) else []
+            raw_used_contexts: object = getattr(response, "used_contexts", None) or []
+            used_contexts: set[object] = (
+                set(cast(list[object], raw_used_contexts))
+                if isinstance(raw_used_contexts, list)
+                else set[object]()
+            )
             candidates = list(
                 dict.fromkeys(
                     candidate
@@ -108,7 +123,7 @@ def _paperqa_model_identifier(raw_model: str) -> str:
     return f"openai/{raw_model}"
 
 
-def _paperqa_settings_kwargs(
+def paperqa_settings_kwargs(
     raw_model: str,
     raw_embedding_model: str | None,
     api_key: str,
@@ -146,7 +161,7 @@ def _paperqa_settings_kwargs(
     }
 
 
-def _create_paperqa_settings(
+def create_paperqa_settings(
     settings_type: type[Any],
     settings_kwargs: dict[str, Any],
 ) -> Any:
@@ -179,14 +194,15 @@ def _credential_safe_settings_type(settings_type: type[Any]) -> type[Any]:
 
 def _redact_api_keys(value: Any) -> Any:
     if isinstance(value, dict):
+        mapping = cast(dict[object, Any], value)
         return {
             key: "**********" if key == "api_key" else _redact_api_keys(item)
-            for key, item in value.items()
+            for key, item in mapping.items()
         }
     if isinstance(value, list):
-        return [_redact_api_keys(item) for item in value]
+        return [_redact_api_keys(item) for item in cast(list[Any], value)]
     if isinstance(value, tuple):
-        return tuple(_redact_api_keys(item) for item in value)
+        return tuple(_redact_api_keys(item) for item in cast(tuple[Any, ...], value))
     return value
 
 
@@ -209,7 +225,7 @@ def _litellm_router_config(
     }
 
 
-def _context_quote(context: Any) -> str | None:
+def _context_quote(context: object) -> str | None:
     # PaperQA reader/context shapes evolve. Prefer original passage fields and
     # deliberately avoid treating a generated contextual summary as verified.
     candidates: list[Any] = [
@@ -228,12 +244,13 @@ def _context_quote(context: Any) -> str | None:
     elif isinstance(text_object, str):
         candidates.append(text_object)
     if isinstance(context, dict):
+        context_mapping = cast(dict[str, Any], context)
         candidates.extend(
             [
-                context.get("source_text"),
-                context.get("quote"),
-                context.get("passage"),
-                context.get("text"),
+                context_mapping.get("source_text"),
+                context_mapping.get("quote"),
+                context_mapping.get("passage"),
+                context_mapping.get("text"),
             ]
         )
     for value in candidates:

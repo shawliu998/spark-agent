@@ -36,7 +36,6 @@ from open_science_core.workflow.service import (
 )
 from open_science_core.workflow.worker import WorkflowWorker
 
-
 LEGACY_TABLES = tuple(sorted(migration.LEGACY_COLUMNS))
 CONTROL_PLANE_TABLES = {
     "workflow_jobs",
@@ -89,8 +88,25 @@ def _schema_snapshot(database_path: Path) -> list[tuple[str, str, str | None]]:
         ]
 
 
+def _data_snapshot(database_path: Path) -> dict[str, list[tuple[object, ...]]]:
+    with sqlite3.connect(database_path) as connection:
+        tables = [
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        return {
+            table: [
+                tuple(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid')
+            ]
+            for table in tables
+        }
+
+
 def _create_unversioned_legacy_database(database_path: Path) -> None:
-    config = migration._alembic_config(database_path)
+    config = migration.alembic_config(database_path)
     command.upgrade(config, migration.BASELINE_REVISION)
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
@@ -322,6 +338,165 @@ def _create_unversioned_legacy_database(database_path: Path) -> None:
         connection.commit()
 
 
+def _insert_analysis_fixture(
+    connection: sqlite3.Connection,
+    fixture_id: str,
+    *,
+    run_count: int = 0,
+) -> None:
+    created_at = "2026-07-15 00:00:00"
+    project_id = f"project-{fixture_id}"
+    source_id = f"source-{fixture_id}"
+    task_id = f"task-{fixture_id}"
+    intent_id = f"intent-{fixture_id}"
+    connection.execute(
+        """
+        INSERT INTO projects (
+            id, title, description, project_path, research_domain,
+            execution_mode, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            project_id,
+            f"Project {fixture_id}",
+            "",
+            f"/tmp/{project_id}",
+            None,
+            "safe",
+            created_at,
+            created_at,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO sources (
+            id, project_id, title, source_kind, authors, doi, arxiv_id,
+            local_path, publication_date, ingestion_status, content_hash,
+            page_count, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            source_id,
+            project_id,
+            f"Dataset {fixture_id}",
+            "dataset",
+            "[]",
+            None,
+            None,
+            f"/tmp/{fixture_id}.csv",
+            None,
+            "ready",
+            "a" * 64,
+            None,
+            created_at,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO tasks (
+            id, project_id, objective, task_type, inputs, expected_outputs,
+            acceptance_criteria, permissions, status, retries, timeout_seconds,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id,
+            project_id,
+            "Analyze the fixture dataset",
+            "python-data-analysis",
+            "{}",
+            "[]",
+            "[]",
+            "[]",
+            "completed",
+            0,
+            120,
+            created_at,
+            created_at,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO analysis_intents (
+            id, task_id, project_id, dataset_source_id, objective, code,
+            payload_sha256, status, decision, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            intent_id,
+            task_id,
+            project_id,
+            source_id,
+            "Analyze the fixture dataset",
+            "print('fixture')",
+            "b" * 64,
+            "completed",
+            "approved",
+            created_at,
+            created_at,
+        ),
+    )
+    for run_index in range(run_count):
+        connection.execute(
+            """
+            INSERT INTO runs (
+                id, task_id, model, prompt_version, environment_hash,
+                input_artifacts, output_artifacts, logs_path, token_usage,
+                cost, status, created_at, finished_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"run-{fixture_id}-{run_index}",
+                task_id,
+                None,
+                None,
+                None,
+                "[]",
+                "[]",
+                None,
+                "{}",
+                0.0,
+                "completed",
+                created_at,
+                created_at,
+            ),
+        )
+    connection.commit()
+
+
+def _insert_analysis_approval(
+    connection: sqlite3.Connection,
+    fixture_id: str,
+    payload_schema_version: str,
+) -> None:
+    created_at = "2026-07-15 00:00:00"
+    connection.execute(
+        """
+        INSERT INTO approvals (
+            id, task_id, subject_type, subject_id, payload_schema_version,
+            intent_hash, requested_action, risk_level, reason,
+            affected_resources, user_decision, created_at, decided_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            f"approval-{fixture_id}",
+            f"task-{fixture_id}",
+            "analysis-intent",
+            f"intent-{fixture_id}",
+            payload_schema_version,
+            "c" * 64,
+            "execute-analysis",
+            "high",
+            "Approve the immutable analysis payload",
+            "[]",
+            "approved",
+            created_at,
+            created_at,
+        ),
+    )
+    connection.commit()
+
+
 class DatabaseMigrationTest(unittest.TestCase):
     def test_fresh_database_upgrades_to_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -329,8 +504,8 @@ class DatabaseMigrationTest(unittest.TestCase):
 
             migration.ensure_database(database_path)
 
-            config = migration._alembic_config(database_path)
-            expected_head = migration._single_head(config)
+            config = migration.alembic_config(database_path)
+            expected_head = migration.single_head(config)
             self.assertEqual(_revision(database_path), expected_head)
             with sqlite3.connect(database_path) as connection:
                 application_tables = {
@@ -348,6 +523,601 @@ class DatabaseMigrationTest(unittest.TestCase):
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
+    def test_dataset_analysis_schema_enforces_lineage_and_active_uniqueness(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "dataset-schema.sqlite3"
+            migration.ensure_database(database_path)
+
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                workflow_columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(workflows)")
+                }
+                self.assertTrue({"dataset_source_id", "dataset_content_hash"} <= workflow_columns)
+                intent_columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(analysis_intents)")
+                }
+                self.assertTrue(
+                    {
+                        "workflow_id",
+                        "plan_step_id",
+                        "previous_intent_id",
+                        "dataset_content_hash",
+                        "expected_outputs",
+                        "timeout_seconds",
+                        "risk_level",
+                        "repair_attempt",
+                        "error_summary",
+                        "code_diff",
+                    }
+                    <= intent_columns
+                )
+                run_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+                self.assertIn("analysis_intent_id", run_columns)
+                job_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(workflow_jobs)")
+                }
+                self.assertIn("request_payload_sha256", job_columns)
+
+                intent_indexes = {
+                    str(row[1]): (int(row[2]), int(row[4]))
+                    for row in connection.execute("PRAGMA index_list(analysis_intents)")
+                }
+                self.assertEqual(intent_indexes["ix_analysis_intents_task_id"], (0, 0))
+                self.assertEqual(intent_indexes["uq_analysis_intent_active_task"], (1, 1))
+                self.assertIn("ix_analysis_intents_workflow_step", intent_indexes)
+                run_indexes = {
+                    str(row[1]): (int(row[2]), int(row[4]))
+                    for row in connection.execute("PRAGMA index_list(runs)")
+                }
+                self.assertEqual(run_indexes["uq_run_analysis_intent"], (1, 1))
+
+                workflow_sql = str(
+                    connection.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflows'"
+                    ).fetchone()[0]
+                )
+                intent_sql = str(
+                    connection.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'analysis_intents'"
+                    ).fetchone()[0]
+                )
+                review_sql = str(
+                    connection.execute(
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'workflow_reviews'"
+                    ).fetchone()[0]
+                )
+                self.assertIn("ck_workflow_dataset_identity", workflow_sql)
+                self.assertIn("ck_workflow_type", workflow_sql)
+                self.assertIn("ck_workflow_dataset_content_hash", workflow_sql)
+                self.assertIn("ck_analysis_intent_repair_attempt", intent_sql)
+                self.assertIn("ck_analysis_intent_risk_level", intent_sql)
+                self.assertIn("ck_analysis_intent_dataset_content_hash", intent_sql)
+                self.assertIn("ck_analysis_intent_timeout_seconds", intent_sql)
+                self.assertIn("ck_analysis_intent_workflow_binding", intent_sql)
+                self.assertIn("passed-with-warnings", review_sql)
+
+                _insert_analysis_fixture(connection, "partial")
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                        id, project_id, create_idempotency_key,
+                        create_payload_sha256, workflow_type,
+                        dataset_source_id, dataset_content_hash, goal,
+                        generation_mode, status, row_version, event_sequence,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "workflow-partial",
+                        "project-partial",
+                        "dataset-partial-key",
+                        "f" * 64,
+                        "dataset-analysis",
+                        "source-partial",
+                        "a" * 64,
+                        "Analyze the immutable fixture dataset",
+                        "local-deterministic",
+                        "running",
+                        2,
+                        0,
+                        "2026-07-15 00:00:00",
+                        "2026-07-15 00:00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO tasks (
+                        id, project_id, workflow_id, step_key, order_index,
+                        objective, task_type, inputs, expected_outputs,
+                        acceptance_criteria, permissions, status, retries,
+                        timeout_seconds, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "task-workflow-partial",
+                        "project-partial",
+                        "workflow-partial",
+                        "execute-analysis",
+                        2,
+                        "Execute the approved analysis",
+                        "python-data-analysis",
+                        "{}",
+                        "[]",
+                        "[]",
+                        "[]",
+                        "waiting-approval",
+                        0,
+                        600,
+                        "2026-07-15 00:00:00",
+                        "2026-07-15 00:00:00",
+                    ),
+                )
+                connection.commit()
+
+                workflow_intent_columns = (
+                    "id",
+                    "task_id",
+                    "project_id",
+                    "workflow_id",
+                    "plan_step_id",
+                    "dataset_source_id",
+                    "dataset_content_hash",
+                    "objective",
+                    "code",
+                    "expected_outputs",
+                    "timeout_seconds",
+                    "risk_level",
+                    "repair_attempt",
+                    "payload_sha256",
+                    "status",
+                    "decision",
+                    "created_at",
+                    "updated_at",
+                )
+                valid_workflow_intent: dict[str, object] = {
+                    "id": "intent-workflow-partial",
+                    "task_id": "task-workflow-partial",
+                    "project_id": "project-partial",
+                    "workflow_id": "workflow-partial",
+                    "plan_step_id": "execute-analysis",
+                    "dataset_source_id": "source-partial",
+                    "dataset_content_hash": "a" * 64,
+                    "objective": "Execute the approved analysis",
+                    "code": "print('approved')",
+                    "expected_outputs": json.dumps(
+                        [
+                            "executed-notebook",
+                            "analysis-log",
+                            "environment-manifest",
+                        ]
+                    ),
+                    "timeout_seconds": 600,
+                    "risk_level": "high",
+                    "repair_attempt": 0,
+                    "payload_sha256": "e" * 64,
+                    "status": "waiting-approval",
+                    "decision": None,
+                    "created_at": "2026-07-15 00:00:00",
+                    "updated_at": "2026-07-15 00:00:00",
+                }
+                insert_workflow_intent = (
+                    f"INSERT INTO analysis_intents ({', '.join(workflow_intent_columns)}) "
+                    f"VALUES ({', '.join('?' for _ in workflow_intent_columns)})"
+                )
+                for missing_field in ("plan_step_id", "risk_level"):
+                    invalid = {**valid_workflow_intent, missing_field: None}
+                    invalid["id"] = f"intent-missing-{missing_field}"
+                    with (
+                        self.subTest(missing_field=missing_field),
+                        self.assertRaises(sqlite3.IntegrityError),
+                    ):
+                        connection.execute(
+                            insert_workflow_intent,
+                            tuple(invalid[column] for column in workflow_intent_columns),
+                        )
+                    connection.rollback()
+
+                connection.execute(
+                    insert_workflow_intent,
+                    tuple(valid_workflow_intent[column] for column in workflow_intent_columns),
+                )
+                connection.commit()
+
+                incomplete_repair = {
+                    **valid_workflow_intent,
+                    "id": "intent-workflow-repair",
+                    "previous_intent_id": "intent-workflow-partial",
+                    "repair_attempt": 1,
+                    "error_summary": "{}",
+                    "code_diff": None,
+                    "status": "failed",
+                    "decision": "approved",
+                }
+                repair_columns = workflow_intent_columns + (
+                    "previous_intent_id",
+                    "error_summary",
+                    "code_diff",
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        f"INSERT INTO analysis_intents ({', '.join(repair_columns)}) "
+                        f"VALUES ({', '.join('?' for _ in repair_columns)})",
+                        tuple(incomplete_repair[column] for column in repair_columns),
+                    )
+                connection.rollback()
+
+                connection.execute(
+                    "UPDATE analysis_intents SET status = 'failed', decision = 'approved', "
+                    "error_summary = '{}' WHERE id = 'intent-workflow-partial'"
+                )
+                complete_repair = {
+                    **incomplete_repair,
+                    "status": "waiting-approval",
+                    "decision": None,
+                    "code_diff": "-print('approved')\n+print('repaired')",
+                    "payload_sha256": "d" * 64,
+                }
+                connection.execute(
+                    f"INSERT INTO analysis_intents ({', '.join(repair_columns)}) "
+                    f"VALUES ({', '.join('?' for _ in repair_columns)})",
+                    tuple(complete_repair[column] for column in repair_columns),
+                )
+                connection.commit()
+
+                connection.execute(
+                    "DELETE FROM tasks WHERE id = 'task-workflow-partial'"
+                )
+                connection.commit()
+                remaining_workflow_intents = connection.execute(
+                    "SELECT id FROM analysis_intents WHERE id IN (?, ?) ORDER BY id",
+                    ("intent-workflow-partial", "intent-workflow-repair"),
+                ).fetchall()
+                self.assertEqual(remaining_workflow_intents, [])
+                self.assertEqual(
+                    connection.execute("PRAGMA foreign_key_check").fetchall(), []
+                )
+
+                connection.execute(
+                    """
+                    INSERT INTO analysis_intents (
+                        id, task_id, project_id, dataset_source_id, objective, code,
+                        payload_sha256, status, decision, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "intent-partial-history-2",
+                        "task-partial",
+                        "project-partial",
+                        "source-partial",
+                        "Historical repair",
+                        "print('history')",
+                        "c" * 64,
+                        "failed",
+                        None,
+                        "2026-07-15 00:01:00",
+                        "2026-07-15 00:01:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO analysis_intents (
+                        id, task_id, project_id, dataset_source_id, objective, code,
+                        payload_sha256, status, decision, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "intent-partial-active",
+                        "task-partial",
+                        "project-partial",
+                        "source-partial",
+                        "Active repair",
+                        "print('active')",
+                        "d" * 64,
+                        "waiting-approval",
+                        None,
+                        "2026-07-15 00:02:00",
+                        "2026-07-15 00:02:00",
+                    ),
+                )
+                connection.commit()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO analysis_intents (
+                            id, task_id, project_id, dataset_source_id, objective, code,
+                            payload_sha256, status, decision, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "intent-partial-active-2",
+                            "task-partial",
+                            "project-partial",
+                            "source-partial",
+                            "Conflicting active repair",
+                            "print('conflict')",
+                            "e" * 64,
+                            "approved",
+                            None,
+                            "2026-07-15 00:03:00",
+                            "2026-07-15 00:03:00",
+                        ),
+                    )
+                connection.rollback()
+
+                connection.execute(
+                    """
+                    INSERT INTO runs (
+                        id, task_id, analysis_intent_id, input_artifacts,
+                        output_artifacts, token_usage, cost, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "run-partial-1",
+                        "task-partial",
+                        "intent-partial-active",
+                        "[]",
+                        "[]",
+                        "{}",
+                        0.0,
+                        "completed",
+                        "2026-07-15 00:04:00",
+                    ),
+                )
+                connection.commit()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO runs (
+                            id, task_id, analysis_intent_id, input_artifacts,
+                            output_artifacts, token_usage, cost, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "run-partial-2",
+                            "task-partial",
+                            "intent-partial-active",
+                            "[]",
+                            "[]",
+                            "{}",
+                            0.0,
+                            "completed",
+                            "2026-07-15 00:05:00",
+                        ),
+                    )
+                connection.rollback()
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_repeated_head_upgrades_preserve_schema_version_schema_and_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "idempotent.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            expected_head = migration.single_head(config)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO projects (
+                        id, title, description, project_path, research_domain,
+                        execution_mode, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "idempotency-project",
+                        "Preserve across repeated upgrades",
+                        "Migration idempotency fixture",
+                        "/tmp/idempotency-project",
+                        "quality",
+                        "safe",
+                        "2026-07-14 00:00:00",
+                        "2026-07-14 00:00:00",
+                    ),
+                )
+                connection.commit()
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            command.upgrade(config, "head")
+
+            self.assertEqual(_revision(database_path), expected_head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+            migration.ensure_database(database_path)
+
+            self.assertEqual(_revision(database_path), expected_head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+    def test_dataset_upgrade_rejects_ambiguous_legacy_run_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "ambiguous-runs.sqlite3"
+            config = migration.alembic_config(database_path)
+            prior_revision = "0003_model_assisted_workflows"
+            command.upgrade(config, prior_revision)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_analysis_fixture(connection, "ambiguous", run_count=2)
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "multiple runs share one analysis intent",
+            ):
+                command.upgrade(config, "head")
+
+            self.assertEqual(_revision(database_path), prior_revision)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+    def test_dataset_migration_round_trip_preserves_legacy_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "round-trip.sqlite3"
+            config = migration.alembic_config(database_path)
+            prior_revision = "0003_model_assisted_workflows"
+            command.upgrade(config, prior_revision)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_analysis_fixture(connection, "roundtrip", run_count=1)
+            before_data = _data_snapshot(database_path)
+
+            command.upgrade(config, "head")
+            with sqlite3.connect(database_path) as connection:
+                run_intent = connection.execute(
+                    "SELECT analysis_intent_id FROM runs WHERE id = 'run-roundtrip-0'"
+                ).fetchone()
+                self.assertEqual(run_intent, ("intent-roundtrip",))
+
+            command.downgrade(config, prior_revision)
+
+            self.assertEqual(_revision(database_path), prior_revision)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+            with sqlite3.connect(database_path) as connection:
+                run_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+                self.assertNotIn("analysis_intent_id", run_columns)
+                intent_indexes = {
+                    str(row[1]): int(row[2])
+                    for row in connection.execute("PRAGMA index_list(analysis_intents)")
+                }
+                self.assertEqual(intent_indexes["ix_analysis_intents_task_id"], 1)
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_dataset_downgrade_refuses_new_provenance_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "dataset-downgrade.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            head = migration.single_head(config)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_analysis_fixture(connection, "downgrade")
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                        id, project_id, create_idempotency_key,
+                        create_payload_sha256, workflow_type,
+                        dataset_source_id, dataset_content_hash, goal,
+                        generation_mode, status, row_version, event_sequence,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "workflow-downgrade",
+                        "project-downgrade",
+                        "dataset-key",
+                        "f" * 64,
+                        "dataset-analysis",
+                        "source-downgrade",
+                        "a" * 64,
+                        "Analyze the immutable fixture dataset",
+                        "local-deterministic",
+                        "planning",
+                        1,
+                        0,
+                        "2026-07-15 00:00:00",
+                        "2026-07-15 00:00:00",
+                    ),
+                )
+                connection.commit()
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "dataset-analysis workflow provenance exists",
+            ):
+                command.downgrade(config, "0003_model_assisted_workflows")
+
+            self.assertEqual(_revision(database_path), head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+    def test_dataset_downgrade_refuses_multiple_intents_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "intent-lineage-downgrade.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            head = migration.single_head(config)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_analysis_fixture(connection, "lineage")
+                connection.execute(
+                    """
+                    INSERT INTO analysis_intents (
+                        id, task_id, project_id, dataset_source_id, objective, code,
+                        payload_sha256, status, decision, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "intent-lineage-2",
+                        "task-lineage",
+                        "project-lineage",
+                        "source-lineage",
+                        "Historical repaired analysis",
+                        "print('repaired')",
+                        "e" * 64,
+                        "failed",
+                        None,
+                        "2026-07-15 00:01:00",
+                        "2026-07-15 00:01:00",
+                    ),
+                )
+                connection.commit()
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "multiple analysis intents share a task",
+            ):
+                command.downgrade(config, "0003_model_assisted_workflows")
+
+            self.assertEqual(_revision(database_path), head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+    def test_dataset_downgrade_refuses_v2_and_v3_approvals_without_mutation(self) -> None:
+        targets = (
+            "0004_dataset_analysis_workflows",
+            "0005_workflow_mutation_replay",
+        )
+        schema_versions = ("analysis-intent-v2", "analysis-intent-v3")
+        for target_revision in targets:
+            for payload_schema_version in schema_versions:
+                with self.subTest(
+                    target_revision=target_revision,
+                    payload_schema_version=payload_schema_version,
+                ):
+                    with tempfile.TemporaryDirectory() as directory:
+                        database_path = Path(directory) / "approval-downgrade.sqlite3"
+                        config = migration.alembic_config(database_path)
+                        command.upgrade(config, target_revision)
+                        fixture_id = f"{target_revision[:4]}-{payload_schema_version[-2:]}"
+                        with sqlite3.connect(database_path) as connection:
+                            connection.execute("PRAGMA foreign_keys=ON")
+                            _insert_analysis_fixture(connection, fixture_id)
+                            _insert_analysis_approval(
+                                connection,
+                                fixture_id,
+                                payload_schema_version,
+                            )
+                        before_schema = _schema_snapshot(database_path)
+                        before_data = _data_snapshot(database_path)
+
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            rf"{payload_schema_version} approvals",
+                        ):
+                            command.downgrade(config, "0003_model_assisted_workflows")
+
+                        self.assertEqual(_revision(database_path), target_revision)
+                        self.assertEqual(_schema_snapshot(database_path), before_schema)
+                        self.assertEqual(_data_snapshot(database_path), before_data)
+
     def test_full_legacy_fixture_preserves_every_table_and_backfills_approval(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -362,7 +1132,7 @@ class DatabaseMigrationTest(unittest.TestCase):
             self.assertEqual(after, before)
             self.assertEqual(
                 _revision(database_path),
-                migration._single_head(migration._alembic_config(database_path)),
+                migration.single_head(migration.alembic_config(database_path)),
             )
             with sqlite3.connect(database_path) as connection:
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
@@ -395,6 +1165,19 @@ class DatabaseMigrationTest(unittest.TestCase):
                     answer_provenance,
                     ("legacy-unknown", None, None, "{}"),
                 )
+                intent_provenance = connection.execute(
+                    """
+                    SELECT workflow_id, plan_step_id, previous_intent_id,
+                           dataset_content_hash, expected_outputs, timeout_seconds,
+                           risk_level, repair_attempt, error_summary, code_diff
+                    FROM analysis_intents WHERE id = 'intent-1'
+                    """
+                ).fetchone()
+                self.assertEqual(intent_provenance, (None,) * 10)
+                run_intent = connection.execute(
+                    "SELECT analysis_intent_id FROM runs WHERE id = 'run-1'"
+                ).fetchone()
+                self.assertEqual(run_intent, ("intent-1",))
                 workflow_columns = {
                     str(row[1]): str(row[2])
                     for row in connection.execute("PRAGMA table_info(workflows)")
@@ -407,7 +1190,7 @@ class DatabaseMigrationTest(unittest.TestCase):
     def test_control_plane_upgrade_preserves_rows_and_backfills_model_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "control-plane.sqlite3"
-            config = migration._alembic_config(database_path)
+            config = migration.alembic_config(database_path)
             command.upgrade(config, "0002_workflow_control_plane")
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
@@ -469,6 +1252,30 @@ class DatabaseMigrationTest(unittest.TestCase):
                         "2026-07-14 00:01:00",
                     ),
                 )
+                connection.execute(
+                    """
+                    INSERT INTO workflow_jobs (
+                        id, workflow_id, kind, operation_key, attempt,
+                        input_sha256, handler_version, status, available_at,
+                        request_idempotency_key, created_at, updated_at, finished_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "legacy-idempotency-job",
+                        "workflow-v2",
+                        "generate-plan",
+                        "workflow:workflow-v2:plan:1",
+                        1,
+                        "a" * 64,
+                        "template-plan-v1",
+                        "succeeded",
+                        "2026-07-14 00:00:00",
+                        "legacy-mutation-key",
+                        "2026-07-14 00:00:00",
+                        "2026-07-14 00:01:00",
+                        "2026-07-14 00:01:00",
+                    ),
+                )
                 connection.commit()
 
             migration.ensure_database(database_path)
@@ -476,7 +1283,7 @@ class DatabaseMigrationTest(unittest.TestCase):
             engine = create_engine(f"sqlite:///{database_path}")
             with Session(engine) as session:
                 project = session.get(ProjectRecord, "project-v2")
-                self.assertIsNotNone(project)
+                assert project is not None
                 replayed = start_workflow(
                     session,
                     project,
@@ -498,6 +1305,14 @@ class DatabaseMigrationTest(unittest.TestCase):
                     workflow,
                     ("Preserve this goal", "local-deterministic"),
                 )
+                legacy_request_binding = connection.execute(
+                    "SELECT request_idempotency_key, request_payload_sha256 "
+                    "FROM workflow_jobs WHERE id = 'legacy-idempotency-job'"
+                ).fetchone()
+                self.assertEqual(
+                    legacy_request_binding,
+                    ("legacy-mutation-key", None),
+                )
                 answer = connection.execute(
                     """
                     SELECT answer, generator, model, prompt_version, metadata_json
@@ -510,11 +1325,14 @@ class DatabaseMigrationTest(unittest.TestCase):
                 )
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
-    def test_control_plane_upgrade_rejects_tampered_create_hash_without_mutation(self) -> None:
+    def test_failed_upgrade_keeps_prior_revision_and_does_not_claim_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "tampered-control-plane.sqlite3"
-            config = migration._alembic_config(database_path)
-            command.upgrade(config, "0002_workflow_control_plane")
+            config = migration.alembic_config(database_path)
+            prior_revision = "0002_workflow_control_plane"
+            expected_head = migration.single_head(config)
+            self.assertNotEqual(prior_revision, expected_head)
+            command.upgrade(config, prior_revision)
             with sqlite3.connect(database_path) as connection:
                 connection.execute(
                     """
@@ -557,7 +1375,8 @@ class DatabaseMigrationTest(unittest.TestCase):
                     ),
                 )
                 connection.commit()
-            before = _schema_snapshot(database_path)
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
 
             with self.assertRaisesRegex(
                 RuntimeError,
@@ -565,11 +1384,10 @@ class DatabaseMigrationTest(unittest.TestCase):
             ):
                 migration.ensure_database(database_path)
 
-            self.assertEqual(
-                _revision(database_path),
-                "0002_workflow_control_plane",
-            )
-            self.assertEqual(_schema_snapshot(database_path), before)
+            self.assertEqual(_revision(database_path), prior_revision)
+            self.assertNotEqual(_revision(database_path), expected_head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
             with sqlite3.connect(database_path) as connection:
                 row = connection.execute(
                     "SELECT create_payload_sha256, goal FROM workflows "
@@ -657,10 +1475,11 @@ class DatabaseMigrationTest(unittest.TestCase):
                     select(PlanRecord).where(PlanRecord.workflow_id == workflow_id)
                 )
                 approval = session.scalar(
-                    select(ApprovalRecord).where(
-                        ApprovalRecord.workflow_id == workflow_id
-                    )
+                    select(ApprovalRecord).where(ApprovalRecord.workflow_id == workflow_id)
                 )
+                assert workflow is not None
+                assert plan is not None
+                assert approval is not None
                 approve_plan(
                     session,
                     workflow,
@@ -681,7 +1500,11 @@ class DatabaseMigrationTest(unittest.TestCase):
                         JobRecord.status == "queued",
                     )
                 )
+                assert workflow is not None
+                assert synthesis_job is not None
+                assert synthesis_job.task_id is not None
                 synthesis_task = session.get(TaskRecord, synthesis_job.task_id)
+                assert synthesis_task is not None
                 self.assertEqual(
                     synthesis_task.task_type,
                     "synthesize-extractive-claims",
@@ -705,16 +1528,18 @@ class DatabaseMigrationTest(unittest.TestCase):
                         JobRecord.status == "queued",
                     )
                 )
+                assert workflow is not None
+                assert review_job is not None
                 self.assertEqual(workflow.status, "reviewing")
                 self.assertEqual(review_job.handler_version, "deterministic-claims-v1")
                 plan = session.scalar(
                     select(PlanRecord).where(PlanRecord.workflow_id == workflow_id)
                 )
                 approval = session.scalar(
-                    select(ApprovalRecord).where(
-                        ApprovalRecord.workflow_id == workflow_id
-                    )
+                    select(ApprovalRecord).where(ApprovalRecord.workflow_id == workflow_id)
                 )
+                assert plan is not None
+                assert approval is not None
                 legacy_spec = json.loads(json.dumps(plan.spec_json))
                 legacy_inspect_inputs = legacy_spec["steps"][0]["inputs"]
                 legacy_inspect_inputs.pop("sourceIds", None)
@@ -796,7 +1621,7 @@ class DatabaseMigrationTest(unittest.TestCase):
                 session.commit()
             engine.dispose()
 
-            config = migration._alembic_config(database_path)
+            config = migration.alembic_config(database_path)
             command.downgrade(config, "0002_workflow_control_plane")
             self.assertEqual(_revision(database_path), "0002_workflow_control_plane")
             migration.ensure_database(database_path)
@@ -817,14 +1642,16 @@ class DatabaseMigrationTest(unittest.TestCase):
             with upgraded_factory() as session:
                 workflow = session.get(WorkflowRecord, workflow_id)
                 review = session.scalar(
-                    select(ReviewRecord).where(
-                        ReviewRecord.workflow_id == workflow_id
-                    )
+                    select(ReviewRecord).where(ReviewRecord.workflow_id == workflow_id)
                 )
+                assert workflow is not None
+                assert review is not None
                 self.assertEqual(workflow.status, "completed")
                 self.assertEqual(review.review_type, "deterministic-claims-v1")
                 self.assertEqual(review.verdict, "passed")
                 snapshot = workflow_snapshot(session, workflow)
+                assert snapshot.result is not None
+                assert snapshot.latest_review is not None
                 self.assertEqual(snapshot.result.integrity_status, "unfrozen")
                 self.assertEqual(
                     snapshot.latest_review.result.schema_version,
@@ -838,8 +1665,8 @@ class DatabaseMigrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "approval-event.sqlite3"
             migration.ensure_database(database_path)
-            config = migration._alembic_config(database_path)
-            head = migration._single_head(config)
+            config = migration.alembic_config(database_path)
+            head = migration.single_head(config)
             engine = create_engine(
                 f"sqlite:///{database_path}",
                 connect_args={"check_same_thread": False},
@@ -932,8 +1759,8 @@ class DatabaseMigrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "remote.sqlite3"
             migration.ensure_database(database_path)
-            config = migration._alembic_config(database_path)
-            head = migration._single_head(config)
+            config = migration.alembic_config(database_path)
+            head = migration.single_head(config)
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 connection.execute(
@@ -1045,7 +1872,7 @@ class DatabaseMigrationTest(unittest.TestCase):
     def test_incompatible_versioned_baseline_fails_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "incompatible.sqlite3"
-            config = migration._alembic_config(database_path)
+            config = migration.alembic_config(database_path)
             command.upgrade(config, migration.BASELINE_REVISION)
             with sqlite3.connect(database_path) as connection:
                 connection.execute("CREATE TABLE unexpected_extension (id INTEGER PRIMARY KEY)")

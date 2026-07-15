@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+from pathlib import PurePosixPath
+
+from .fixed_analysis_policy import (
+    FIXED_ANALYSIS_POLICY_ID,
+    GENERAL_ANALYSIS_POLICY_ID,
+    AnalysisPolicyId,
+    FixedAnalysisPolicyError,
+    FixedAnalysisTemplate,
+    validate_fixed_analysis_code,
+)
 
 _BLOCKED_MODULES = frozenset({"pty", "socket", "subprocess"})
 _BLOCKED_DYNAMIC_MODULES = _BLOCKED_MODULES | {"os"}
 _BLOCKED_OS_MEMBERS = frozenset({"kill", "killpg", "popen", "system"})
 _BLOCKED_IPYTHON_METHODS = frozenset({"getoutput", "system"})
 _BLOCKED_SHELL_MAGICS = frozenset({"bash", "script", "sh", "sx", "system"})
+_BLOCKED_DYNAMIC_CODE_CALLS = frozenset({"compile", "eval", "exec"})
 
 
 @dataclass(frozen=True)
@@ -23,12 +34,28 @@ class CodePolicyError(ValueError):
     pass
 
 
-def validate_python_code(code: str) -> None:
+def validate_python_code(
+    code: str,
+    *,
+    policy_profile_id: AnalysisPolicyId = GENERAL_ANALYSIS_POLICY_ID,
+    policy_template: FixedAnalysisTemplate | None = None,
+) -> None:
     """Reject the MVP's known shell and process escape forms before Jupyter sees code.
 
     This is intentionally a small, deterministic defense-in-depth policy, not a
     Python sandbox. The container remains the execution security boundary.
     """
+
+    if policy_profile_id == FIXED_ANALYSIS_POLICY_ID:
+        if policy_template is None:
+            raise CodePolicyError("fixed analysis policy requires a template")
+        try:
+            validate_fixed_analysis_code(code, template=policy_template)
+        except FixedAnalysisPolicyError as error:
+            raise CodePolicyError(str(error)) from error
+        return
+    if policy_profile_id != GENERAL_ANALYSIS_POLICY_ID or policy_template is not None:
+        raise CodePolicyError("analysis policy profile is invalid")
 
     try:
         tree = ast.parse(code, mode="exec")
@@ -99,7 +126,19 @@ class _CodePolicyChecker(ast.NodeVisitor):
         self._record_assignment_aliases([node.target], node.value)
         self.generic_visit(node)
 
+    def visit_Constant(self, node: ast.Constant) -> None:  # noqa: N802
+        if isinstance(node.value, str) and _unsafe_path_literal(node.value):
+            self._reject(
+                node,
+                "absolute and parent-relative path literals are not allowed",
+            )
+
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id in _BLOCKED_DYNAMIC_CODE_CALLS
+        ):
+            self._reject(node, f"calling {node.func.id} is not allowed")
         if isinstance(node.func, ast.Name) and node.func.id in self.blocked_callable_aliases:
             self._reject(node, f"calling {node.func.id} is not allowed")
 
@@ -121,7 +160,9 @@ class _CodePolicyChecker(ast.NodeVisitor):
 
         if isinstance(node.func, ast.Name) and node.func.id in self.dynamic_import_aliases:
             module_name = self._first_string_argument(node)
-            if module_name and module_name.split(".", maxsplit=1)[0] in _BLOCKED_DYNAMIC_MODULES:
+            if module_name is None:
+                self._reject(node, "computed dynamic imports are not allowed")
+            elif module_name.split(".", maxsplit=1)[0] in _BLOCKED_DYNAMIC_MODULES:
                 self._reject(node, f"dynamic import of {module_name} is not allowed")
 
         if (
@@ -131,7 +172,9 @@ class _CodePolicyChecker(ast.NodeVisitor):
             and node.func.attr == "import_module"
         ):
             module_name = self._first_string_argument(node)
-            if module_name and module_name.split(".", maxsplit=1)[0] in _BLOCKED_DYNAMIC_MODULES:
+            if module_name is None:
+                self._reject(node, "computed dynamic imports are not allowed")
+            elif module_name.split(".", maxsplit=1)[0] in _BLOCKED_DYNAMIC_MODULES:
                 self._reject(node, f"dynamic import of {module_name} is not allowed")
 
         if isinstance(node.func, ast.Name) and node.func.id == "getattr":
@@ -227,3 +270,8 @@ def _is_blocked_os_member(member: str) -> bool:
         or member.startswith("spawn")
         or member.startswith("posix_spawn")
     )
+
+
+def _unsafe_path_literal(value: str) -> bool:
+    path = PurePosixPath(value)
+    return path.is_absolute() or ".." in path.parts

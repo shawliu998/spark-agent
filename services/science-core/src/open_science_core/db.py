@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from typing import Protocol
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -12,6 +13,16 @@ class Base(DeclarativeBase):
     pass
 
 
+class _Cursor(Protocol):
+    def execute(self, statement: str) -> object: ...
+
+    def close(self) -> None: ...
+
+
+class _DbapiConnection(Protocol):
+    def cursor(self) -> _Cursor: ...
+
+
 settings.data_dir.mkdir(parents=True, exist_ok=True)
 settings.runtime_exchange_dir.mkdir(parents=True, exist_ok=True)
 engine: Engine = create_engine(
@@ -21,8 +32,8 @@ engine: Engine = create_engine(
 
 
 @event.listens_for(engine, "connect")
-def _configure_sqlite(dbapi_connection: object, _connection_record: object) -> None:
-    cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+def configure_sqlite(dbapi_connection: _DbapiConnection, _connection_record: object) -> None:
+    cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")

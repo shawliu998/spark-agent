@@ -1,13 +1,47 @@
 from __future__ import annotations
 
+import importlib
 import re
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Protocol, cast, overload
 
-import fitz
+_PdfWord = tuple[float, float, float, float, str, int, int, int]
+
+
+class _PdfRect(Protocol):
+    width: float
+    height: float
+
+
+class _PdfPageHandle(Protocol):
+    rect: _PdfRect
+
+    @overload
+    def get_text(self, option: Literal["words"], *, sort: bool) -> list[_PdfWord]: ...
+
+    @overload
+    def get_text(self, option: Literal["text"], *, sort: bool) -> str: ...
+
+    def get_label(self) -> str: ...
+
+
+class _PdfDocument(Protocol):
+    metadata: dict[str, str] | None
+    page_count: int
+
+    def load_page(self, page_id: int) -> _PdfPageHandle: ...
+
+    def close(self) -> None: ...
+
+
+class _FitzModule(Protocol):
+    def open(self, path: Path) -> _PdfDocument: ...
+
+
+_fitz = cast(_FitzModule, importlib.import_module("fitz"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,14 +77,15 @@ def normalize_text(value: str) -> str:
 
 
 def extract_pdf(path: Path) -> PdfExtraction:
-    document = fitz.open(path)
+    document = _fitz.open(path)
     try:
         metadata = document.metadata or {}
         title = (metadata.get("title") or "").strip() or None
         author_value = (metadata.get("author") or "").strip()
         authors = [part.strip() for part in re.split(r"[;,]", author_value) if part.strip()]
         pages: list[PdfPage] = []
-        for index, page in enumerate(document):
+        for index in range(document.page_count):
+            page = document.load_page(index)
             page_rect = page.rect
             words: list[dict[str, Any]] = []
             for item in page.get_text("words", sort=True):

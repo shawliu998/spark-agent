@@ -10,7 +10,7 @@ import stat
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, cast
 
 import nbformat
 from fastapi import HTTPException, status
@@ -35,6 +35,30 @@ _GENERATED_ARTIFACTS: dict[str, tuple[str, ArtifactType]] = {
     ".json": ("application/json", "json"),
     ".png": ("image/png", "image"),
 }
+_OUTPUT_PREVIEW_JSON_BYTES = 1024 * 1024
+
+
+class _NotebookV4(Protocol):
+    def new_notebook(self, *, cells: list[NotebookNode]) -> NotebookNode: ...
+
+    def new_markdown_cell(self, source: str) -> NotebookNode: ...
+
+    def new_code_cell(
+        self,
+        source: str,
+        *,
+        metadata: dict[str, list[str]],
+    ) -> NotebookNode: ...
+
+
+class _NotebookFormat(Protocol):
+    NO_CONVERT: object
+    v4: _NotebookV4
+
+    def writes(self, notebook: NotebookNode, *, version: object) -> str: ...
+
+
+_typed_nbformat = cast(_NotebookFormat, nbformat)
 
 
 class _ReservedFile:
@@ -71,7 +95,11 @@ def sha256_bytes(value: bytes) -> str:
 
 def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
     try:
-        validate_python_code(payload.code)
+        validate_python_code(
+            payload.code,
+            policy_profile_id=payload.policy_profile_id,
+            policy_template=payload.policy_template,
+        )
     except CodePolicyError as error:
         raise HTTPException(
             status_code=422,
@@ -83,11 +111,20 @@ def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
     dataset_path = _validated_dataset(payload.dataset_path, data_root_raw, data_root)
     _validate_initial_run_dir(run_dir, dataset_path)
 
-    manifest = environment_manifest()
+    manifest = {
+        **environment_manifest(),
+        "executionPolicy": {
+            "profileId": payload.policy_profile_id,
+            "template": payload.policy_template,
+        },
+    }
     manifest_bytes = canonical_json_bytes(manifest)
     environment_hash = sha256_bytes(manifest_bytes)
     notebook = _build_notebook(payload, run_dir, dataset_path, data_root, environment_hash)
-    input_notebook_bytes = nbformat.writes(notebook, version=4).encode("utf-8")
+    input_notebook_bytes = _typed_nbformat.writes(
+        notebook,
+        version=_typed_nbformat.NO_CONVERT,
+    ).encode("utf-8")
 
     reserved = _reserve_runtime_files(run_dir)
     _rewrite_reserved(reserved["input.ipynb"], input_notebook_bytes)
@@ -119,7 +156,10 @@ def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
         if error_text and error_text not in stderr:
             stderr = _join_sections(stderr, error_text)
 
-    executed_notebook_bytes = nbformat.writes(notebook, version=4).encode("utf-8")
+    executed_notebook_bytes = _typed_nbformat.writes(
+        notebook,
+        version=_typed_nbformat.NO_CONVERT,
+    ).encode("utf-8")
     _rewrite_reserved(reserved["input.ipynb"], input_notebook_bytes)
     _rewrite_reserved(reserved["executed.ipynb"], executed_notebook_bytes)
     _rewrite_reserved(reserved["stdout.txt"], stdout.encode("utf-8"))
@@ -136,6 +176,16 @@ def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
         stderr = _join_sections(stderr, warning_text)
         _rewrite_reserved(reserved["stderr.txt"], stderr.encode("utf-8"))
 
+    stdout_preview = _output_preview(
+        stdout,
+        stream="stdout",
+        full_artifact="stdout.txt",
+    )
+    stderr_preview = _output_preview(
+        stderr,
+        stream="stderr",
+        full_artifact="stderr.txt",
+    )
     log_text = _build_log(
         payload=payload,
         data_root=data_root,
@@ -146,8 +196,8 @@ def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
         started_at=started_at,
         finished_at=finished_at,
         duration_seconds=duration_seconds,
-        stdout=stdout,
-        stderr=stderr,
+        stdout=stdout_preview,
+        stderr=stderr_preview,
     )
     _rewrite_reserved(reserved["execution.log"], log_text.encode("utf-8"))
 
@@ -160,8 +210,8 @@ def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
     return ExecuteOut(
         status=execution_status,
         environment_hash=environment_hash,
-        stdout=stdout,
-        stderr=stderr,
+        stdout=stdout_preview,
+        stderr=stderr_preview,
         log=log_text,
         artifacts=artifacts,
     )
@@ -294,11 +344,17 @@ def _build_notebook(
         )
     )
     relative_dataset = dataset_path.relative_to(data_root).as_posix()
-    notebook = nbformat.v4.new_notebook(
+    notebook = _typed_nbformat.v4.new_notebook(
         cells=[
-            nbformat.v4.new_markdown_cell(f"# Analysis run\n\n{payload.objective}"),
-            nbformat.v4.new_code_cell(setup_code, metadata={"tags": ["parameters"]}),
-            nbformat.v4.new_code_cell(payload.code, metadata={"tags": ["analysis"]}),
+            _typed_nbformat.v4.new_markdown_cell(f"# Analysis run\n\n{payload.objective}"),
+            _typed_nbformat.v4.new_code_cell(
+                setup_code,
+                metadata={"tags": ["parameters"]},
+            ),
+            _typed_nbformat.v4.new_code_cell(
+                payload.code,
+                metadata={"tags": ["analysis"]},
+            ),
         ]
     )
     notebook.metadata = {
@@ -314,6 +370,8 @@ def _build_notebook(
             "datasetPath": relative_dataset,
             "payloadSha256": payload.payload_sha256,
             "environmentHash": environment_hash,
+            "policyProfileId": payload.policy_profile_id,
+            "policyTemplate": payload.policy_template,
         },
     }
     return notebook
@@ -374,10 +432,12 @@ def _rewrite_reserved(reserved: _ReservedFile, content: bytes) -> None:
 def _extract_outputs(notebook: NotebookNode) -> tuple[str, str]:
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
-    for cell in notebook.cells:
+    cells = cast(list[dict[str, Any]], notebook.cells)
+    for cell in cells:
         if cell.get("cell_type") != "code":
             continue
-        for output in cell.get("outputs", []):
+        outputs = cast(list[dict[str, Any]], cell.get("outputs", []))
+        for output in outputs:
             output_type = output.get("output_type")
             if output_type == "stream":
                 text_value = _output_text(output.get("text", ""))
@@ -404,7 +464,7 @@ def _output_text(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "".join(str(item) for item in value)
+        return "".join(str(item) for item in cast(list[object], value))
     return str(value) if value is not None else ""
 
 
@@ -418,6 +478,86 @@ def _join_sections(first: str, second: str) -> str:
     if not second:
         return first
     return f"{first.rstrip()}\n{second.lstrip()}"
+
+
+def _output_preview(
+    value: str,
+    *,
+    stream: Literal["stdout", "stderr"],
+    full_artifact: Literal["stdout.txt", "stderr.txt"],
+) -> str:
+    if _json_encoded_string_size(value) <= _OUTPUT_PREVIEW_JSON_BYTES:
+        return value
+    full_bytes = value.encode("utf-8")
+    marker = (
+        "\n\n[Spark Agent output preview truncated: "
+        f"stream={stream}; originalBytes={len(full_bytes)}; "
+        f"sha256={sha256_bytes(full_bytes)}; fullArtifact={full_artifact}]\n\n"
+    )
+    available_content_bytes = (
+        _OUTPUT_PREVIEW_JSON_BYTES - 2 - _json_encoded_content_size(marker)
+    )
+    if available_content_bytes < 0:
+        raise RuntimeError("Runtime output preview marker exceeds its size budget")
+    head_budget = available_content_bytes // 2
+    tail_budget = available_content_bytes - head_budget
+    preview = (
+        _json_bounded_prefix(value, head_budget)
+        + marker
+        + _json_bounded_suffix(value, tail_budget)
+    )
+    if _json_encoded_string_size(preview) > _OUTPUT_PREVIEW_JSON_BYTES:
+        raise RuntimeError("Runtime output preview exceeds its size budget")
+    return preview
+
+
+def _json_encoded_string_size(value: str) -> int:
+    return 2 + _json_encoded_content_size(value)
+
+
+def _json_encoded_content_size(value: str) -> int:
+    return sum(_json_encoded_character_size(character) for character in value)
+
+
+def _json_encoded_character_size(character: str) -> int:
+    code_point = ord(character)
+    if character in {'"', "\\", "\b", "\f", "\n", "\r", "\t"}:
+        return 2
+    if code_point < 0x20:
+        return 6
+    if code_point <= 0x7F:
+        return 1
+    if code_point <= 0x7FF:
+        return 2
+    if 0xD800 <= code_point <= 0xDFFF:
+        return len(character.encode("utf-8"))
+    if code_point <= 0xFFFF:
+        return 3
+    return 4
+
+
+def _json_bounded_prefix(value: str, budget: int) -> str:
+    used = 0
+    end = 0
+    for index, character in enumerate(value):
+        size = _json_encoded_character_size(character)
+        if used + size > budget:
+            break
+        used += size
+        end = index + 1
+    return value[:end]
+
+
+def _json_bounded_suffix(value: str, budget: int) -> str:
+    used = 0
+    start = len(value)
+    for index in range(len(value) - 1, -1, -1):
+        size = _json_encoded_character_size(value[index])
+        if used + size > budget:
+            break
+        used += size
+        start = index
+    return value[start:]
 
 
 def _generated_artifact_paths(
@@ -480,6 +620,8 @@ def _build_log(
         f"status: {run_status}",
         f"payloadSha256: {payload.payload_sha256}",
         f"environmentHash: {environment_hash}",
+        f"policyProfileId: {payload.policy_profile_id}",
+        f"policyTemplate: {payload.policy_template or '-'}",
         f"runDir: {run_dir.relative_to(data_root).as_posix()}",
         f"datasetPath: {dataset_path.relative_to(data_root).as_posix()}",
         f"timeoutSeconds: {payload.timeout_seconds}",

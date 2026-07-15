@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import stat
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, status
@@ -20,7 +20,7 @@ from .schemas import ExecuteIn, ExecuteOut, HealthOut
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     socket_path = configured_socket_path()
     try:
         socket_stat = socket_path.lstat()

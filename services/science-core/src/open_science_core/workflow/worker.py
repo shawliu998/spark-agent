@@ -6,12 +6,30 @@ import logging
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
+from typing import cast
 
 from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
+from ..analysis_service import (
+    execute_workflow_analysis_intent,
+    recover_interrupted_analysis_state,
+)
 from ..db import SessionLocal
-from ..models import JobRecord, TaskRecord, WorkflowRecord, utc_now
+from ..models import (
+    AnalysisIntentRecord,
+    JobRecord,
+    RunRecord,
+    TaskRecord,
+    WorkflowRecord,
+    utc_now,
+)
+from ._handlers.dataset import (
+    AnalysisServiceExecutor,
+    execute_leased_analysis_job,
+    recover_leased_analysis_job,
+)
 from .handlers import (
     execute_leased_job,
     mark_leased_job_started,
@@ -19,7 +37,6 @@ from .handlers import (
 )
 from .service import transition_task, transition_workflow
 from .state import WorkflowBlockedError, WorkflowFailure
-
 
 SessionFactory = Callable[[], Session]
 logger = logging.getLogger(__name__)
@@ -33,11 +50,13 @@ class WorkflowWorker:
         poll_interval_seconds: float = 0.5,
         lease_seconds: float = 30.0,
         heartbeat_seconds: float = 10.0,
+        analysis_executor: AnalysisServiceExecutor = execute_workflow_analysis_intent,
     ) -> None:
         self._session_factory = session_factory
         self._poll_interval_seconds = poll_interval_seconds
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
+        self._analysis_executor = analysis_executor
         self._worker_id = f"science-core-{uuid.uuid4()}"
         self._stop = asyncio.Event()
         self._loop_task: asyncio.Task[None] | None = None
@@ -91,7 +110,7 @@ class WorkflowWorker:
         # until the process is restarted.
         await asyncio.to_thread(self._recover_expired_jobs)
         await asyncio.to_thread(self._sweep_cancellations)
-        claimed = await asyncio.to_thread(self._claim_next_job)
+        claimed = await asyncio.to_thread(self.claim_next_job)
         if claimed is None:
             return False
         job_id, lease_token = claimed
@@ -128,6 +147,9 @@ class WorkflowWorker:
         return True
 
     def recover(self) -> None:
+        with self._session_factory() as session:
+            recover_interrupted_analysis_state(session)
+            session.commit()
         self._recover_expired_jobs()
         self._sweep_cancellations()
         self._recover_orphaned_workflows()
@@ -165,7 +187,14 @@ class WorkflowWorker:
                     .where(
                         TaskRecord.workflow_id == workflow.id,
                         TaskRecord.status.in_(
-                            ["pending", "queued", "running", "blocked", "failed"]
+                            [
+                                "pending",
+                                "queued",
+                                "running",
+                                "waiting-approval",
+                                "blocked",
+                                "failed",
+                            ]
                         ),
                     )
                     .values(status="cancelled", finished_at=now, updated_at=now)
@@ -173,7 +202,7 @@ class WorkflowWorker:
                 transition_workflow(session, workflow, "cancelled")
             session.commit()
 
-    def _claim_next_job(self) -> tuple[str, str] | None:
+    def claim_next_job(self) -> tuple[str, str] | None:
         now = utc_now()
         token = str(uuid.uuid4())
         with self._session_factory() as session:
@@ -203,7 +232,7 @@ class WorkflowWorker:
                     updated_at=now,
                 )
             )
-            if result.rowcount != 1:
+            if cast(CursorResult[object], result).rowcount != 1:
                 session.rollback()
                 return None
             session.commit()
@@ -214,6 +243,23 @@ class WorkflowWorker:
             mark_leased_job_started(session, job_id, lease_token)
 
     def _execute(self, job_id: str, lease_token: str) -> None:
+        with self._session_factory() as session:
+            job = session.get(JobRecord, job_id)
+            task = session.get(TaskRecord, job.task_id) if job and job.task_id else None
+            is_analysis_job = (
+                job is not None
+                and job.kind == "execute-task"
+                and task is not None
+                and task.task_type == "python-data-analysis"
+            )
+        if is_analysis_job:
+            execute_leased_analysis_job(
+                self._session_factory,
+                job_id,
+                lease_token,
+                self._analysis_executor,
+            )
+            return
         with self._session_factory() as session:
             execute_leased_job(session, job_id, lease_token)
 
@@ -261,7 +307,7 @@ class WorkflowWorker:
                 )
             )
             session.commit()
-            return result.rowcount == 1
+            return cast(CursorResult[object], result).rowcount == 1
 
     def _recover_expired_jobs(self) -> None:
         now = utc_now()
@@ -276,7 +322,7 @@ class WorkflowWorker:
                     .limit(20)
                 )
             )
-            identities: list[tuple[str, str]] = []
+            identities: list[tuple[str, str, bool]] = []
             for job in expired:
                 if job.lease_token is None:
                     continue
@@ -297,10 +343,47 @@ class WorkflowWorker:
                     )
                     .execution_options(synchronize_session=False)
                 )
-                if claimed.rowcount == 1:
-                    identities.append((job.id, recovery_token))
+                if cast(CursorResult[object], claimed).rowcount == 1:
+                    task = (
+                        session.get(TaskRecord, job.task_id)
+                        if job.task_id is not None
+                        else None
+                    )
+                    identities.append(
+                        (
+                            job.id,
+                            recovery_token,
+                            job.kind == "execute-task"
+                            and task is not None
+                            and task.task_type == "python-data-analysis",
+                        )
+                    )
             session.commit()
-        for job_id, recovery_token in identities:
+        for job_id, recovery_token, is_analysis_job in identities:
+            if is_analysis_job:
+                try:
+                    recovered = recover_leased_analysis_job(
+                        self._session_factory,
+                        job_id,
+                        recovery_token,
+                    )
+                except Exception as error:
+                    self._settle_error(job_id, recovery_token, error)
+                    continue
+                if recovered:
+                    continue
+            if is_analysis_job and not self._analysis_job_is_unclaimed(job_id):
+                self._settle_error(
+                    job_id,
+                    recovery_token,
+                    WorkflowFailure(
+                        "analysis-execution-outcome-unknown",
+                        "The analysis worker lease expired after execution was claimed; "
+                        "reconcile the durable run before retrying.",
+                        outcome_unknown=True,
+                    ),
+                )
+                continue
             self._settle_error(
                 job_id,
                 recovery_token,
@@ -310,6 +393,26 @@ class WorkflowWorker:
                     retryable=True,
                 ),
             )
+
+    def _analysis_job_is_unclaimed(self, job_id: str) -> bool:
+        with self._session_factory() as session:
+            job = session.get(JobRecord, job_id)
+            workflow = (
+                session.get(WorkflowRecord, job.workflow_id)
+                if job is not None
+                else None
+            )
+            if job is None or workflow is None:
+                return False
+            prefix = f"workflow:{workflow.id}:analysis-intent:"
+            if not job.operation_key.startswith(prefix):
+                return False
+            intent_id = job.operation_key.removeprefix(prefix)
+            intent = session.get(AnalysisIntentRecord, intent_id)
+            run = session.scalar(
+                select(RunRecord.id).where(RunRecord.analysis_intent_id == intent_id)
+            )
+            return intent is not None and intent.status == "approved" and run is None
 
     def _recover_orphaned_workflows(self) -> None:
         with self._session_factory() as session:

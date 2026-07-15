@@ -36,17 +36,25 @@ class ProjectRecord(Base):
     research_domain: Mapped[str | None] = mapped_column(String(200), nullable=True)
     execution_mode: Mapped[str] = mapped_column(String(32), default="safe")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
 
-    sources: Mapped[list[SourceRecord]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    sources: Mapped[list[SourceRecord]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
 
 
 class SourceRecord(Base):
     __tablename__ = "sources"
-    __table_args__ = (UniqueConstraint("project_id", "content_hash", name="uq_source_project_hash"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "content_hash", name="uq_source_project_hash"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
     title: Mapped[str] = mapped_column(String(500))
     source_kind: Mapped[str] = mapped_column(String(32), default="pdf")
     authors: Mapped[list[str]] = mapped_column(JSON, default=list)
@@ -61,7 +69,9 @@ class SourceRecord(Base):
 
     project: Mapped[ProjectRecord] = relationship(back_populates="sources")
     pages: Mapped[list[SourcePageRecord]] = relationship(
-        back_populates="source", cascade="all, delete-orphan", order_by="SourcePageRecord.page_index"
+        back_populates="source",
+        cascade="all, delete-orphan",
+        order_by="SourcePageRecord.page_index",
     )
 
 
@@ -93,7 +103,9 @@ class AnswerRecord(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
     workflow_id: Mapped[str | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
     )
@@ -155,7 +167,9 @@ class EvidenceSpanRecord(Base):
 class ClaimEvidenceRecord(Base):
     __tablename__ = "claim_evidence"
 
-    claim_id: Mapped[str] = mapped_column(ForeignKey("claims.id", ondelete="CASCADE"), primary_key=True)
+    claim_id: Mapped[str] = mapped_column(
+        ForeignKey("claims.id", ondelete="CASCADE"), primary_key=True
+    )
     evidence_id: Mapped[str] = mapped_column(
         ForeignKey("evidence_spans.id", ondelete="CASCADE"), primary_key=True
     )
@@ -173,7 +187,9 @@ class TaskRecord(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
     workflow_id: Mapped[str | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
     )
@@ -196,7 +212,9 @@ class TaskRecord(Base):
     retries: Mapped[int] = mapped_column(Integer, default=0)
     timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -216,6 +234,25 @@ class WorkflowRecord(Base):
             "generation_mode IN ('local-deterministic','remote-model-assisted')",
             name="ck_workflow_generation_mode",
         ),
+        CheckConstraint(
+            "workflow_type IN ('literature-synthesis','dataset-analysis')",
+            name="ck_workflow_type",
+        ),
+        CheckConstraint(
+            "(workflow_type = 'dataset-analysis' "
+            "AND dataset_source_id IS NOT NULL "
+            "AND dataset_content_hash IS NOT NULL) OR "
+            "(workflow_type != 'dataset-analysis' "
+            "AND dataset_source_id IS NULL "
+            "AND dataset_content_hash IS NULL)",
+            name="ck_workflow_dataset_identity",
+        ),
+        CheckConstraint(
+            "dataset_content_hash IS NULL OR "
+            "(length(dataset_content_hash) = 64 "
+            "AND dataset_content_hash NOT GLOB '*[^0-9a-f]*')",
+            name="ck_workflow_dataset_content_hash",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -225,10 +262,12 @@ class WorkflowRecord(Base):
     create_idempotency_key: Mapped[str] = mapped_column(String(200))
     create_payload_sha256: Mapped[str] = mapped_column(String(64))
     workflow_type: Mapped[str] = mapped_column(String(64), default="literature-synthesis")
-    goal: Mapped[str] = mapped_column(Text)
-    generation_mode: Mapped[str] = mapped_column(
-        String(32), default="local-deterministic"
+    dataset_source_id: Mapped[str | None] = mapped_column(
+        ForeignKey("sources.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    dataset_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    goal: Mapped[str] = mapped_column(Text)
+    generation_mode: Mapped[str] = mapped_column(String(32), default="local-deterministic")
     status: Mapped[str] = mapped_column(String(32), default="planning", index=True)
     row_version: Mapped[int] = mapped_column(Integer, default=1)
     event_sequence: Mapped[int] = mapped_column(Integer, default=0)
@@ -315,10 +354,15 @@ class JobRecord(Base):
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     request_idempotency_key: Mapped[str | None] = mapped_column(
         String(200), nullable=True, unique=True
+    )
+    request_payload_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
     )
     previous_job_id: Mapped[str | None] = mapped_column(
         ForeignKey("workflow_jobs.id", ondelete="SET NULL"), nullable=True
@@ -339,7 +383,7 @@ class ReviewRecord(Base):
             "workflow_id", "review_type", "input_sha256", name="uq_workflow_review_input"
         ),
         CheckConstraint(
-            "verdict IN ('passed','revision-required','blocked','failed')",
+            "verdict IN ('passed','passed-with-warnings','revision-required','blocked','failed')",
             name="ck_workflow_review_verdict",
         ),
     )
@@ -363,19 +407,86 @@ class ReviewRecord(Base):
 
 class AnalysisIntentRecord(Base):
     __tablename__ = "analysis_intents"
+    __table_args__ = (
+        CheckConstraint(
+            "repair_attempt IS NULL OR repair_attempt BETWEEN 0 AND 2",
+            name="ck_analysis_intent_repair_attempt",
+        ),
+        CheckConstraint(
+            "risk_level IS NULL OR risk_level IN ('low','medium','high')",
+            name="ck_analysis_intent_risk_level",
+        ),
+        CheckConstraint(
+            "dataset_content_hash IS NULL OR "
+            "(length(dataset_content_hash) = 64 "
+            "AND dataset_content_hash NOT GLOB '*[^0-9a-f]*')",
+            name="ck_analysis_intent_dataset_content_hash",
+        ),
+        CheckConstraint(
+            "timeout_seconds IS NULL OR timeout_seconds BETWEEN 1 AND 3600",
+            name="ck_analysis_intent_timeout_seconds",
+        ),
+        CheckConstraint(
+            "workflow_id IS NULL OR ("
+            "plan_step_id IS NOT NULL "
+            "AND plan_step_id = 'execute-analysis' "
+            "AND dataset_content_hash IS NOT NULL "
+            "AND expected_outputs IS NOT NULL "
+            "AND json_valid(expected_outputs) "
+            "AND json_type(expected_outputs) = 'array' "
+            "AND timeout_seconds IS NOT NULL "
+            "AND risk_level IS NOT NULL "
+            "AND risk_level = 'high' "
+            "AND repair_attempt IS NOT NULL "
+            "AND ((repair_attempt = 0 "
+            "AND previous_intent_id IS NULL "
+            "AND code_diff IS NULL) "
+            "OR (repair_attempt IN (1,2) "
+            "AND previous_intent_id IS NOT NULL "
+            "AND error_summary IS NOT NULL "
+            "AND json_valid(error_summary) "
+            "AND json_type(error_summary) = 'object' "
+            "AND code_diff IS NOT NULL "
+            "AND length(trim(code_diff)) > 0)))",
+            name="ck_analysis_intent_workflow_binding",
+        ),
+        Index(
+            "uq_analysis_intent_active_task",
+            "task_id",
+            unique=True,
+            sqlite_where=text("status IN ('waiting-approval','approved','executing')"),
+        ),
+        Index(
+            "ix_analysis_intents_workflow_step",
+            "workflow_id",
+            "plan_step_id",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    task_id: Mapped[str] = mapped_column(
-        ForeignKey("tasks.id", ondelete="CASCADE"), unique=True, index=True
-    )
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     project_id: Mapped[str] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True
+    )
+    plan_step_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    previous_intent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("analysis_intents.id", ondelete="CASCADE"), nullable=True, index=True
     )
     dataset_source_id: Mapped[str] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), index=True
     )
+    dataset_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     objective: Mapped[str] = mapped_column(Text)
     code: Mapped[str] = mapped_column(Text)
+    expected_outputs: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    repair_attempt: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    code_diff: Mapped[str | None] = mapped_column(Text, nullable=True)
     payload_sha256: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(64), default="waiting-approval", index=True)
     decision: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -387,9 +498,20 @@ class AnalysisIntentRecord(Base):
 
 class RunRecord(Base):
     __tablename__ = "runs"
+    __table_args__ = (
+        Index(
+            "uq_run_analysis_intent",
+            "analysis_intent_id",
+            unique=True,
+            sqlite_where=text("analysis_intent_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    analysis_intent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("analysis_intents.id", ondelete="CASCADE"), nullable=True
+    )
     model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
     environment_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -460,7 +582,9 @@ class EventRecord(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
     workflow_id: Mapped[str | None] = mapped_column(
         ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
     )
@@ -473,4 +597,6 @@ class EventRecord(Base):
     sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
     event_type: Mapped[str] = mapped_column(String(100), index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )

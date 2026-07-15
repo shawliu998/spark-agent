@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -222,29 +222,31 @@ class OpenAICompatibleModelGateway:
         if not content.strip():
             raise ModelGatewayEmptyResponseError()
         try:
-            result = json.loads(content)
+            result_object: object = json.loads(content)
         except (json.JSONDecodeError, TypeError):
             raise ModelGatewayInvalidResponseError() from None
-        if not isinstance(result, dict):
+        if not isinstance(result_object, dict):
             raise ModelGatewayInvalidResponseError()
-        return result
+        return cast(dict[str, Any], result_object)
 
 
 def _response_content(response_body: bytes) -> str:
     try:
-        payload = json.loads(response_body)
-        if not isinstance(payload, dict):
+        payload_object: object = json.loads(response_body)
+        if not isinstance(payload_object, dict):
             raise ModelGatewayInvalidResponseError()
+        payload = cast(dict[str, Any], payload_object)
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
             raise ModelGatewayEmptyResponseError()
-        first_choice = choices[0]
+        first_choice = cast(list[object], choices)[0]
         if not isinstance(first_choice, dict):
             raise ModelGatewayInvalidResponseError()
-        message = first_choice.get("message")
+        choice = cast(dict[str, Any], first_choice)
+        message = choice.get("message")
         if not isinstance(message, dict):
             raise ModelGatewayInvalidResponseError()
-        content = message.get("content")
+        content = cast(dict[str, Any], message).get("content")
         if content is None:
             raise ModelGatewayEmptyResponseError()
         if not isinstance(content, str):

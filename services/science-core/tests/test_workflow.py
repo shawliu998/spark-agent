@@ -6,13 +6,18 @@ import json
 import tempfile
 import unittest
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
+from threading import Barrier, Event, Lock
+from typing import Any, Callable, Protocol, cast
 from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import Response
 from sqlalchemy import create_engine, event, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from open_science_core.api.workflows import get_workflow_session, router
@@ -21,8 +26,8 @@ from open_science_core.models import (
     AnswerRecord,
     ApprovalRecord,
     ClaimRecord,
-    EvidenceSpanRecord,
     EventRecord,
+    EvidenceSpanRecord,
     JobRecord,
     PlanRecord,
     ProjectRecord,
@@ -35,20 +40,51 @@ from open_science_core.models import (
 )
 from open_science_core.workflow import handlers as workflow_handlers
 from open_science_core.workflow import service as workflow_service
+from open_science_core.workflow._service import lifecycle as workflow_lifecycle
 from open_science_core.workflow.service import (
+    WorkflowConflict,
     current_job_input_hash,
     job_input_hash_for_handler_version,
+    resume_workflow,
+    retry_workflow,
     task_input_hash,
 )
 from open_science_core.workflow.state import WorkflowFailure
 from open_science_core.workflow.worker import WorkflowWorker
-
 
 GOAL = "How do brain computer interfaces improve communication?"
 PASSAGE = (
     "Brain computer interfaces improve communication for people with severe motor "
     "impairments using verified neural signals."
 )
+
+
+class _RequestClient(Protocol):
+    def request(self, method: str, url: str, **kwargs: Any) -> Response: ...
+
+
+class _Cursor(Protocol):
+    def execute(self, statement: str) -> object: ...
+
+    def close(self) -> None: ...
+
+
+class _DbapiConnection(Protocol):
+    def cursor(self) -> _Cursor: ...
+
+
+_close_test_client = cast(Callable[[TestClient], None], getattr(TestClient, "close"))
+
+
+class TypedTestClient(TestClient):
+    def get(self, url: str, **kwargs: Any) -> Response:
+        return cast(_RequestClient, self).request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> Response:
+        return cast(_RequestClient, self).request("POST", url, **kwargs)
+
+    def close(self) -> None:
+        _close_test_client(self)
 
 
 class FakeModelGateway:
@@ -66,7 +102,7 @@ class FakeModelGateway:
         self.invalid_plan = invalid_plan
         self.use_all_evidence = use_all_evidence
         self.synthesis_evidence_id = synthesis_evidence_id
-        self.calls: list[dict[str, object]] = []
+        self.calls: list[dict[str, Any]] = []
 
     @property
     def endpoint_identity(self) -> str:
@@ -78,7 +114,7 @@ class FakeModelGateway:
         system_prompt: str,
         user_prompt: str,
         model: str | None = None,
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         payload = json.loads(user_prompt)
         self.calls.append(
             {
@@ -150,12 +186,31 @@ class WorkflowApiTest(unittest.TestCase):
             connect_args={"check_same_thread": False},
         )
 
-        @event.listens_for(self.engine, "connect")
-        def configure_sqlite(dbapi_connection: object, _record: object) -> None:
-            cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        def configure_sqlite(dbapi_connection: _DbapiConnection, _record: object) -> None:
+            cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.execute("PRAGMA busy_timeout=5000")
             cursor.close()
+
+        event.listen(self.engine, "connect", configure_sqlite)
+        with self.engine.connect() as connection:
+            self.assertEqual(
+                connection.exec_driver_sql("PRAGMA journal_mode=WAL").scalar_one(),
+                "wal",
+            )
+        with (
+            self.engine.connect() as first_connection,
+            self.engine.connect() as second_connection,
+        ):
+            self.assertEqual(
+                first_connection.exec_driver_sql("PRAGMA journal_mode").scalar_one(),
+                "wal",
+            )
+            self.assertEqual(
+                second_connection.exec_driver_sql("PRAGMA journal_mode").scalar_one(),
+                "wal",
+            )
 
         Base.metadata.create_all(self.engine)
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -165,21 +220,33 @@ class WorkflowApiTest(unittest.TestCase):
             lease_seconds=0.1,
             heartbeat_seconds=0.03,
         )
-        app = FastAPI()
-        app.include_router(router)
-
-        def session_dependency() -> Generator[Session, None, None]:
-            with self.session_factory() as session:
-                yield session
-
-        app.dependency_overrides[get_workflow_session] = session_dependency
-        self.client = TestClient(app)
+        self.client = self._new_client()
         self._create_project()
 
     def tearDown(self) -> None:
         self.client.close()
         self.engine.dispose()
         self._temporary_directory.cleanup()
+
+    def _session_dependency(self) -> Generator[Session, None, None]:
+        with self.session_factory() as session:
+            yield session
+
+    def _new_client(
+        self,
+        *,
+        request_barrier: Barrier | None = None,
+    ) -> TypedTestClient:
+        app = FastAPI()
+        app.include_router(router)
+
+        def synchronized_session_dependency() -> Generator[Session, None, None]:
+            if request_barrier is not None:
+                request_barrier.wait(timeout=10)
+            yield from self._session_dependency()
+
+        app.dependency_overrides[get_workflow_session] = synchronized_session_dependency
+        return TypedTestClient(app)
 
     def _create_project(self) -> None:
         with self.session_factory() as session:
@@ -242,7 +309,7 @@ class WorkflowApiTest(unittest.TestCase):
             )
             session.commit()
 
-    def _start(self, *, key: str = "create-workflow-0001") -> dict[str, object]:
+    def _start(self, *, key: str = "create-workflow-0001") -> dict[str, Any]:
         response = self.client.post(
             "/v1/projects/project-1/workflows",
             headers={"Idempotency-Key": key},
@@ -255,7 +322,7 @@ class WorkflowApiTest(unittest.TestCase):
         self,
         *,
         key: str = "create-remote-workflow-0001",
-    ) -> dict[str, object]:
+    ) -> dict[str, Any]:
         response = self.client.post(
             "/v1/projects/project-1/workflows",
             headers={"Idempotency-Key": key},
@@ -288,7 +355,8 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.status == "queued",
                 )
             )
-            self.assertIsNotNone(job)
+            assert job is not None
+            assert workflow is not None
             task = session.get(TaskRecord, job.task_id) if job.task_id else None
             job.handler_version = handler_version
             job.input_sha256 = job_input_hash_for_handler_version(
@@ -302,7 +370,7 @@ class WorkflowApiTest(unittest.TestCase):
             session.commit()
             return job_id
 
-    def _plan(self, workflow_id: str) -> dict[str, object]:
+    def _plan(self, workflow_id: str) -> dict[str, Any]:
         self.assertTrue(self._run_once())
         response = self.client.get(f"/v1/workflows/{workflow_id}")
         self.assertEqual(response.status_code, 200, response.text)
@@ -310,7 +378,7 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(snapshot["workflow"]["status"], "waiting-plan-approval")
         return snapshot
 
-    def _approve(self, snapshot: dict[str, object]) -> dict[str, object]:
+    def _approve(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         workflow = snapshot["workflow"]
         plan = snapshot["plan"]
         approval = snapshot["pendingApprovals"][0]
@@ -336,6 +404,31 @@ class WorkflowApiTest(unittest.TestCase):
             self.assertTrue(self._run_once())
         return started["workflow"]["id"]
 
+    def _fail_initial_plan_job(self, workflow_id: str) -> tuple[int, str]:
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            job = session.scalar(
+                select(JobRecord).where(
+                    JobRecord.workflow_id == workflow_id,
+                    JobRecord.kind == "generate-plan",
+                    JobRecord.status == "queued",
+                )
+            )
+            assert workflow is not None
+            assert job is not None
+            workflow.status = "failed"
+            workflow.last_error_code = "test-plan-failure"
+            workflow.last_error_message = "The deterministic plan failed in the test fixture."
+            workflow.finished_at = utc_now()
+            job.status = "failed"
+            job.error_code = "test-plan-failure"
+            job.error_message = "The deterministic plan failed in the test fixture."
+            job.finished_at = utc_now()
+            revision = workflow.row_version
+            job_id = job.id
+            session.commit()
+            return revision, job_id
+
     def _prepare_legacy_workflow(self, key: str) -> str:
         started = self._start(key=key)
         workflow_id = started["workflow"]["id"]
@@ -346,6 +439,7 @@ class WorkflowApiTest(unittest.TestCase):
                     EventRecord.event_type == "workflow.created",
                 )
             )
+            assert created_event is not None
             created_event.payload = {
                 name: value
                 for name, value in created_event.payload.items()
@@ -381,6 +475,736 @@ class WorkflowApiTest(unittest.TestCase):
             "workflow-result-integrity-failed",
         )
 
+    def _post_twice_at_statement(
+        self,
+        *,
+        statement_fragment: str,
+        endpoint: str,
+        idempotency_key: str,
+        second_idempotency_key: str | None = None,
+        payload: dict[str, Any],
+    ) -> list[Response]:
+        barrier = Barrier(2)
+        match_lock = Lock()
+        match_count = 0
+
+        def synchronize_competing_statements(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _executemany: bool,
+        ) -> None:
+            nonlocal match_count
+            if statement_fragment not in statement:
+                return
+            with match_lock:
+                match_count += 1
+                should_wait = match_count <= 2
+            if should_wait:
+                barrier.wait(timeout=10)
+
+        event.listen(
+            self.engine,
+            "before_cursor_execute",
+            synchronize_competing_statements,
+        )
+        try:
+            return self._post_twice(
+                endpoint=endpoint,
+                idempotency_key=idempotency_key,
+                second_idempotency_key=second_idempotency_key,
+                payload=payload,
+            )
+        finally:
+            event.remove(
+                self.engine,
+                "before_cursor_execute",
+                synchronize_competing_statements,
+            )
+
+    def _post_after_committed_winner(
+        self,
+        *,
+        endpoint: str,
+        winner_key: str,
+        loser_key: str,
+        payload: dict[str, Any],
+    ) -> list[Response]:
+        enqueue_barrier = Barrier(2)
+        winner_committed = Event()
+        request_barrier = Barrier(2)
+        original_enqueue_job = workflow_lifecycle.enqueue_job
+
+        def ordered_enqueue_job(
+            session: Session,
+            workflow: WorkflowRecord,
+            *,
+            kind: str,
+            operation_key: str,
+            task: TaskRecord | None = None,
+            attempt: int = 1,
+            previous_job_id: str | None = None,
+            request_idempotency_key: str | None = None,
+            request_payload_sha256: str | None = None,
+            delay_seconds: float = 0,
+            handler_version: str | None = None,
+        ) -> JobRecord:
+            enqueue_barrier.wait(timeout=10)
+            if request_idempotency_key == loser_key:
+                if not winner_committed.wait(timeout=10):
+                    raise AssertionError("winner did not commit before loser enqueue")
+            return original_enqueue_job(
+                session,
+                workflow,
+                kind=kind,
+                operation_key=operation_key,
+                task=task,
+                attempt=attempt,
+                previous_job_id=previous_job_id,
+                request_idempotency_key=request_idempotency_key,
+                request_payload_sha256=request_payload_sha256,
+                delay_seconds=delay_seconds,
+                handler_version=handler_version,
+            )
+
+        def post_from_independent_client(request_idempotency_key: str) -> Response:
+            client = self._new_client(request_barrier=request_barrier)
+            try:
+                return client.post(
+                    endpoint,
+                    headers={"Idempotency-Key": request_idempotency_key},
+                    json=payload,
+                )
+            finally:
+                client.close()
+
+        with (
+            patch.object(
+                workflow_lifecycle,
+                "enqueue_job",
+                new=ordered_enqueue_job,
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            winner_future = executor.submit(post_from_independent_client, winner_key)
+            loser_future = executor.submit(post_from_independent_client, loser_key)
+            try:
+                winner_response = winner_future.result(timeout=20)
+            finally:
+                winner_committed.set()
+            loser_response = loser_future.result(timeout=20)
+        return [winner_response, loser_response]
+
+    def _post_twice(
+        self,
+        *,
+        endpoint: str,
+        idempotency_key: str,
+        second_idempotency_key: str | None = None,
+        payload: dict[str, Any],
+    ) -> list[Response]:
+        request_barrier = Barrier(2)
+        idempotency_keys = (
+            idempotency_key,
+            second_idempotency_key or idempotency_key,
+        )
+
+        def post_from_independent_client(request_idempotency_key: str) -> Response:
+            client = self._new_client(request_barrier=request_barrier)
+            try:
+                return client.post(
+                    endpoint,
+                    headers={"Idempotency-Key": request_idempotency_key},
+                    json=payload,
+                )
+            finally:
+                client.close()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(post_from_independent_client, request_idempotency_key)
+                for request_idempotency_key in idempotency_keys
+            ]
+            return [future.result(timeout=20) for future in futures]
+
+    def test_concurrent_create_replays_the_single_durable_workflow(self) -> None:
+        key = "concurrent-create-workflow-0001"
+        responses = self._post_twice_at_statement(
+            statement_fragment="INSERT INTO workflows",
+            endpoint="/v1/projects/project-1/workflows",
+            idempotency_key=key,
+            payload={"workflowType": "literature-synthesis", "goal": GOAL},
+        )
+
+        self.assertEqual([response.status_code for response in responses], [202, 202])
+        snapshots = [response.json() for response in responses]
+        workflow_id = snapshots[0]["workflow"]["id"]
+        self.assertEqual(snapshots[1], snapshots[0])
+        with self.session_factory() as session:
+            workflows = list(
+                session.scalars(
+                    select(WorkflowRecord).where(
+                        WorkflowRecord.project_id == "project-1",
+                        WorkflowRecord.create_idempotency_key == key,
+                    )
+                )
+            )
+            jobs = list(
+                session.scalars(
+                    select(JobRecord).where(JobRecord.workflow_id == workflow_id)
+                )
+            )
+            self.assertEqual(len(workflows), 1)
+            self.assertEqual(len(jobs), 1)
+
+    def test_concurrent_retry_replays_the_single_successor_job(self) -> None:
+        started = self._start(key="concurrent-retry-source-0001")
+        workflow_id = started["workflow"]["id"]
+        failed_revision, failed_job_id = self._fail_initial_plan_job(workflow_id)
+        key = "concurrent-retry-mutation-0001"
+        responses = self._post_twice_at_statement(
+            statement_fragment="INSERT INTO workflow_jobs",
+            endpoint=f"/v1/workflows/{workflow_id}/retry",
+            idempotency_key=key,
+            payload={"expectedWorkflowRevision": failed_revision},
+        )
+
+        self.assertEqual([response.status_code for response in responses], [202, 202])
+        snapshots = [response.json() for response in responses]
+        self.assertEqual(snapshots[1], snapshots[0])
+        self.assertEqual(snapshots[0]["workflow"]["status"], "planning")
+        self.assertEqual(
+            snapshots[0]["workflow"]["revision"],
+            failed_revision + 1,
+        )
+        with self.session_factory() as session:
+            successors = list(
+                session.scalars(
+                    select(JobRecord).where(
+                        JobRecord.previous_job_id == failed_job_id,
+                        JobRecord.request_idempotency_key == key,
+                    )
+                )
+            )
+            self.assertEqual(len(successors), 1)
+
+    def test_concurrent_taskless_retry_with_distinct_keys_returns_conflict(self) -> None:
+        started = self._start(key="concurrent-distinct-retry-source-0001")
+        workflow_id = started["workflow"]["id"]
+        failed_revision, failed_job_id = self._fail_initial_plan_job(workflow_id)
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            assert workflow is not None
+            failed_event_sequence = workflow.event_sequence
+
+        first_key = "concurrent-distinct-retry-mutation-0001"
+        second_key = "concurrent-distinct-retry-mutation-0002"
+        responses = self._post_twice_at_statement(
+            statement_fragment="INSERT INTO workflow_jobs",
+            endpoint=f"/v1/workflows/{workflow_id}/retry",
+            idempotency_key=first_key,
+            second_idempotency_key=second_key,
+            payload={"expectedWorkflowRevision": failed_revision},
+        )
+
+        self.assertEqual(sorted(response.status_code for response in responses), [202, 409])
+        accepted = next(response for response in responses if response.status_code == 202)
+        conflict = next(response for response in responses if response.status_code == 409)
+        self.assertEqual(accepted.json()["workflow"]["status"], "planning")
+        self.assertEqual(
+            accepted.json()["workflow"]["revision"],
+            failed_revision + 1,
+        )
+        self.assertEqual(
+            conflict.json()["detail"]["code"],
+            "workflow-revision-conflict",
+        )
+        self.assertTrue(conflict.json()["detail"]["retryable"])
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            successors = list(
+                session.scalars(
+                    select(JobRecord).where(JobRecord.previous_job_id == failed_job_id)
+                )
+            )
+            retry_events = list(
+                session.scalars(
+                    select(EventRecord)
+                    .where(
+                        EventRecord.workflow_id == workflow_id,
+                        EventRecord.sequence > failed_event_sequence,
+                    )
+                    .order_by(EventRecord.sequence)
+                )
+            )
+            assert workflow is not None
+            self.assertEqual(workflow.status, "planning")
+            self.assertEqual(workflow.row_version, failed_revision + 1)
+            self.assertEqual(workflow.event_sequence, failed_event_sequence + 1)
+            self.assertEqual(len(successors), 1)
+            self.assertIn(
+                successors[0].request_idempotency_key,
+                {first_key, second_key},
+            )
+            self.assertIsNotNone(successors[0].request_payload_sha256)
+            self.assertEqual(len(retry_events), 1)
+            self.assertEqual(retry_events[0].event_type, "workflow.status-changed")
+            self.assertEqual(retry_events[0].payload["previousStatus"], "failed")
+            self.assertEqual(retry_events[0].payload["status"], "planning")
+
+    def test_taskless_retry_loser_prequery_after_winner_commit_returns_conflict(
+        self,
+    ) -> None:
+        started = self._start(key="prequery-distinct-retry-source-0001")
+        workflow_id = started["workflow"]["id"]
+        failed_revision, failed_job_id = self._fail_initial_plan_job(workflow_id)
+        winner_key = "prequery-distinct-retry-winner-0001"
+        loser_key = "prequery-distinct-retry-loser-0001"
+
+        winner, loser = self._post_after_committed_winner(
+            endpoint=f"/v1/workflows/{workflow_id}/retry",
+            winner_key=winner_key,
+            loser_key=loser_key,
+            payload={"expectedWorkflowRevision": failed_revision},
+        )
+
+        self.assertEqual(winner.status_code, 202, winner.text)
+        self.assertEqual(loser.status_code, 409, loser.text)
+        self.assertEqual(
+            loser.json()["detail"]["code"],
+            "workflow-revision-conflict",
+        )
+        self.assertTrue(loser.json()["detail"]["retryable"])
+        with self.session_factory() as session:
+            successors = list(
+                session.scalars(select(JobRecord).where(JobRecord.previous_job_id == failed_job_id))
+            )
+            self.assertEqual(len(successors), 1)
+            self.assertEqual(successors[0].request_idempotency_key, winner_key)
+
+    def test_concurrent_execute_task_retry_applies_side_effects_once(self) -> None:
+        started = self._start(key="concurrent-task-retry-source-0001")
+        workflow_id = started["workflow"]["id"]
+        self._approve(self._plan(workflow_id))
+        with patch.object(
+            workflow_handlers,
+            "_handle_task",
+            side_effect=WorkflowFailure(
+                "test-execute-task-failure",
+                "The execute-task failed deterministically in the test fixture.",
+            ),
+        ):
+            self.assertTrue(self._run_once())
+
+        with self.session_factory() as session:
+            failed_job = session.scalar(
+                select(JobRecord).where(
+                    JobRecord.workflow_id == workflow_id,
+                    JobRecord.kind == "execute-task",
+                    JobRecord.status == "failed",
+                )
+            )
+            assert failed_job is not None
+            assert failed_job.task_id is not None
+            failed_task = session.get(TaskRecord, failed_job.task_id)
+            failed_workflow = session.get(WorkflowRecord, workflow_id)
+            assert failed_task is not None
+            assert failed_workflow is not None
+            self.assertEqual(failed_task.status, "failed")
+            self.assertEqual(failed_task.retries, 0)
+            self.assertEqual(failed_workflow.status, "failed")
+            failed_job_id = failed_job.id
+            failed_job_attempt = failed_job.attempt
+            failed_task_id = failed_task.id
+            failed_task_revision = failed_task.row_version
+            failed_workflow_revision = failed_workflow.row_version
+            failed_event_sequence = failed_workflow.event_sequence
+
+        transition_barrier = Barrier(2)
+        original_transition_task = workflow_lifecycle.transition_task
+
+        def synchronized_transition_task(
+            session: Session,
+            task: TaskRecord,
+            target: str,
+        ) -> TaskRecord:
+            if task.id == failed_task_id and target == "queued":
+                transition_barrier.wait(timeout=10)
+            return original_transition_task(session, task, target)
+
+        key = "concurrent-task-retry-mutation-0001"
+        with patch.object(
+            workflow_lifecycle,
+            "transition_task",
+            side_effect=synchronized_transition_task,
+        ):
+            responses = self._post_twice(
+                endpoint=f"/v1/workflows/{workflow_id}/retry",
+                idempotency_key=key,
+                payload={
+                    "taskId": failed_task_id,
+                    "expectedWorkflowRevision": failed_workflow_revision,
+                },
+            )
+
+        self.assertEqual([response.status_code for response in responses], [202, 202])
+        snapshots = [response.json() for response in responses]
+        self.assertEqual(snapshots[1], snapshots[0])
+        self.assertEqual(snapshots[0]["workflow"]["status"], "running")
+        self.assertEqual(
+            snapshots[0]["workflow"]["revision"],
+            failed_workflow_revision + 1,
+        )
+        with self.session_factory() as session:
+            task = session.get(TaskRecord, failed_task_id)
+            workflow = session.get(WorkflowRecord, workflow_id)
+            successors = list(
+                session.scalars(
+                    select(JobRecord).where(
+                        JobRecord.previous_job_id == failed_job_id,
+                        JobRecord.request_idempotency_key == key,
+                    )
+                )
+            )
+            retry_events = list(
+                session.scalars(
+                    select(EventRecord)
+                    .where(
+                        EventRecord.workflow_id == workflow_id,
+                        EventRecord.sequence > failed_event_sequence,
+                    )
+                    .order_by(EventRecord.sequence)
+                )
+            )
+            assert task is not None
+            assert workflow is not None
+            self.assertEqual(task.status, "queued")
+            self.assertEqual(task.retries, 1)
+            self.assertEqual(task.row_version, failed_task_revision + 1)
+            self.assertIsNone(task.finished_at)
+            self.assertEqual(workflow.status, "running")
+            self.assertEqual(workflow.row_version, failed_workflow_revision + 1)
+            self.assertEqual(workflow.event_sequence, failed_event_sequence + 1)
+            self.assertEqual(len(successors), 1)
+            self.assertEqual(successors[0].attempt, failed_job_attempt + 1)
+            self.assertEqual(successors[0].status, "queued")
+            self.assertEqual(successors[0].task_id, failed_task_id)
+            self.assertEqual(len(retry_events), 1)
+            self.assertEqual(retry_events[0].event_type, "workflow.status-changed")
+            self.assertEqual(retry_events[0].payload["previousStatus"], "failed")
+            self.assertEqual(retry_events[0].payload["status"], "running")
+
+    def test_concurrent_resume_replays_after_task_cas_conflict(self) -> None:
+        started = self._start(key="concurrent-resume-source-0001")
+        planned = self._plan(started["workflow"]["id"])
+        self._approve(planned)
+        self.assertTrue(self._run_once())
+        workflow_id = started["workflow"]["id"]
+        blocked = self.client.get(f"/v1/workflows/{workflow_id}").json()
+        self.assertEqual(blocked["workflow"]["status"], "blocked")
+        self._add_ready_source(source_id="concurrent-resume-source")
+        key = "concurrent-resume-mutation-0001"
+        transition_barrier = Barrier(2)
+        original_transition_task = workflow_lifecycle.transition_task
+
+        def synchronized_transition_task(
+            session: Session,
+            task: TaskRecord,
+            target: str,
+        ) -> TaskRecord:
+            transition_barrier.wait(timeout=10)
+            return original_transition_task(session, task, target)
+
+        with patch.object(
+            workflow_lifecycle,
+            "transition_task",
+            side_effect=synchronized_transition_task,
+        ):
+            responses = self._post_twice(
+                endpoint=f"/v1/workflows/{workflow_id}/resume",
+                idempotency_key=key,
+                payload={
+                    "expectedWorkflowRevision": blocked["workflow"]["revision"],
+                },
+            )
+
+        self.assertEqual([response.status_code for response in responses], [202, 202])
+        snapshots = [response.json() for response in responses]
+        self.assertEqual(snapshots[1], snapshots[0])
+        self.assertEqual(snapshots[0]["workflow"]["status"], "running")
+        with self.session_factory() as session:
+            successors = list(
+                session.scalars(
+                    select(JobRecord).where(
+                        JobRecord.workflow_id == workflow_id,
+                        JobRecord.request_idempotency_key == key,
+                    )
+                )
+            )
+            self.assertEqual(len(successors), 1)
+
+    def test_concurrent_analysis_replan_resume_with_distinct_keys_returns_conflict(
+        self,
+    ) -> None:
+        dataset_path = self.root / "concurrent-analysis-replan.csv"
+        dataset_bytes = b"value\n1\n"
+        dataset_path.write_bytes(dataset_bytes)
+        dataset_source_id = "concurrent-analysis-replan-source"
+        with self.session_factory() as session:
+            session.add(
+                SourceRecord(
+                    id=dataset_source_id,
+                    project_id="project-1",
+                    title="Concurrent analysis replan dataset",
+                    source_kind="dataset",
+                    authors=[],
+                    local_path=str(dataset_path),
+                    ingestion_status="ready",
+                    content_hash=hashlib.sha256(dataset_bytes).hexdigest(),
+                    page_count=None,
+                )
+            )
+            session.commit()
+
+        created = self.client.post(
+            "/v1/projects/project-1/workflows",
+            headers={"Idempotency-Key": "concurrent-analysis-replan-create-0001"},
+            json={
+                "workflowType": "dataset-analysis",
+                "datasetSourceId": dataset_source_id,
+                "goal": "Analyze the deterministic concurrent retry fixture.",
+            },
+        )
+        self.assertEqual(created.status_code, 202, created.text)
+        workflow_id = created.json()["workflow"]["id"]
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            initial_job = session.scalar(
+                select(JobRecord).where(
+                    JobRecord.workflow_id == workflow_id,
+                    JobRecord.kind == "generate-plan",
+                    JobRecord.status == "queued",
+                )
+            )
+            assert workflow is not None
+            assert initial_job is not None
+            session.delete(initial_job)
+            workflow_lifecycle.transition_workflow(
+                session,
+                workflow,
+                "blocked",
+                reason_code="analysis-execution-rejected",
+                blocking_message="The analysis requires a revised plan.",
+            )
+            session.commit()
+            session.refresh(workflow)
+            blocked_revision = workflow.row_version
+            blocked_event_sequence = workflow.event_sequence
+
+        first_key = "concurrent-analysis-replan-resume-0001"
+        second_key = "concurrent-analysis-replan-resume-0002"
+        responses = self._post_twice_at_statement(
+            statement_fragment="INSERT INTO workflow_jobs",
+            endpoint=f"/v1/workflows/{workflow_id}/resume",
+            idempotency_key=first_key,
+            second_idempotency_key=second_key,
+            payload={"expectedWorkflowRevision": blocked_revision},
+        )
+
+        self.assertEqual(sorted(response.status_code for response in responses), [202, 409])
+        accepted = next(response for response in responses if response.status_code == 202)
+        conflict = next(response for response in responses if response.status_code == 409)
+        self.assertEqual(accepted.json()["workflow"]["status"], "planning")
+        self.assertEqual(
+            accepted.json()["workflow"]["revision"],
+            blocked_revision + 1,
+        )
+        self.assertEqual(
+            conflict.json()["detail"]["code"],
+            "workflow-revision-conflict",
+        )
+        self.assertTrue(conflict.json()["detail"]["retryable"])
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            jobs = list(
+                session.scalars(
+                    select(JobRecord).where(JobRecord.workflow_id == workflow_id)
+                )
+            )
+            resume_events = list(
+                session.scalars(
+                    select(EventRecord)
+                    .where(
+                        EventRecord.workflow_id == workflow_id,
+                        EventRecord.sequence > blocked_event_sequence,
+                    )
+                    .order_by(EventRecord.sequence)
+                )
+            )
+            assert workflow is not None
+            self.assertEqual(workflow.status, "planning")
+            self.assertEqual(workflow.row_version, blocked_revision + 1)
+            self.assertEqual(workflow.event_sequence, blocked_event_sequence + 1)
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0].kind, "generate-plan")
+            self.assertEqual(jobs[0].status, "queued")
+            self.assertIn(jobs[0].request_idempotency_key, {first_key, second_key})
+            self.assertIsNotNone(jobs[0].request_payload_sha256)
+            self.assertEqual(len(resume_events), 1)
+            self.assertEqual(resume_events[0].event_type, "workflow.status-changed")
+            self.assertEqual(resume_events[0].payload["previousStatus"], "blocked")
+            self.assertEqual(resume_events[0].payload["status"], "planning")
+
+    def test_analysis_replan_resume_loser_prequery_after_winner_commit_conflicts(
+        self,
+    ) -> None:
+        dataset_path = self.root / "prequery-analysis-replan.csv"
+        dataset_bytes = b"value\n1\n"
+        dataset_path.write_bytes(dataset_bytes)
+        dataset_source_id = "prequery-analysis-replan-source"
+        with self.session_factory() as session:
+            session.add(
+                SourceRecord(
+                    id=dataset_source_id,
+                    project_id="project-1",
+                    title="Prequery analysis replan dataset",
+                    source_kind="dataset",
+                    authors=[],
+                    local_path=str(dataset_path),
+                    ingestion_status="ready",
+                    content_hash=hashlib.sha256(dataset_bytes).hexdigest(),
+                    page_count=None,
+                )
+            )
+            session.commit()
+
+        created = self.client.post(
+            "/v1/projects/project-1/workflows",
+            headers={"Idempotency-Key": "prequery-analysis-replan-create-0001"},
+            json={
+                "workflowType": "dataset-analysis",
+                "datasetSourceId": dataset_source_id,
+                "goal": "Analyze the deterministic committed-winner fixture.",
+            },
+        )
+        self.assertEqual(created.status_code, 202, created.text)
+        workflow_id = created.json()["workflow"]["id"]
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            initial_job = session.scalar(
+                select(JobRecord).where(
+                    JobRecord.workflow_id == workflow_id,
+                    JobRecord.kind == "generate-plan",
+                    JobRecord.status == "queued",
+                )
+            )
+            assert workflow is not None
+            assert initial_job is not None
+            session.delete(initial_job)
+            workflow_lifecycle.transition_workflow(
+                session,
+                workflow,
+                "blocked",
+                reason_code="analysis-execution-rejected",
+                blocking_message="The analysis requires a revised plan.",
+            )
+            session.commit()
+            session.refresh(workflow)
+            blocked_revision = workflow.row_version
+
+        winner_key = "prequery-analysis-replan-winner-0001"
+        loser_key = "prequery-analysis-replan-loser-0001"
+        winner, loser = self._post_after_committed_winner(
+            endpoint=f"/v1/workflows/{workflow_id}/resume",
+            winner_key=winner_key,
+            loser_key=loser_key,
+            payload={"expectedWorkflowRevision": blocked_revision},
+        )
+
+        self.assertEqual(winner.status_code, 202, winner.text)
+        self.assertEqual(loser.status_code, 409, loser.text)
+        self.assertEqual(
+            loser.json()["detail"]["code"],
+            "workflow-revision-conflict",
+        )
+        self.assertTrue(loser.json()["detail"]["retryable"])
+        with self.session_factory() as session:
+            jobs = list(
+                session.scalars(select(JobRecord).where(JobRecord.workflow_id == workflow_id))
+            )
+            self.assertEqual(len(jobs), 1)
+            self.assertEqual(jobs[0].request_idempotency_key, winner_key)
+
+    def test_non_idempotency_integrity_error_is_preserved(self) -> None:
+        started = self._start(key="unrelated-integrity-source-0001")
+        workflow_id = started["workflow"]["id"]
+        failed_revision, _failed_job_id = self._fail_initial_plan_job(workflow_id)
+        forced_error = IntegrityError(
+            "forced unrelated failure",
+            {},
+            RuntimeError("not an idempotency collision"),
+        )
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            assert workflow is not None
+            with patch(
+                "open_science_core.workflow._service.lifecycle.enqueue_job",
+                side_effect=forced_error,
+            ):
+                with self.assertRaises(IntegrityError) as raised:
+                    retry_workflow(
+                        session,
+                        workflow,
+                        task_id=None,
+                        expected_revision=failed_revision,
+                        idempotency_key="unrelated-integrity-mutation-0001",
+                    )
+        self.assertIs(raised.exception, forced_error)
+
+    def test_resume_non_idempotency_integrity_error_is_preserved(self) -> None:
+        started = self._start(key="unrelated-resume-integrity-source-0001")
+        planned = self._plan(started["workflow"]["id"])
+        self._approve(planned)
+        self.assertTrue(self._run_once())
+        workflow_id = started["workflow"]["id"]
+        blocked = self.client.get(f"/v1/workflows/{workflow_id}").json()
+        self.assertEqual(blocked["workflow"]["status"], "blocked")
+        self._add_ready_source(source_id="unrelated-resume-integrity-source")
+        forced_error = IntegrityError(
+            "forced unrelated resume failure",
+            {},
+            RuntimeError("not an idempotency collision"),
+        )
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            assert workflow is not None
+            with patch(
+                "open_science_core.workflow._service.lifecycle.enqueue_job",
+                side_effect=forced_error,
+            ):
+                with self.assertRaises(IntegrityError) as raised:
+                    resume_workflow(
+                        session,
+                        workflow,
+                        expected_revision=blocked["workflow"]["revision"],
+                        idempotency_key="unrelated-resume-integrity-mutation-0001",
+                    )
+        self.assertIs(raised.exception, forced_error)
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            blocked_task = session.scalar(
+                select(TaskRecord).where(
+                    TaskRecord.workflow_id == workflow_id,
+                    TaskRecord.status == "blocked",
+                )
+            )
+            assert workflow is not None
+            assert blocked_task is not None
+            self.assertEqual(workflow.row_version, blocked["workflow"]["revision"])
+            self.assertEqual(blocked_task.retries, 0)
+
     def test_create_idempotency_and_payload_conflict(self) -> None:
         first = self._start()
         repeated = self._start()
@@ -398,6 +1222,285 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(conflict.json()["detail"]["code"], "idempotency-key-reused")
         self.assertFalse(conflict.json()["detail"]["retryable"])
 
+    def test_retry_idempotency_replays_exact_request_and_rejects_key_reuse(self) -> None:
+        started = self._start(key="retry-source-workflow-0001")
+        workflow_id = started["workflow"]["id"]
+        failed_revision, failed_job_id = self._fail_initial_plan_job(workflow_id)
+        endpoint = f"/v1/workflows/{workflow_id}/retry"
+        key = "retry-mutation-0001"
+        payload = {"expectedWorkflowRevision": failed_revision}
+
+        first = self.client.post(
+            endpoint,
+            headers={"Idempotency-Key": key},
+            json=payload,
+        )
+        self.assertEqual(first.status_code, 202, first.text)
+        self.assertEqual(first.json()["workflow"]["status"], "planning")
+        immediate_replay = self.client.post(
+            endpoint,
+            headers={"Idempotency-Key": key},
+            json=payload,
+        )
+        self.assertEqual(immediate_replay.status_code, 202, immediate_replay.text)
+        self.assertEqual(immediate_replay.json(), first.json())
+
+        with self.session_factory() as session:
+            successor_jobs = list(
+                session.scalars(
+                    select(JobRecord).where(
+                        JobRecord.previous_job_id == failed_job_id,
+                        JobRecord.request_idempotency_key == key,
+                    )
+                )
+            )
+            self.assertEqual(len(successor_jobs), 1)
+            self.assertIsNotNone(successor_jobs[0].request_payload_sha256)
+            successor_job_id = successor_jobs[0].id
+
+        self.assertTrue(self._run_once())
+        current = self.client.get(f"/v1/workflows/{workflow_id}")
+        self.assertEqual(current.status_code, 200, current.text)
+        completed_job_replay = self.client.post(
+            endpoint,
+            headers={"Idempotency-Key": key},
+            json=payload,
+        )
+        self.assertEqual(completed_job_replay.status_code, 202, completed_job_replay.text)
+        self.assertEqual(completed_job_replay.json(), current.json())
+        unrelated_key = self.client.post(
+            endpoint,
+            headers={"Idempotency-Key": "retry-mutation-unrelated-0001"},
+            json=payload,
+        )
+        self.assertEqual(unrelated_key.status_code, 409, unrelated_key.text)
+        self.assertEqual(
+            unrelated_key.json()["detail"]["code"],
+            "workflow-not-retryable",
+        )
+
+        changed_revision = self.client.post(
+            endpoint,
+            headers={"Idempotency-Key": key},
+            json={"expectedWorkflowRevision": failed_revision + 1},
+        )
+        self.assertEqual(changed_revision.status_code, 409, changed_revision.text)
+        self.assertEqual(
+            changed_revision.json()["detail"]["code"],
+            "idempotency-key-reused",
+        )
+        changed_task = self.client.post(
+            endpoint,
+            headers={"Idempotency-Key": key},
+            json={**payload, "taskId": "different-task"},
+        )
+        self.assertEqual(changed_task.status_code, 409, changed_task.text)
+        self.assertEqual(
+            changed_task.json()["detail"]["code"],
+            "idempotency-key-reused",
+        )
+        cross_action = self.client.post(
+            f"/v1/workflows/{workflow_id}/resume",
+            headers={"Idempotency-Key": key},
+            json=payload,
+        )
+        self.assertEqual(cross_action.status_code, 409, cross_action.text)
+        self.assertEqual(
+            cross_action.json()["detail"]["code"],
+            "idempotency-key-reused",
+        )
+
+        other = self._start(key="retry-source-workflow-0002")
+        other_id = other["workflow"]["id"]
+        other_revision, _other_failed_job_id = self._fail_initial_plan_job(other_id)
+        cross_workflow = self.client.post(
+            f"/v1/workflows/{other_id}/retry",
+            headers={"Idempotency-Key": key},
+            json={"expectedWorkflowRevision": other_revision},
+        )
+        self.assertEqual(cross_workflow.status_code, 409, cross_workflow.text)
+        self.assertEqual(
+            cross_workflow.json()["detail"]["code"],
+            "idempotency-key-reused",
+        )
+        stale_new_request = self.client.post(
+            f"/v1/workflows/{other_id}/retry",
+            headers={"Idempotency-Key": "retry-mutation-stale-0001"},
+            json={"expectedWorkflowRevision": other_revision + 1},
+        )
+        self.assertEqual(stale_new_request.status_code, 409, stale_new_request.text)
+        self.assertEqual(
+            stale_new_request.json()["detail"]["code"],
+            "workflow-revision-conflict",
+        )
+        with self.session_factory() as session:
+            self.assertEqual(
+                session.scalar(
+                    select(JobRecord.id).where(JobRecord.id == successor_job_id)
+                ),
+                successor_job_id,
+            )
+            self.assertEqual(
+                len(
+                    list(
+                        session.scalars(
+                            select(JobRecord).where(
+                                JobRecord.request_idempotency_key == key
+                            )
+                        )
+                    )
+                ),
+                1,
+            )
+            self.assertIsNone(
+                session.scalar(
+                    select(JobRecord.id).where(
+                        JobRecord.request_idempotency_key
+                        == "retry-mutation-stale-0001"
+                    )
+                )
+            )
+
+    def test_retry_service_replays_before_status_gate(self) -> None:
+        started = self._start(key="retry-service-source-0001")
+        workflow_id = started["workflow"]["id"]
+        revision, failed_job_id = self._fail_initial_plan_job(workflow_id)
+        key = "retry-service-mutation-0001"
+
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            assert workflow is not None
+            first = retry_workflow(
+                session,
+                workflow,
+                task_id=None,
+                expected_revision=revision,
+                idempotency_key=key,
+            )
+            first_revision = first.row_version
+            replay = retry_workflow(
+                session,
+                first,
+                task_id=None,
+                expected_revision=revision,
+                idempotency_key=key,
+            )
+            self.assertEqual(replay.id, workflow_id)
+            self.assertEqual(replay.row_version, first_revision)
+            self.assertEqual(
+                len(
+                    list(
+                        session.scalars(
+                            select(JobRecord).where(
+                                JobRecord.previous_job_id == failed_job_id,
+                                JobRecord.request_idempotency_key == key,
+                            )
+                        )
+                    )
+                ),
+                1,
+            )
+            with self.assertRaisesRegex(
+                WorkflowConflict,
+                "already used with a different workflow request",
+            ):
+                retry_workflow(
+                    session,
+                    replay,
+                    task_id=None,
+                    expected_revision=revision + 1,
+                    idempotency_key=key,
+                )
+
+    def test_retry_rejects_legacy_key_without_request_binding(self) -> None:
+        started = self._start(key="retry-legacy-binding-source-0001")
+        workflow_id = started["workflow"]["id"]
+        revision, failed_job_id = self._fail_initial_plan_job(workflow_id)
+        key = "retry-legacy-unbound-key-0001"
+        with self.session_factory() as session:
+            failed_job = session.get(JobRecord, failed_job_id)
+            assert failed_job is not None
+            failed_job.request_idempotency_key = key
+            failed_job.request_payload_sha256 = None
+            session.commit()
+
+        response = self.client.post(
+            f"/v1/workflows/{workflow_id}/retry",
+            headers={"Idempotency-Key": key},
+            json={"expectedWorkflowRevision": revision},
+        )
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "idempotency-key-reused")
+        with self.session_factory() as session:
+            self.assertEqual(
+                len(
+                    list(
+                        session.scalars(
+                            select(JobRecord).where(
+                                JobRecord.workflow_id == workflow_id
+                            )
+                        )
+                    )
+                ),
+                1,
+            )
+
+    def test_resume_service_replays_before_status_gate(self) -> None:
+        started = self._start(key="resume-service-source-0001")
+        planned = self._plan(started["workflow"]["id"])
+        self._approve(planned)
+        self.assertTrue(self._run_once())
+        blocked = self.client.get(
+            f"/v1/workflows/{started['workflow']['id']}"
+        ).json()
+        self.assertEqual(blocked["workflow"]["status"], "blocked")
+        self._add_ready_source(source_id="resume-service-source")
+        workflow_id = started["workflow"]["id"]
+        revision = blocked["workflow"]["revision"]
+        key = "resume-service-mutation-0001"
+
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            assert workflow is not None
+            first = resume_workflow(
+                session,
+                workflow,
+                expected_revision=revision,
+                idempotency_key=key,
+            )
+            first_revision = first.row_version
+            replay = resume_workflow(
+                session,
+                first,
+                expected_revision=revision,
+                idempotency_key=key,
+            )
+            self.assertEqual(replay.id, workflow_id)
+            self.assertEqual(replay.row_version, first_revision)
+            self.assertEqual(
+                len(
+                    list(
+                        session.scalars(
+                            select(JobRecord).where(
+                                JobRecord.workflow_id == workflow_id,
+                                JobRecord.request_idempotency_key == key,
+                            )
+                        )
+                    )
+                ),
+                1,
+            )
+            with self.assertRaisesRegex(
+                WorkflowConflict,
+                "already used with a different workflow request",
+            ):
+                resume_workflow(
+                    session,
+                    replay,
+                    expected_revision=revision + 1,
+                    idempotency_key=key,
+                )
+
     def test_legacy_created_event_defaults_to_local_generation_mode(self) -> None:
         started = self._start(key="legacy-created-event-0001")
         workflow_id = started["workflow"]["id"]
@@ -408,6 +1511,7 @@ class WorkflowApiTest(unittest.TestCase):
                     EventRecord.event_type == "workflow.created",
                 )
             )
+            assert event is not None
             event.payload = {
                 "workflowType": "literature-synthesis",
                 "goalSha256": hashlib.sha256(GOAL.encode("utf-8")).hexdigest(),
@@ -434,6 +1538,7 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertEqual(planned["plan"]["generator"], "template-v1")
         with self.session_factory() as session:
             legacy_job = session.get(JobRecord, legacy_job_id)
+            assert legacy_job is not None
             self.assertEqual(legacy_job.status, "succeeded")
             self.assertEqual(legacy_job.handler_version, "template-plan-v1")
             approval = session.scalar(
@@ -441,6 +1546,7 @@ class WorkflowApiTest(unittest.TestCase):
                     ApprovalRecord.workflow_id == workflow_id
                 )
             )
+            assert approval is not None
             self.assertEqual(
                 approval.payload_schema_version,
                 "workflow-plan-approval-v1",
@@ -451,6 +1557,7 @@ class WorkflowApiTest(unittest.TestCase):
                     EventRecord.event_type == "approval.requested",
                 )
             )
+            assert approval_event is not None
             self.assertNotIn("riskLevel", approval_event.payload)
 
     def test_remote_workflow_rejects_legacy_handler_even_with_matching_legacy_hash(self) -> None:
@@ -477,6 +1584,8 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.status == "failed",
                 )
             )
+            assert workflow is not None
+            assert failed_job is not None
             self.assertEqual(workflow.status, "failed")
             self.assertEqual(failed_job.error_code, "job-input-changed")
 
@@ -507,7 +1616,7 @@ class WorkflowApiTest(unittest.TestCase):
 
         with self.session_factory() as session:
             stored_plan = session.get(type(self)._plan_record_type(), plan["id"])
-            self.assertIsNotNone(stored_plan)
+            assert stored_plan is not None
             stored_plan.spec_json = {**stored_plan.spec_json, "goal": "tampered"}
             session.commit()
         payload["expectedWorkflowRevision"] = workflow["revision"]
@@ -528,6 +1637,7 @@ class WorkflowApiTest(unittest.TestCase):
         )
         with self.session_factory() as session:
             plan = session.get(PlanRecord, planned["plan"]["id"])
+            assert plan is not None
             plan.spec_json = {**plan.spec_json, "goal": "Post-approval tamper"}
             session.commit()
 
@@ -540,8 +1650,11 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.status == "failed",
                 )
             )
+            assert failed_job is not None
             self.assertEqual(failed_job.error_code, "plan-content-corrupt")
-            self.assertEqual(session.get(WorkflowRecord, workflow_id).status, "failed")
+            failed_workflow = session.get(WorkflowRecord, workflow_id)
+            assert failed_workflow is not None
+            self.assertEqual(failed_workflow.status, "failed")
             self.assertIsNone(
                 session.scalar(
                     select(AnswerRecord).where(AnswerRecord.workflow_id == workflow_id)
@@ -561,6 +1674,7 @@ class WorkflowApiTest(unittest.TestCase):
                 ApprovalRecord,
                 planned["pendingApprovals"][0]["id"],
             )
+            assert approval is not None
             approval.reason = "A substituted consent reason."
             session.commit()
         response = self.client.get(
@@ -591,10 +1705,7 @@ class WorkflowApiTest(unittest.TestCase):
         )
 
     @staticmethod
-    def _plan_record_type() -> type:
-        # Local import avoids obscuring the API-facing setup above.
-        from open_science_core.models import PlanRecord
-
+    def _plan_record_type() -> type[PlanRecord]:
         return PlanRecord
 
     def test_three_steps_review_and_event_cursor_complete(self) -> None:
@@ -682,6 +1793,7 @@ class WorkflowApiTest(unittest.TestCase):
                     TaskRecord.task_type == "inspect-sources",
                 )
             )
+            assert inspect_task is not None
             inspect_task.outputs = {
                 key: value
                 for key, value in inspect_task.outputs.items()
@@ -707,6 +1819,8 @@ class WorkflowApiTest(unittest.TestCase):
                     TaskRecord.task_type == "extract-local-evidence",
                 )
             )
+            assert inspect_task is not None
+            assert evidence_task is not None
             inspect_task.outputs = {
                 key: value
                 for key, value in inspect_task.outputs.items()
@@ -737,6 +1851,9 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.status == "queued",
                 )
             )
+            assert workflow is not None
+            assert answer is not None
+            assert review_job is not None
             self.assertEqual(workflow.status, "reviewing")
             self.assertTrue(answer.answer.startswith("Evidence map:"))
             self.assertEqual(answer.metadata_json, {})
@@ -748,6 +1865,7 @@ class WorkflowApiTest(unittest.TestCase):
                     TaskRecord.task_type == "extract-local-evidence",
                 )
             )
+            assert evidence_task is not None
             self.assertIn("evidenceFingerprints", evidence_task.outputs)
             inspect_task = session.scalar(
                 select(TaskRecord).where(
@@ -755,6 +1873,7 @@ class WorkflowApiTest(unittest.TestCase):
                     TaskRecord.task_type == "inspect-sources",
                 )
             )
+            assert inspect_task is not None
             inspect_task.outputs = {
                 key: value
                 for key, value in inspect_task.outputs.items()
@@ -769,7 +1888,7 @@ class WorkflowApiTest(unittest.TestCase):
 
         with patch.object(
             workflow_handlers,
-            "_handle_review",
+            "handle_review",
             side_effect=WorkflowFailure(
                 "legacy-review-transient",
                 "The legacy deterministic review should retry.",
@@ -785,6 +1904,7 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.status == "queued",
                 )
             )
+            assert retry_job is not None
             self.assertEqual(retry_job.handler_version, "deterministic-claims-v1")
             retry_job.available_at = utc_now()
             session.commit()
@@ -800,6 +1920,7 @@ class WorkflowApiTest(unittest.TestCase):
             review = session.scalar(
                 select(ReviewRecord).where(ReviewRecord.workflow_id == workflow_id)
             )
+            assert review is not None
             self.assertNotIn("schemaVersion", review.result_json)
             self.assertNotIn("resultSnapshot", review.result_json)
             self.assertNotIn("resultSnapshotSha256", review.result_json)
@@ -835,6 +1956,7 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.status == "queued",
                 )
             )
+            assert resumed_job is not None
             self.assertEqual(resumed_job.handler_version, "literature-synthesis-v2")
         for _ in range(4):
             self.assertTrue(self._run_once())
@@ -971,7 +2093,7 @@ class WorkflowApiTest(unittest.TestCase):
                 answer = session.scalar(
                     select(AnswerRecord).where(AnswerRecord.workflow_id == workflow_id)
                 )
-                self.assertIsNotNone(answer)
+                assert answer is not None
                 self.assertEqual(answer.generator, "remote-model-assisted-v1")
                 self.assertEqual(answer.model, gateway.default_model)
                 self.assertEqual(answer.prompt_version, "remote-extractive-synthesis-v1")
@@ -1002,12 +2124,15 @@ class WorkflowApiTest(unittest.TestCase):
                         TaskRecord.task_type == "extract-local-evidence",
                     )
                 )
+                assert workflow is not None
+                assert task is not None
                 job = session.scalar(
                     select(JobRecord).where(
                         JobRecord.task_id == task.id,
                         JobRecord.status == "queued",
                     )
                 )
+                assert job is not None
                 task.inputs = {**task.inputs, "query": "Unapproved quasar evidence"}
                 task.input_sha256 = task_input_hash(task)
                 job.input_sha256 = current_job_input_hash(
@@ -1028,7 +2153,7 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.error_code == "task-plan-mismatch",
                     )
                 )
-                self.assertIsNotNone(failed_job)
+                assert failed_job is not None
                 self.assertIsNone(
                     session.scalar(
                         select(AnswerRecord).where(
@@ -1061,6 +2186,8 @@ class WorkflowApiTest(unittest.TestCase):
                         SourcePageRecord.source_id == "source-1"
                     )
                 )
+                assert source is not None
+                assert page is not None
                 source.title = "Substituted paper"
                 source.content_hash = hashlib.sha256(source_path.read_bytes()).hexdigest()
                 page.text = replacement
@@ -1076,7 +2203,7 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.error_code == "source-reproducibility-failed",
                     )
                 )
-                self.assertIsNotNone(failed_job)
+                assert failed_job is not None
                 self.assertIsNone(
                     session.scalar(
                         select(AnswerRecord).where(
@@ -1113,7 +2240,7 @@ class WorkflowApiTest(unittest.TestCase):
                             JobRecord.error_code == "source-reproducibility-failed",
                         )
                     )
-                    self.assertIsNotNone(failed_job)
+                    assert failed_job is not None
                     self.assertIsNone(
                         session.scalar(
                             select(AnswerRecord).where(
@@ -1139,6 +2266,7 @@ class WorkflowApiTest(unittest.TestCase):
             self.assertTrue(self._run_once())
             with self.session_factory() as session:
                 plan = session.get(PlanRecord, planned["plan"]["id"])
+                assert plan is not None
                 plan.prompt_version = "tampered-remote-plan-prompt"
                 session.commit()
 
@@ -1152,7 +2280,7 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.error_code == "job-input-changed",
                     )
                 )
-                self.assertIsNotNone(failed_job)
+                assert failed_job is not None
                 self.assertIsNone(
                     session.scalar(
                         select(AnswerRecord).where(
@@ -1184,7 +2312,7 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.error_code == "model-plan-invalid",
                     )
                 )
-                self.assertIsNotNone(failed_job)
+                assert failed_job is not None
                 retry_job = session.scalar(
                     select(JobRecord).where(
                         JobRecord.workflow_id == workflow_id,
@@ -1192,9 +2320,11 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.previous_job_id == failed_job.id,
                     )
                 )
-                self.assertIsNotNone(retry_job)
+                assert retry_job is not None
+                workflow = session.get(WorkflowRecord, workflow_id)
+                assert workflow is not None
                 self.assertEqual(
-                    session.get(WorkflowRecord, workflow_id).status,
+                    workflow.status,
                     "planning",
                 )
 
@@ -1260,12 +2390,15 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.status == "failed",
                     )
                 )
+                assert failed_job is not None
+                workflow = session.get(WorkflowRecord, workflow_id)
+                assert workflow is not None
                 self.assertEqual(
                     failed_job.error_code,
                     "remote-gateway-approval-mismatch",
                 )
                 self.assertEqual(
-                    session.get(WorkflowRecord, workflow_id).status,
+                    workflow.status,
                     "failed",
                 )
 
@@ -1298,12 +2431,15 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.kind == "execute-task",
                     )
                 )
+                assert failed_job is not None
+                workflow = session.get(WorkflowRecord, workflow_id)
+                assert workflow is not None
                 self.assertEqual(
                     failed_job.error_code,
                     "remote-gateway-approval-mismatch",
                 )
                 self.assertEqual(
-                    session.get(WorkflowRecord, workflow_id).status,
+                    workflow.status,
                     "failed",
                 )
                 self.assertIsNone(
@@ -1336,7 +2472,7 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.error_code == "model-evidence-reference-invalid",
                     )
                 )
-                self.assertIsNotNone(failed_job)
+                assert failed_job is not None
                 self.assertIsNone(
                     session.scalar(
                         select(AnswerRecord).where(
@@ -1345,6 +2481,7 @@ class WorkflowApiTest(unittest.TestCase):
                     )
                 )
                 workflow = session.get(WorkflowRecord, workflow_id)
+                assert workflow is not None
                 self.assertEqual(workflow.status, "running")
                 retry_job = session.scalar(
                     select(JobRecord).where(
@@ -1353,7 +2490,7 @@ class WorkflowApiTest(unittest.TestCase):
                         JobRecord.previous_job_id == failed_job.id,
                     )
                 )
-                self.assertIsNotNone(retry_job)
+                assert retry_job is not None
 
     def test_no_ready_pdf_resume_reuses_plan_and_blocked_task(self) -> None:
         started = self._start()
@@ -1394,8 +2531,8 @@ class WorkflowApiTest(unittest.TestCase):
     def test_cancelled_leased_job_converges_and_expired_lease_recovers(self) -> None:
         started = self._start(key="create-cancel-0001")
         workflow_id = started["workflow"]["id"]
-        claimed = self.worker._claim_next_job()
-        self.assertIsNotNone(claimed)
+        claimed = self.worker.claim_next_job()
+        assert claimed is not None
         job_id, _ = claimed
         cancel = self.client.post(
             f"/v1/workflows/{workflow_id}/cancel",
@@ -1406,12 +2543,15 @@ class WorkflowApiTest(unittest.TestCase):
         self.assertIsNotNone(cancel.json()["workflow"]["cancelRequestedAt"])
         with self.session_factory() as session:
             job = session.get(JobRecord, job_id)
+            assert job is not None
             job.lease_expires_at = utc_now() - timedelta(seconds=1)
             session.commit()
         self.assertFalse(self._run_once())
         with self.session_factory() as session:
             workflow = session.get(WorkflowRecord, workflow_id)
             job = session.get(JobRecord, job_id)
+            assert workflow is not None
+            assert job is not None
             self.assertEqual(workflow.status, "cancelled")
             self.assertEqual(job.status, "cancelled")
             self.assertIsNone(
@@ -1425,11 +2565,12 @@ class WorkflowApiTest(unittest.TestCase):
 
         recovery = self._start(key="create-recovery-0001")
         recovery_id = recovery["workflow"]["id"]
-        claimed = self.worker._claim_next_job()
-        self.assertIsNotNone(claimed)
+        claimed = self.worker.claim_next_job()
+        assert claimed is not None
         first_job_id, _ = claimed
         with self.session_factory() as session:
             job = session.get(JobRecord, first_job_id)
+            assert job is not None
             job.lease_expires_at = utc_now() - timedelta(seconds=1)
             session.commit()
         restarted_worker = WorkflowWorker(self.session_factory, poll_interval_seconds=0.01)
@@ -1451,8 +2592,10 @@ class WorkflowApiTest(unittest.TestCase):
             session.commit()
         self.assertTrue(asyncio.run(restarted_worker.run_once()))
         with self.session_factory() as session:
+            recovered_workflow = session.get(WorkflowRecord, recovery_id)
+            assert recovered_workflow is not None
             self.assertEqual(
-                session.get(WorkflowRecord, recovery_id).status,
+                recovered_workflow.status,
                 "waiting-plan-approval",
             )
 
@@ -1467,8 +2610,10 @@ class WorkflowApiTest(unittest.TestCase):
         workflow_id = started["workflow"]["id"]
         with self.session_factory() as session:
             workflow = session.get(WorkflowRecord, workflow_id)
+            assert workflow is not None
             self.assertEqual(workflow.status, "reviewing")
             claim = session.scalar(select(ClaimRecord))
+            assert claim is not None
             claim.statement = "A causal conclusion that does not occur in the evidence."
             review_job = session.scalar(
                 select(JobRecord).where(
@@ -1476,6 +2621,7 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.kind == "review-workflow",
                 )
             )
+            assert review_job is not None
             # Establish the tampered material as the review input so this test
             # exercises the reviewer itself, rather than the earlier input-hash
             # guard (which independently rejects post-queue mutation).
@@ -1494,6 +2640,9 @@ class WorkflowApiTest(unittest.TestCase):
                 select(ReviewRecord).where(ReviewRecord.workflow_id == workflow_id)
             )
             claim = session.scalar(select(ClaimRecord))
+            assert workflow is not None
+            assert review is not None
+            assert claim is not None
             self.assertEqual(workflow.status, "blocked")
             self.assertEqual(workflow.blocking_code, "review-required")
             self.assertEqual(review.verdict, "revision-required")
@@ -1514,6 +2663,8 @@ class WorkflowApiTest(unittest.TestCase):
             answer = session.scalar(
                 select(AnswerRecord).where(AnswerRecord.workflow_id == workflow_id)
             )
+            assert workflow is not None
+            assert answer is not None
             answer.answer += " An unsupported generated conclusion."
             review_job = session.scalar(
                 select(JobRecord).where(
@@ -1521,6 +2672,7 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.kind == "review-workflow",
                 )
             )
+            assert review_job is not None
             review_job.input_sha256 = current_job_input_hash(
                 session,
                 workflow,
@@ -1535,6 +2687,8 @@ class WorkflowApiTest(unittest.TestCase):
             review = session.scalar(
                 select(ReviewRecord).where(ReviewRecord.workflow_id == workflow_id)
             )
+            assert workflow is not None
+            assert review is not None
             summary_check = next(
                 check
                 for check in review.result_json["checks"]
@@ -1558,6 +2712,8 @@ class WorkflowApiTest(unittest.TestCase):
             answer = session.scalar(
                 select(AnswerRecord).where(AnswerRecord.workflow_id == workflow_id)
             )
+            assert workflow is not None
+            assert answer is not None
             answer.prompt_version = "tampered-local-prompt"
             review_job = session.scalar(
                 select(JobRecord).where(
@@ -1565,6 +2721,7 @@ class WorkflowApiTest(unittest.TestCase):
                     JobRecord.kind == "review-workflow",
                 )
             )
+            assert review_job is not None
             review_job.input_sha256 = current_job_input_hash(
                 session,
                 workflow,
@@ -1578,6 +2735,7 @@ class WorkflowApiTest(unittest.TestCase):
             review = session.scalar(
                 select(ReviewRecord).where(ReviewRecord.workflow_id == workflow_id)
             )
+            assert review is not None
             provenance_check = next(
                 check
                 for check in review.result_json["checks"]
@@ -1618,12 +2776,15 @@ class WorkflowApiTest(unittest.TestCase):
                                 AnswerRecord.workflow_id == workflow_id
                             )
                         )
+                        assert answer is not None
                         answer.answer += " Tampered after review."
                     elif field == "claim":
                         claim = session.scalar(select(ClaimRecord))
+                        assert claim is not None
                         claim.statement = "A substituted claim after review."
                     else:
                         evidence = session.scalar(select(EvidenceSpanRecord))
+                        assert evidence is not None
                         evidence.text = "A substituted evidence passage after review."
                         evidence.quote_hash = hashlib.sha256(
                             evidence.text.encode("utf-8")
@@ -1646,6 +2807,7 @@ class WorkflowApiTest(unittest.TestCase):
             review = session.scalar(
                 select(ReviewRecord).where(ReviewRecord.workflow_id == workflow_id)
             )
+            assert review is not None
             review.verdict = "revision-required"
             session.commit()
         self._assert_result_integrity_conflict(workflow_id)
@@ -1663,6 +2825,8 @@ class WorkflowApiTest(unittest.TestCase):
             answer = session.scalar(
                 select(AnswerRecord).where(AnswerRecord.workflow_id == workflow_id)
             )
+            assert review is not None
+            assert answer is not None
             review.verdict = "revision-required"
             review.result_json = {
                 **review.result_json,
@@ -1699,6 +2863,10 @@ class WorkflowApiTest(unittest.TestCase):
             answer = session.scalar(
                 select(AnswerRecord).where(AnswerRecord.workflow_id == workflow_id)
             )
+            assert workflow is not None
+            assert review is not None
+            assert review_job is not None
+            assert answer is not None
             legacy_result = {
                 key: value
                 for key, value in review.result_json.items()
@@ -1729,6 +2897,7 @@ class WorkflowApiTest(unittest.TestCase):
             review = session.scalar(
                 select(ReviewRecord).where(ReviewRecord.workflow_id == workflow_id)
             )
+            assert review is not None
             review.result_json = {"schemaVersion": "invalid"}
             session.commit()
         self._assert_result_integrity_conflict(workflow_id)
@@ -1740,6 +2909,7 @@ class WorkflowApiTest(unittest.TestCase):
             plan = session.scalar(
                 select(PlanRecord).where(PlanRecord.workflow_id == workflow_id)
             )
+            assert plan is not None
             plan.generator = "forged-plan-generator"
             session.commit()
         response = self.client.get(f"/v1/workflows/{workflow_id}")

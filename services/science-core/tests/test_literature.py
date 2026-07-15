@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import os
 import sys
 import tempfile
@@ -9,10 +10,12 @@ import types
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, NoReturn, Protocol, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from httpx import Response
 from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -24,9 +27,9 @@ from open_science_core.db import Base
 from open_science_core.literature import (
     LiteratureResult,
     PaperQaAdapter,
-    _create_paperqa_settings,
-    _paperqa_settings_kwargs,
+    create_paperqa_settings,
     paper_qa_available,
+    paperqa_settings_kwargs,
 )
 from open_science_core.models import (
     AnswerRecord,
@@ -38,19 +41,30 @@ from open_science_core.models import (
 )
 from open_science_core.schemas import QuestionIn
 
-
 API_KEY = "paperqa-test-key-that-must-be-restored"
+
+
+class _RequestClient(Protocol):
+    def request(self, method: str, url: str, **kwargs: Any) -> Response: ...
+
+
+class TypedTestClient(TestClient):
+    def post(self, url: str, **kwargs: Any) -> Response:
+        return cast(_RequestClient, self).request("POST", url, **kwargs)
 
 
 class PaperQaCredentialBoundaryTest(unittest.TestCase):
     @unittest.skipUnless(paper_qa_available(), "PaperQA2 is not installed")
     def test_real_paperqa_configs_are_provider_qualified_and_secret_safe(self) -> None:
-        from paperqa import Settings as RealPaperQaSettings
+        real_settings_type = cast(
+            type[Any],
+            getattr(importlib.import_module("paperqa"), "Settings"),
+        )
 
         api_base = "https://models.example.test/v1"
-        configured = _create_paperqa_settings(
-            RealPaperQaSettings,
-            _paperqa_settings_kwargs(
+        configured = create_paperqa_settings(
+            real_settings_type,
+            paperqa_settings_kwargs(
                 "deepseek-chat",
                 None,
                 API_KEY,
@@ -99,11 +113,14 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
 
     @unittest.skipUnless(paper_qa_available(), "PaperQA2 is not installed")
     def test_real_paperqa_preserves_custom_raw_model_after_provider_prefix(self) -> None:
-        from paperqa import Settings as RealPaperQaSettings
+        real_settings_type = cast(
+            type[Any],
+            getattr(importlib.import_module("paperqa"), "Settings"),
+        )
 
-        configured = _create_paperqa_settings(
-            RealPaperQaSettings,
-            _paperqa_settings_kwargs(
+        configured = create_paperqa_settings(
+            real_settings_type,
+            paperqa_settings_kwargs(
                 "vendor/custom-model",
                 "vendor/custom-embedding",
                 API_KEY,
@@ -170,8 +187,7 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
             patch("open_science_core.app.settings", configured),
             patch("open_science_core.app.paper_qa.ask", new=paperqa_call),
         ):
-            client = TestClient(science_app)
-            try:
+            with TypedTestClient(science_app) as client:
                 response = client.post(
                     "/v1/projects/project-1/questions",
                     headers={"Authorization": "Bearer test-token"},
@@ -181,8 +197,6 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
                         "remoteDataApproved": True,
                     },
                 )
-            finally:
-                client.close()
         self.assertEqual(response.status_code, 422, response.text)
         paperqa_call.assert_not_awaited()
 
@@ -266,6 +280,9 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
                         EventRecord.event_type == "literature.remote-data.approved"
                     )
                 )
+                assert answer is not None
+                assert claim is not None
+                assert approval_event is not None
                 self.assertEqual(answer.generator, "paperqa2-remote-v1")
                 self.assertEqual(answer.model, "request-model")
                 self.assertIsNone(answer.prompt_version)
@@ -383,8 +400,8 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
                 return types.SimpleNamespace(answer="A bounded answer", contexts=[])
 
         fake_module = types.ModuleType("paperqa")
-        fake_module.Docs = FakeDocs
-        fake_module.Settings = FakeSettings
+        setattr(fake_module, "Docs", FakeDocs)
+        setattr(fake_module, "Settings", FakeSettings)
         adapter = PaperQaAdapter()
         configured = replace(settings, openai_api_key=API_KEY, llm_model="test-model")
         with (
@@ -403,7 +420,7 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
             ["previous-value", "previous-value", "previous-value"],
         )
         self.assertEqual(len(settings_calls), 1)
-        configured = settings_calls[0]
+        configured = cast(dict[str, Any], settings_calls[0])
         self.assertEqual(configured["llm"], "openai/test-model")
         self.assertEqual(configured["summary_llm"], "openai/test-model")
         self.assertEqual(configured["embedding"], "openai/text-embedding-3-small")
@@ -436,13 +453,18 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
             async def aadd(self, _path: Path, *, settings: FakeSettings) -> None:
                 pass
 
-            async def aquery(self, _question: str, *, settings: FakeSettings):
+            async def aquery(
+                self,
+                _question: str,
+                *,
+                settings: FakeSettings,
+            ) -> NoReturn:
                 self.seen_key = os.environ.get("OPENAI_API_KEY")
                 raise RuntimeError("provider failed")
 
         fake_module = types.ModuleType("paperqa")
-        fake_module.Docs = FakeDocs
-        fake_module.Settings = FakeSettings
+        setattr(fake_module, "Docs", FakeDocs)
+        setattr(fake_module, "Settings", FakeSettings)
         adapter = PaperQaAdapter()
         configured = replace(settings, openai_api_key=API_KEY, llm_model="test-model")
         with (
@@ -459,9 +481,11 @@ class PaperQaCredentialBoundaryTest(unittest.TestCase):
 
 def _contains_value(value: object, expected: object) -> bool:
     if isinstance(value, dict):
-        return any(_contains_value(item, expected) for item in value.values())
+        mapping = cast(dict[object, object], value)
+        return any(_contains_value(item, expected) for item in mapping.values())
     if isinstance(value, (list, tuple, set)):
-        return any(_contains_value(item, expected) for item in value)
+        collection = cast(list[object] | tuple[object, ...] | set[object], value)
+        return any(_contains_value(item, expected) for item in collection)
     return value == expected
 
 

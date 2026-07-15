@@ -8,7 +8,6 @@ from ipaddress import ip_address
 from pathlib import Path
 from urllib.parse import urlsplit
 
-
 _MODEL_SECRET_MAX_BYTES = 4096
 _MODEL_IDENTIFIER_MAX_CHARS = 200
 _MODEL_API_BASE_MAX_CHARS = 2048

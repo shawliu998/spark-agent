@@ -29,7 +29,6 @@ from open_science_core.model_gateway import (
     OpenAICompatibleModelGateway,
 )
 
-
 API_KEY = "test-api-key-that-must-not-leak"
 
 
@@ -345,10 +344,11 @@ class ModelGatewayTest(unittest.TestCase):
                 self._assert_safe(caught.exception)
 
     def test_rejects_empty_response(self) -> None:
-        for response in (
+        responses: tuple[dict[str, object], ...] = (
             {"choices": []},
             {"choices": [{"message": {"content": "  "}}]},
-        ):
+        )
+        for response in responses:
             with self.subTest(response=response):
                 gateway = OpenAICompatibleModelGateway(
                     configured_settings(),

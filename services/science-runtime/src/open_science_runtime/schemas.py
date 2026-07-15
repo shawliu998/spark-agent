@@ -1,10 +1,23 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from .config import MAX_TIMEOUT_SECONDS
+from .fixed_analysis_policy import (
+    FIXED_ANALYSIS_POLICY_ID,
+    GENERAL_ANALYSIS_POLICY_ID,
+    AnalysisPolicyId,
+    FixedAnalysisTemplate,
+)
 
 
 def _to_camel(value: str) -> str:
@@ -38,11 +51,13 @@ class ExecuteIn(ApiModel):
     dataset_path: Annotated[str, StringConstraints(min_length=2, max_length=4096)]
     objective: Annotated[
         str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=4096),
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=8000),
     ]
     code: Annotated[str, StringConstraints(min_length=1, max_length=200_000)]
     timeout_seconds: int = Field(default=120, ge=1, le=MAX_TIMEOUT_SECONDS)
     payload_sha256: Sha256
+    policy_profile_id: AnalysisPolicyId
+    policy_template: FixedAnalysisTemplate | None = None
 
     @field_validator("run_dir", "dataset_path", "code")
     @classmethod
@@ -57,6 +72,18 @@ class ExecuteIn(ApiModel):
         if not value.strip():
             raise ValueError("code must contain Python source")
         return value
+
+    @model_validator(mode="after")
+    def validate_policy_contract(self) -> Self:
+        if self.policy_profile_id == FIXED_ANALYSIS_POLICY_ID:
+            if self.policy_template is None:
+                raise ValueError("fixed analysis policy requires policyTemplate")
+        elif (
+            self.policy_profile_id != GENERAL_ANALYSIS_POLICY_ID
+            or self.policy_template is not None
+        ):
+            raise ValueError("general analysis policy does not accept policyTemplate")
+        return self
 
 
 ArtifactType = Literal[
