@@ -32,6 +32,7 @@ export interface ResearchLibrarySidebarProps {
   workflows: ResearchWorkflowSnapshot[];
   selectedWorkflowId: string | null;
   loadingWorkflows: boolean;
+  workflowMutating: boolean;
   sources: ResearchSource[];
   loadingSources: boolean;
   selection: ResearchPdfSelection | null;
@@ -58,6 +59,7 @@ export function ResearchLibrarySidebar({
   workflows,
   selectedWorkflowId,
   loadingWorkflows,
+  workflowMutating,
   sources,
   loadingSources,
   selection,
@@ -144,7 +146,7 @@ export function ResearchLibrarySidebar({
         workflows={workflows}
         selectedWorkflowId={selectedWorkflowId}
         loading={loadingWorkflows}
-        disabled={!projectId || !serviceReady}
+        disabled={workflowMutating || !projectId || !serviceReady}
         onSelect={onSelectWorkflow}
         onNew={onNewWorkflow}
       />

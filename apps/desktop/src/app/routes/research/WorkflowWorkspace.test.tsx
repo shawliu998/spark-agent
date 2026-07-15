@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResearchWorkflowSnapshot } from "@spark/research-domain";
+import type { LiteratureResearchWorkflowSnapshot } from "@spark/research-domain";
 import { WorkflowReviewSummary, WorkflowWorkspace } from "./WorkflowWorkspace";
 
 const handlers = {
@@ -12,6 +12,9 @@ const handlers = {
   },
   onCreate: vi.fn(async () => {}),
   onApprovePlan: vi.fn(async () => {}),
+  onDecideAnalysis: vi.fn(async () => {}),
+  onAcceptReviewWarnings: vi.fn(async () => {}),
+  onImportDataset: vi.fn(),
   onCancel: vi.fn(async () => {}),
   onRetry: vi.fn(async () => {}),
   onResume: vi.fn(async () => {}),
@@ -20,13 +23,30 @@ const handlers = {
   onSelectEvidence: vi.fn(),
   onOpenReview: vi.fn(),
   onOpenActivity: vi.fn(),
+  importingDataset: false,
+};
+
+const READY_PDF = {
+  id: "source-ready-pdf",
+  projectId: "project-1",
+  title: "Ready paper",
+  sourceKind: "pdf" as const,
+  authors: [],
+  doi: null,
+  arxivId: null,
+  localPath: "sources/ready.pdf",
+  publicationDate: null,
+  ingestionStatus: "ready" as const,
+  contentHash: "f".repeat(64),
+  pageCount: 1,
+  createdAt: "2026-07-14T08:00:00Z",
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function planSnapshot(): ResearchWorkflowSnapshot {
+function planSnapshot(): LiteratureResearchWorkflowSnapshot {
   return {
     workflow: {
       id: "workflow-1",
@@ -92,7 +112,7 @@ function planSnapshot(): ResearchWorkflowSnapshot {
         taskId: null,
         kind: "plan",
         status: "waiting",
-        subjectType: "workflow-plan",
+        subjectType: "plan",
         subjectId: "plan-1",
         action: "approve-plan",
         payloadSha256: "a".repeat(64),
@@ -116,7 +136,7 @@ describe("WorkflowWorkspace", () => {
       <WorkflowWorkspace
         {...handlers}
         snapshot={null}
-        sources={[]}
+        sources={[READY_PDF]}
         loading={false}
         mutating={false}
         connection="idle"
@@ -169,8 +189,12 @@ describe("WorkflowWorkspace", () => {
 
     expect(handlers.onCreate).toHaveBeenCalledWith(
       "Compare the imported studies and private notes",
-      "remote-model-assisted",
-      true,
+      {
+        workflowType: "literature-synthesis",
+        datasetSourceId: null,
+        generationMode: "remote-model-assisted",
+        remoteDataApproved: true,
+      },
     );
   });
 
@@ -210,7 +234,7 @@ describe("WorkflowWorkspace", () => {
       <WorkflowWorkspace
         {...handlers}
         snapshot={null}
-        sources={[]}
+        sources={[READY_PDF]}
         loading={false}
         mutating={false}
         connection="idle"
@@ -238,7 +262,7 @@ describe("WorkflowWorkspace", () => {
           endpointIdentity: `sha256:${"f".repeat(64)}`,
         }}
         snapshot={null}
-        sources={[]}
+        sources={[READY_PDF]}
         loading={false}
         mutating={false}
         connection="idle"

@@ -1,14 +1,22 @@
 import type {
+  AcceptWorkflowReviewWarningsInput,
   AnalysisIntent,
   AnalysisRun,
+  CreateResearchWorkflowInput as DomainCreateResearchWorkflowInput,
+  DecideWorkflowAnalysisIntentInput,
   ResearchAnswer,
-  ResearchGenerationMode,
   ResearchProject,
   ResearchSource,
   ResearchWorkflowSnapshot,
   ScienceCoreHealth,
+  WorkflowAnalysisIntentDecision,
   WorkflowApiErrorDetail,
   WorkflowEventsPage,
+} from "@spark/research-domain";
+
+export type {
+  AcceptWorkflowReviewWarningsInput,
+  DecideWorkflowAnalysisIntentInput,
 } from "@spark/research-domain";
 
 export interface ScienceCoreClientOptions {
@@ -30,13 +38,7 @@ export interface AskResearchQuestionInput {
   remoteDataApproved: boolean;
 }
 
-export interface CreateResearchWorkflowInput {
-  goal: string;
-  workflowType: "literature-synthesis";
-  generationMode: ResearchGenerationMode;
-  /** Explicit approval to send the goal when remote model assistance is selected. */
-  remoteDataApproved: boolean;
-}
+export type CreateResearchWorkflowInput = DomainCreateResearchWorkflowInput;
 
 export interface ApproveResearchWorkflowPlanInput {
   approvalId: string;
@@ -77,7 +79,7 @@ export interface PrepareAnalysisIntentInput {
   code: string;
 }
 
-export type AnalysisIntentDecision = "approved" | "rejected";
+export type AnalysisIntentDecision = WorkflowAnalysisIntentDecision;
 
 export class ScienceCoreApiError extends Error {
   readonly status: number;
@@ -242,6 +244,50 @@ export class ScienceCoreClient {
     );
   }
 
+  async decideWorkflowAnalysisIntent(
+    workflowId: string,
+    input: DecideWorkflowAnalysisIntentInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ResearchWorkflowSnapshot> {
+    const encodedWorkflowId = encodeURIComponent(workflowId);
+    const encodedIntentId = encodeURIComponent(input.intentId);
+    return this.request<ResearchWorkflowSnapshot>(
+      `/v1/workflows/${encodedWorkflowId}/analysis-intents/${encodedIntentId}/decision`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          approvalId: input.approvalId,
+          decision: input.decision,
+          payloadSha256: input.payloadSha256,
+          expectedWorkflowRevision: input.expectedWorkflowRevision,
+        }),
+        signal: options.signal,
+        headers: this.optionalIdempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async acceptWorkflowReviewWarnings(
+    workflowId: string,
+    input: AcceptWorkflowReviewWarningsInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ResearchWorkflowSnapshot> {
+    return this.request<ResearchWorkflowSnapshot>(
+      `/v1/workflows/${encodeURIComponent(workflowId)}/accept-review-warnings`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          reviewId: input.reviewId,
+          reviewInputSha256: input.reviewInputSha256,
+          expectedWorkflowRevision: input.expectedWorkflowRevision,
+          decision: input.decision,
+        }),
+        signal: options.signal,
+        headers: this.optionalIdempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
   async cancelWorkflow(
     workflowId: string,
     input: ResearchWorkflowMutationInput,
@@ -373,10 +419,36 @@ export class ScienceCoreClient {
     };
     try {
       const payload = (await response.json()) as {
-        detail?: string | Partial<WorkflowApiErrorDetail>;
+        detail?:
+          | string
+          | Partial<WorkflowApiErrorDetail>
+          | Array<{ loc?: unknown; msg?: unknown }>;
       };
       if (typeof payload.detail === "string") {
         detail = { ...detail, userMessage: payload.detail };
+      } else if (Array.isArray(payload.detail)) {
+        const validationError = payload.detail.find(
+          (item) => item && typeof item.msg === "string",
+        );
+        if (validationError && typeof validationError.msg === "string") {
+          const location = Array.isArray(validationError.loc)
+            ? validationError.loc
+                .filter(
+                  (part): part is string | number =>
+                    typeof part === "string" || typeof part === "number",
+                )
+                .filter((part) => part !== "body")
+                .join(".")
+            : "";
+          detail = {
+            ...detail,
+            code: "validation-error",
+            userMessage: location
+              ? `${location}: ${validationError.msg}`
+              : validationError.msg,
+            retryable: false,
+          };
+        }
       } else if (payload.detail && typeof payload.detail === "object") {
         detail = {
           code:
@@ -403,6 +475,11 @@ export class ScienceCoreClient {
     const value = key?.trim();
     if (!value) throw new Error("An idempotency key is required for this request");
     return { "Idempotency-Key": value };
+  }
+
+  private optionalIdempotencyHeaders(key: string | undefined): HeadersInit | undefined {
+    const value = key?.trim();
+    return value ? { "Idempotency-Key": value } : undefined;
   }
 
   private requireBaseUrl(): string {

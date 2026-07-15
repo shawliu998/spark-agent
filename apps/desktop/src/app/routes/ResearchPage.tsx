@@ -48,6 +48,7 @@ export function ResearchPage() {
   const [loadingSources, setLoadingSources] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [importingDataset, setImportingDataset] = useState(false);
   const [asking, setAsking] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [sourceRefresh, setSourceRefresh] = useState(0);
@@ -217,6 +218,43 @@ export function ResearchPage() {
     }
   };
 
+  const importDataset = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !projectId || !serviceReady) return;
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      toast.error(
+        t("research.toast.csvOnly", {
+          defaultValue: "Choose a CSV file.",
+        }),
+      );
+      return;
+    }
+
+    setImportingDataset(true);
+    try {
+      const source = await scienceCore.importDataset(projectId, file);
+      setSources((current) => [
+        source,
+        ...current.filter((item) => item.id !== source.id),
+      ]);
+      toast.success(
+        t("research.toast.datasetImported", {
+          defaultValue: "CSV dataset imported and ready for analysis.",
+        }),
+      );
+    } catch (error) {
+      toast.error(
+        t("research.toast.importDatasetFailed", {
+          defaultValue: "Could not import dataset: {{error}}",
+          error: message(error),
+        }),
+      );
+    } finally {
+      setImportingDataset(false);
+    }
+  };
+
   const ask = async (event: React.FormEvent) => {
     event.preventDefault();
     const nextQuestion = question.trim();
@@ -289,6 +327,7 @@ export function ResearchPage() {
         workflows={workflow.workflows}
         selectedWorkflowId={workflow.selectedWorkflowId}
         loadingWorkflows={workflow.loadingList}
+        workflowMutating={workflow.mutating}
         sources={paperSources}
         loadingSources={loadingSources}
         selection={pdfSelection}
@@ -374,17 +413,19 @@ export function ResearchPage() {
 
           <WorkflowWorkspace
             snapshot={workflow.snapshot}
-            sources={paperSources}
+            sources={sources}
             loading={workflow.loadingSnapshot}
             mutating={workflow.mutating}
             connection={workflow.connection}
             error={workflow.error}
-            canStart={Boolean(
-              projectId && serviceReady && !loadingSources && readySources.length > 0,
-            )}
+            canStart={Boolean(projectId && serviceReady && !loadingSources)}
+            importingDataset={importingDataset}
             remoteDestination={health?.modelDestination ?? null}
             onCreate={workflow.create}
             onApprovePlan={workflow.approvePlan}
+            onDecideAnalysis={workflow.decideAnalysis}
+            onAcceptReviewWarnings={workflow.acceptReviewWarnings}
+            onImportDataset={importDataset}
             onCancel={workflow.cancel}
             onRetry={workflow.retry}
             onResume={workflow.resume}

@@ -9,6 +9,8 @@ const core = vi.hoisted(() => ({
   listWorkflowEvents: vi.fn(),
   createWorkflow: vi.fn(),
   approveWorkflowPlan: vi.fn(),
+  decideWorkflowAnalysisIntent: vi.fn(),
+  acceptWorkflowReviewWarnings: vi.fn(),
   cancelWorkflow: vi.fn(),
   retryWorkflow: vi.fn(),
   resumeWorkflow: vi.fn(),
@@ -147,15 +149,23 @@ describe("useResearchWorkflow", () => {
     await act(async () => {
       await result.current.create(
         "Compare studies",
-        "remote-model-assisted",
-        true,
+        {
+          workflowType: "literature-synthesis",
+          datasetSourceId: null,
+          generationMode: "remote-model-assisted",
+          remoteDataApproved: true,
+        },
       );
     });
     await act(async () => {
       await result.current.create(
         "Compare studies",
-        "local-deterministic",
-        false,
+        {
+          workflowType: "literature-synthesis",
+          datasetSourceId: null,
+          generationMode: "local-deterministic",
+          remoteDataApproved: false,
+        },
       );
     });
 
@@ -244,6 +254,173 @@ describe("useResearchWorkflow", () => {
     unmount();
   });
 
+  it.each(["list-first", "create-first"] as const)(
+    "keeps a newly created workflow selected when the initial list resolves %s",
+    async (responseOrder) => {
+      const existing = snapshot("completed", {
+        workflowId: "workflow-existing",
+        revision: 3,
+        eventCursor: 3,
+      });
+      const created = snapshot("planning", {
+        workflowId: "workflow-created",
+        revision: 1,
+        eventCursor: 1,
+      });
+      let resolveList:
+        | ((value: ResearchWorkflowSnapshot[]) => void)
+        | null = null;
+      let resolveCreate:
+        | ((value: ResearchWorkflowSnapshot) => void)
+        | null = null;
+      core.listWorkflows.mockImplementation(
+        () =>
+          new Promise<ResearchWorkflowSnapshot[]>((resolve) => {
+            resolveList = resolve;
+          }),
+      );
+      core.createWorkflow.mockImplementation(
+        () =>
+          new Promise<ResearchWorkflowSnapshot>((resolve) => {
+            resolveCreate = resolve;
+          }),
+      );
+      core.getWorkflow.mockResolvedValue(created);
+
+      const { result, unmount } = renderHook(() =>
+        useResearchWorkflow("project-1"),
+      );
+      await waitFor(() => expect(core.listWorkflows).toHaveBeenCalledTimes(1));
+
+      let createRequest: Promise<void> | undefined;
+      act(() => {
+        createRequest = result.current.create("Create while list is loading");
+      });
+      await waitFor(() => expect(core.createWorkflow).toHaveBeenCalledTimes(1));
+
+      if (responseOrder === "list-first") {
+        await act(async () => {
+          if (!resolveList) throw new Error("list resolver missing");
+          resolveList([existing]);
+        });
+        expect(result.current.selectedWorkflowId).toBeNull();
+        expect(result.current.workflows).toEqual([existing]);
+      }
+
+      await act(async () => {
+        if (!resolveCreate) throw new Error("create resolver missing");
+        resolveCreate(created);
+        await createRequest;
+      });
+      await waitFor(() =>
+        expect(result.current.selectedWorkflowId).toBe("workflow-created"),
+      );
+
+      if (responseOrder === "create-first") {
+        await act(async () => {
+          if (!resolveList) throw new Error("list resolver missing");
+          resolveList([existing]);
+        });
+      }
+
+      expect(result.current.selectedWorkflowId).toBe("workflow-created");
+      expect(result.current.snapshot).toEqual(created);
+      expect(
+        result.current.workflows.map((item) => item.workflow.id),
+      ).toEqual(["workflow-created", "workflow-existing"]);
+      unmount();
+    },
+  );
+
+  it("rejects late mutation snapshots after selecting another workflow or starting new", async () => {
+    const workflowA = snapshot("running", {
+      workflowId: "workflow-a",
+      revision: 2,
+      eventCursor: 2,
+    });
+    const workflowB = snapshot("running", {
+      workflowId: "workflow-b",
+      revision: 4,
+      eventCursor: 4,
+    });
+    const resolvers = new Map<
+      string,
+      (value: ResearchWorkflowSnapshot) => void
+    >();
+    core.listWorkflows.mockResolvedValue([workflowA, workflowB]);
+    core.getWorkflow.mockImplementation(async (workflowId: string) =>
+      workflowId === "workflow-b" ? workflowB : workflowA,
+    );
+    core.cancelWorkflow.mockImplementation(
+      (workflowId: string) =>
+        new Promise<ResearchWorkflowSnapshot>((resolve) => {
+          resolvers.set(workflowId, resolve);
+        }),
+    );
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot).toEqual(workflowA));
+
+    let mutationA: Promise<void> | undefined;
+    act(() => {
+      mutationA = result.current.cancel();
+    });
+    await waitFor(() => expect(resolvers.has("workflow-a")).toBe(true));
+    const signalA = core.cancelWorkflow.mock.calls[0]?.[2]
+      ?.signal as AbortSignal;
+
+    act(() => result.current.selectWorkflow("workflow-b"));
+    expect(signalA.aborted).toBe(true);
+    await waitFor(() => {
+      expect(result.current.selectedWorkflowId).toBe("workflow-b");
+      expect(result.current.snapshot).toEqual(workflowB);
+    });
+
+    let mutationB: Promise<void> | undefined;
+    act(() => {
+      mutationB = result.current.cancel();
+    });
+    await waitFor(() => expect(resolvers.has("workflow-b")).toBe(true));
+    const signalB = core.cancelWorkflow.mock.calls[1]?.[2]
+      ?.signal as AbortSignal;
+
+    await act(async () => {
+      resolvers.get("workflow-a")?.(
+        snapshot("cancelled", {
+          workflowId: "workflow-a",
+          revision: 99,
+          eventCursor: 99,
+        }),
+      );
+      await mutationA;
+    });
+    expect(result.current.selectedWorkflowId).toBe("workflow-b");
+    expect(result.current.snapshot).toEqual(workflowB);
+    expect(result.current.mutating).toBe(true);
+
+    act(() => result.current.startNew());
+    expect(signalB.aborted).toBe(true);
+    expect(result.current.selectedWorkflowId).toBeNull();
+    expect(result.current.snapshot).toBeNull();
+
+    await act(async () => {
+      resolvers.get("workflow-b")?.(
+        snapshot("cancelled", {
+          workflowId: "workflow-b",
+          revision: 100,
+          eventCursor: 100,
+        }),
+      );
+      await mutationB;
+    });
+    expect(result.current.selectedWorkflowId).toBeNull();
+    expect(result.current.snapshot).toBeNull();
+    expect(result.current.mutating).toBe(false);
+    unmount();
+  });
+
   it("clears list loading when the selected project is removed", async () => {
     let resolveList: ((value: ResearchWorkflowSnapshot[]) => void) | null = null;
     core.listWorkflows.mockImplementation(
@@ -314,4 +491,430 @@ describe("useResearchWorkflow", () => {
     expect(result.current.snapshot?.workflow.status).toBe("cancelled");
     unmount();
   });
+
+  it("recovers polling after a transient connection failure", async () => {
+    core.listWorkflows.mockResolvedValue([snapshot()]);
+    core.getWorkflow
+      .mockRejectedValueOnce(new Error("connection dropped"))
+      .mockResolvedValueOnce(
+        snapshot("running", { revision: 2, eventCursor: 2 }),
+      );
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+
+    await waitFor(() => expect(result.current.connection).toBe("reconnecting"));
+    expect(result.current.error).toBe("connection dropped");
+
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+
+    await waitFor(() => expect(result.current.connection).toBe("live"));
+    expect(result.current.snapshot?.workflow.revision).toBe(2);
+    expect(result.current.error).toBeNull();
+    unmount();
+  });
+
+  it.each(["approved", "rejected"] as const)(
+    "sends the exact workflow analysis %s decision once",
+    async (decision) => {
+      const initial = datasetApprovalSnapshot();
+      const decided = {
+        ...initial,
+        workflow: { ...initial.workflow, revision: 6 },
+        pendingApprovals: [],
+        analysisIntent: {
+          ...initial.analysisIntent!,
+          status: decision === "approved" ? "approved" : "rejected",
+          decision,
+        },
+        allowedActions: ["cancel"],
+        eventCursor: 6,
+      } as unknown as ResearchWorkflowSnapshot;
+      let resolveDecision:
+        | ((value: ResearchWorkflowSnapshot) => void)
+        | null = null;
+      core.listWorkflows.mockResolvedValue([initial]);
+      core.getWorkflow.mockResolvedValue(initial);
+      core.decideWorkflowAnalysisIntent.mockImplementation(
+        () =>
+          new Promise<ResearchWorkflowSnapshot>((resolve) => {
+            resolveDecision = resolve;
+          }),
+      );
+
+      const { result, unmount } = renderHook(() =>
+        useResearchWorkflow("project-1"),
+      );
+      await waitFor(() => expect(result.current.snapshot).toEqual(initial));
+
+      let first: Promise<void> | undefined;
+      let duplicate: Promise<void> | undefined;
+      act(() => {
+        first = result.current.decideAnalysis(decision);
+        duplicate = result.current.decideAnalysis(decision);
+      });
+      expect(core.decideWorkflowAnalysisIntent).toHaveBeenCalledTimes(1);
+      expect(core.decideWorkflowAnalysisIntent).toHaveBeenCalledWith(
+        "workflow-dataset",
+        {
+          intentId: "intent-1",
+          approvalId: "approval-analysis",
+          decision,
+          payloadSha256: "b".repeat(64),
+          expectedWorkflowRevision: 5,
+        },
+        expect.objectContaining({
+          idempotencyKey: expect.any(String),
+          signal: expect.any(AbortSignal),
+        }),
+      );
+
+      await act(async () => {
+        if (!resolveDecision) throw new Error("decision resolver missing");
+        resolveDecision(decided);
+        await Promise.all([first, duplicate]);
+      });
+      expect(result.current.snapshot?.workflow.revision).toBe(6);
+      unmount();
+    },
+  );
+
+  it("accepts only the exact warning-bearing review and applies the returned snapshot", async () => {
+    const initial = datasetWarningSnapshot();
+    const completed = {
+      ...initial,
+      workflow: {
+        ...initial.workflow,
+        status: "completed",
+        revision: 9,
+        completedAt: "2026-07-15T00:02:00Z",
+      },
+      allowedActions: [],
+      eventCursor: 9,
+    } as unknown as ResearchWorkflowSnapshot;
+    core.listWorkflows.mockResolvedValue([initial]);
+    core.getWorkflow.mockResolvedValue(initial);
+    core.acceptWorkflowReviewWarnings.mockResolvedValue(completed);
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot).toEqual(initial));
+
+    await act(async () => {
+      await result.current.acceptReviewWarnings();
+    });
+
+    expect(core.acceptWorkflowReviewWarnings).toHaveBeenCalledWith(
+      "workflow-dataset",
+      {
+        reviewId: "review-1",
+        reviewInputSha256: "c".repeat(64),
+        expectedWorkflowRevision: 8,
+        decision: "accepted",
+      },
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(result.current.snapshot?.workflow.status).toBe("completed");
+    unmount();
+  });
+
+  it("retries a failed dataset workflow with the exact revision and idempotency envelope", async () => {
+    const initial = datasetRecoverySnapshot("failed", "retry", 11);
+    const retried = {
+      ...initial,
+      workflow: {
+        ...initial.workflow,
+        status: "planning",
+        revision: 12,
+        blockingReason: null,
+      },
+      allowedActions: ["cancel"],
+      eventCursor: 12,
+    } as unknown as ResearchWorkflowSnapshot;
+    core.listWorkflows.mockResolvedValue([initial]);
+    core.getWorkflow.mockResolvedValue(initial);
+    core.retryWorkflow.mockResolvedValue(retried);
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot).toEqual(initial));
+
+    await act(async () => {
+      await result.current.retry();
+    });
+
+    expect(core.retryWorkflow).toHaveBeenCalledTimes(1);
+    expect(core.retryWorkflow.mock.calls[0]).toEqual([
+      "workflow-dataset",
+      { expectedWorkflowRevision: 11 },
+      {
+        idempotencyKey: expect.any(String),
+        signal: expect.any(AbortSignal),
+      },
+    ]);
+    expect(result.current.snapshot?.workflow.revision).toBe(12);
+    unmount();
+  });
+
+  it("resumes a blocked dataset workflow with the exact revision and idempotency envelope", async () => {
+    const initial = datasetRecoverySnapshot("blocked", "resume", 13);
+    const resumed = {
+      ...initial,
+      workflow: {
+        ...initial.workflow,
+        status: "running",
+        revision: 14,
+        blockingReason: null,
+      },
+      allowedActions: ["cancel"],
+      eventCursor: 14,
+    } as unknown as ResearchWorkflowSnapshot;
+    core.listWorkflows.mockResolvedValue([initial]);
+    core.getWorkflow.mockResolvedValue(initial);
+    core.resumeWorkflow.mockResolvedValue(resumed);
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot).toEqual(initial));
+
+    await act(async () => {
+      await result.current.resume();
+    });
+
+    expect(core.resumeWorkflow).toHaveBeenCalledTimes(1);
+    expect(core.resumeWorkflow.mock.calls[0]).toEqual([
+      "workflow-dataset",
+      { expectedWorkflowRevision: 13 },
+      {
+        idempotencyKey: expect.any(String),
+        signal: expect.any(AbortSignal),
+      },
+    ]);
+    expect(result.current.snapshot?.workflow.revision).toBe(14);
+    unmount();
+  });
+
+  it("refreshes the canonical dataset snapshot after a stale 409 decision", async () => {
+    const initial = datasetApprovalSnapshot();
+    const canonical = {
+      ...initial,
+      workflow: { ...initial.workflow, revision: 6 },
+      eventCursor: 6,
+    } as unknown as ResearchWorkflowSnapshot;
+    core.listWorkflows.mockResolvedValue([initial]);
+    core.getWorkflow.mockResolvedValueOnce(initial).mockResolvedValue(canonical);
+    core.decideWorkflowAnalysisIntent.mockRejectedValue(
+      apiError(409, "The workflow changed; review the refreshed approval."),
+    );
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot).toEqual(initial));
+
+    await act(async () => {
+      await result.current.decideAnalysis("approved");
+    });
+
+    expect(core.getWorkflow).toHaveBeenCalledTimes(2);
+    expect(result.current.snapshot?.workflow.revision).toBe(6);
+    expect(result.current.error).toBe(
+      "The workflow changed; review the refreshed approval.",
+    );
+    unmount();
+  });
+
+  it.each([
+    [401, "Authentication expired. Reconnect science core."],
+    [503, "The local runtime is unavailable."],
+  ])("surfaces API %s without inventing local workflow state", async (status, detail) => {
+    const initial = snapshot("running");
+    core.listWorkflows.mockResolvedValue([initial]);
+    core.getWorkflow.mockResolvedValue(initial);
+    core.cancelWorkflow.mockRejectedValue(apiError(status, detail));
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot).toEqual(initial));
+
+    await act(async () => {
+      await result.current.cancel();
+    });
+
+    expect(result.current.error).toBe(detail);
+    expect(result.current.snapshot).toEqual(initial);
+    unmount();
+  });
 });
+
+function datasetApprovalSnapshot(): ResearchWorkflowSnapshot {
+  return {
+    workflow: {
+      id: "workflow-dataset",
+      projectId: "project-1",
+      goal: "Summarize outcomes",
+      workflowType: "dataset-analysis",
+      datasetSourceId: "dataset-1",
+      datasetContentHash: "a".repeat(64),
+      generationMode: "local-deterministic",
+      status: "running",
+      revision: 5,
+      currentStepId: "task-execute",
+      planVersion: 1,
+      retryCount: 0,
+      blockingReason: null,
+      cancelRequestedAt: null,
+      createdAt: "2026-07-15T00:00:00Z",
+      updatedAt: "2026-07-15T00:00:05Z",
+      completedAt: null,
+    },
+    plan: null,
+    pendingApprovals: [
+      {
+        id: "approval-analysis",
+        workflowId: "workflow-dataset",
+        planId: "plan-1",
+        taskId: "task-execute",
+        kind: "analysis-execution",
+        status: "waiting",
+        subjectType: "analysis-intent",
+        subjectId: "intent-1",
+        action: "execute-python-data-analysis",
+        payloadSha256: "b".repeat(64),
+        riskLevel: "high",
+        reason: "Review exact code.",
+        affectedResources: ["dataset:dataset-1"],
+        createdAt: "2026-07-15T00:00:05Z",
+        decidedAt: null,
+        approvalSchemaVersion: "analysis-intent-v3",
+        expectedWorkflowRevision: 5,
+        analysisIntentId: "intent-1",
+        planStepId: "execute-analysis",
+        datasetSourceId: "dataset-1",
+        datasetContentHash: "a".repeat(64),
+        expectedOutputs: [
+          "executed-notebook",
+          "analysis-log",
+          "environment-manifest",
+        ],
+        timeoutSeconds: 600,
+        code: "print('approved')",
+        codeDiff: null,
+      },
+    ],
+    result: null,
+    latestReview: null,
+    datasetProfile: null,
+    analysisIntent: {
+      id: "intent-1",
+      taskId: "task-execute",
+      projectId: "project-1",
+      datasetSourceId: "dataset-1",
+      datasetContentHash: "a".repeat(64),
+      objective: "Summarize outcomes",
+      code: "print('approved')",
+      payloadSha256: "b".repeat(64),
+      riskLevel: "high",
+      affectedResources: ["dataset:dataset-1"],
+      status: "waiting-approval",
+      decision: null,
+      workflowId: "workflow-dataset",
+      planStepId: "execute-analysis",
+      previousIntentId: null,
+      expectedOutputs: [
+        "executed-notebook",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      timeoutSeconds: 600,
+      repairAttempt: 0,
+      errorSummary: null,
+      codeDiff: null,
+      createdAt: "2026-07-15T00:00:05Z",
+      updatedAt: "2026-07-15T00:00:05Z",
+    },
+    analysisRun: null,
+    reviewWarningAcceptance: null,
+    allowedActions: ["approve-analysis", "reject-analysis", "cancel"],
+    eventCursor: 5,
+  } as unknown as ResearchWorkflowSnapshot;
+}
+
+function datasetWarningSnapshot(): ResearchWorkflowSnapshot {
+  const initial = datasetApprovalSnapshot();
+  return {
+    ...initial,
+    workflow: {
+      ...initial.workflow,
+      status: "reviewing",
+      revision: 8,
+      currentStepId: null,
+    },
+    pendingApprovals: [],
+    latestReview: {
+      id: "review-1",
+      reviewType: "deterministic-analysis-v1",
+      verdict: "passed-with-warnings",
+      inputSha256: "c".repeat(64),
+      createdAt: "2026-07-15T00:01:00Z",
+      result: {
+        schemaVersion: "1",
+        verdict: "passed-with-warnings",
+        checks: [],
+        artifactIssues: [],
+        numericIssues: [],
+        methodWarnings: [
+          {
+            code: "method-scope-limited",
+            message: "Confirm the descriptive method.",
+            artifactId: null,
+          },
+        ],
+        requiredRevisions: [],
+        runId: "run-1",
+        analysisIntentId: "intent-1",
+        inputDatasetContentHash: "a".repeat(64),
+      },
+    },
+    allowedActions: ["accept-review-warnings", "cancel"],
+    eventCursor: 8,
+  } as unknown as ResearchWorkflowSnapshot;
+}
+
+function datasetRecoverySnapshot(
+  status: "blocked" | "failed",
+  action: "resume" | "retry",
+  revision: number,
+): ResearchWorkflowSnapshot {
+  const initial = datasetApprovalSnapshot();
+  return {
+    ...initial,
+    workflow: {
+      ...initial.workflow,
+      status,
+      revision,
+      currentStepId: null,
+      blockingReason: {
+        code: `${status}-for-test`,
+        userMessage: `Dataset workflow ${status}.`,
+        retryable: true,
+      },
+    },
+    pendingApprovals: [],
+    allowedActions: [action],
+    eventCursor: revision,
+  } as unknown as ResearchWorkflowSnapshot;
+}
+
+function apiError(status: number, detail: string): Error & { status: number } {
+  return Object.assign(new Error(detail), { status });
+}

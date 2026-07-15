@@ -26,11 +26,24 @@ export type ResearchWorkflowStatus =
 /** Actions science-core currently permits for a workflow snapshot. */
 export type ResearchWorkflowAllowedAction =
   | "approve-plan"
+  | "approve-analysis"
+  | "reject-analysis"
+  | "accept-review-warnings"
   | "cancel"
   | "retry"
   | "resume";
 
-export type ResearchWorkflowType = "literature-synthesis";
+export type LiteratureResearchWorkflowAllowedAction =
+  | "approve-plan"
+  | "cancel"
+  | "retry"
+  | "resume";
+
+export type ResearchWorkflowType =
+  | "literature-synthesis"
+  | "dataset-analysis";
+
+export type WorkflowRiskLevel = "low" | "medium" | "high";
 
 /**
  * Describes how a workflow generates its plan and narrative output.
@@ -39,6 +52,46 @@ export type ResearchWorkflowType = "literature-synthesis";
 export type ResearchGenerationMode =
   | "local-deterministic"
   | "remote-model-assisted";
+
+export interface CreateLiteratureResearchWorkflowInput {
+  goal: string;
+  workflowType: "literature-synthesis";
+  generationMode: ResearchGenerationMode;
+  /** Explicit approval to send the goal when remote assistance is selected. */
+  remoteDataApproved: boolean;
+}
+
+export interface CreateDatasetAnalysisWorkflowInput {
+  goal: string;
+  workflowType: "dataset-analysis";
+  datasetSourceId: string;
+  /** Dataset analysis is local-only in the current product contract. */
+  generationMode: "local-deterministic";
+  remoteDataApproved: false;
+}
+
+/** Creation is discriminated by workflowType and cannot omit dataset identity. */
+export type CreateResearchWorkflowInput =
+  | CreateLiteratureResearchWorkflowInput
+  | CreateDatasetAnalysisWorkflowInput;
+
+export type WorkflowAnalysisIntentDecision = "approved" | "rejected";
+
+export interface DecideWorkflowAnalysisIntentInput {
+  /** Encoded in the request path and checked against the approval subject. */
+  intentId: string;
+  approvalId: string;
+  decision: WorkflowAnalysisIntentDecision;
+  payloadSha256: string;
+  expectedWorkflowRevision: number;
+}
+
+export interface AcceptWorkflowReviewWarningsInput {
+  reviewId: string;
+  reviewInputSha256: string;
+  expectedWorkflowRevision: number;
+  decision: "accepted";
+}
 
 export interface WorkflowApiErrorDetail {
   code: string;
@@ -52,11 +105,10 @@ export interface WorkflowBlockingReason {
   retryable: boolean;
 }
 
-export interface ResearchWorkflow {
+interface ResearchWorkflowBase {
   id: string;
   projectId: string;
   goal: string;
-  workflowType: ResearchWorkflowType;
   /** Optional while reading snapshots created before model-assisted v2. */
   generationMode?: ResearchGenerationMode;
   status: ResearchWorkflowStatus;
@@ -71,6 +123,25 @@ export interface ResearchWorkflow {
   completedAt: string | null;
 }
 
+export interface LiteratureResearchWorkflow extends ResearchWorkflowBase {
+  workflowType: "literature-synthesis";
+  /** science-core includes explicit nulls in current response snapshots. */
+  datasetSourceId?: null;
+  datasetContentHash?: null;
+}
+
+export interface DatasetAnalysisWorkflow extends ResearchWorkflowBase {
+  workflowType: "dataset-analysis";
+  /** Immutable source identity captured when the workflow is created. */
+  datasetSourceId: string;
+  /** SHA-256 of the exact dataset bytes approved for this workflow. */
+  datasetContentHash: string;
+}
+
+export type ResearchWorkflow =
+  | LiteratureResearchWorkflow
+  | DatasetAnalysisWorkflow;
+
 export type ResearchWorkflowPlanStatus =
   | "pending-approval"
   | "approved"
@@ -81,15 +152,27 @@ export type ResearchWorkflowTaskStatus =
   | "pending"
   | "queued"
   | "running"
+  | "waiting-approval"
   | "completed"
   | "blocked"
   | "failed"
   | "cancelled";
 
-export type ResearchWorkflowTaskType =
+export type LiteratureResearchWorkflowTaskType =
   | "inspect-sources"
   | "extract-local-evidence"
   | "synthesize-extractive-claims";
+
+/** Registered science-core handlers for the fixed dataset workflow. */
+export type DatasetAnalysisTaskType =
+  | "dataset-inspection"
+  | "prepare-analysis"
+  | "python-data-analysis"
+  | "collect-artifacts";
+
+export type ResearchWorkflowTaskType =
+  | LiteratureResearchWorkflowTaskType
+  | DatasetAnalysisTaskType;
 
 export interface FrozenResearchSource {
   sourceId: string;
@@ -135,7 +218,7 @@ export type ResearchWorkflowAcceptanceCriterion =
 
 export interface ResearchWorkflowStepSpec {
   key: string;
-  type: ResearchWorkflowTaskType;
+  type: LiteratureResearchWorkflowTaskType;
   objective: string;
   inputs: ResearchWorkflowStepInput;
   expectedOutputs: ResearchWorkflowExpectedOutput[];
@@ -147,6 +230,393 @@ export interface ResearchWorkflowPlanSpec {
   goal: string;
   steps: ResearchWorkflowStepSpec[];
 }
+
+export type DatasetAnalysisStepKey =
+  | "inspect-dataset"
+  | "prepare-analysis"
+  | "execute-analysis"
+  | "collect-artifacts";
+
+export type DatasetAnalysisArtifactKind =
+  | "dataset-profile"
+  | "analysis-intent"
+  | "executed-notebook"
+  | "summary-table"
+  | "figure"
+  | "analysis-log"
+  | "environment-manifest";
+
+export type DatasetAnalysisExpectedOutput =
+  | "dataset-profile"
+  | "analysis-code"
+  | "executed-notebook"
+  | "summary-table"
+  | "figures"
+  | "analysis-log"
+  | "environment-manifest";
+
+/** Canonical output order makes mandatory runtime evidence unskippable. */
+export type DatasetAnalysisExecutionExpectedOutputs =
+  | ["executed-notebook", "analysis-log", "environment-manifest"]
+  | [
+      "executed-notebook",
+      "summary-table",
+      "analysis-log",
+      "environment-manifest",
+    ]
+  | [
+      "executed-notebook",
+      "figures",
+      "analysis-log",
+      "environment-manifest",
+    ]
+  | [
+      "executed-notebook",
+      "summary-table",
+      "figures",
+      "analysis-log",
+      "environment-manifest",
+    ];
+
+export type DatasetAnalysisExecutionExpectedArtifacts =
+  | ["executed-notebook", "analysis-log", "environment-manifest"]
+  | [
+      "executed-notebook",
+      "summary-table",
+      "analysis-log",
+      "environment-manifest",
+    ]
+  | [
+      "executed-notebook",
+      "figure",
+      "analysis-log",
+      "environment-manifest",
+    ]
+  | [
+      "executed-notebook",
+      "summary-table",
+      "figure",
+      "analysis-log",
+      "environment-manifest",
+    ];
+
+export type DatasetAnalysisRuntimeArtifactType =
+  | "notebook-input"
+  | "notebook-executed"
+  | "environment"
+  | "stdout"
+  | "stderr"
+  | "log"
+  | "figure"
+  | "dataset"
+  | "structured-data";
+
+export interface DatasetInspectionStepInput {
+  datasetSourceId: string;
+  datasetContentHash: string;
+  samplingMethod: "head-and-reservoir-v1";
+  maxSampleRows: number;
+}
+
+export interface PrepareAnalysisStepInput {
+  datasetSourceId: string;
+  datasetContentHash: string;
+  profileStepKey: "inspect-dataset";
+}
+
+export interface ExecuteAnalysisStepInput {
+  datasetSourceId: string;
+  datasetContentHash: string;
+  preparationStepKey: "prepare-analysis";
+  expectedOutputs: DatasetAnalysisExecutionExpectedOutputs;
+  timeoutSeconds: number;
+}
+
+export interface CollectArtifactsStepInput {
+  executionStepKey: "execute-analysis";
+  expectedOutputs: DatasetAnalysisExecutionExpectedOutputs;
+}
+
+interface DatasetAnalysisStepBase {
+  key: DatasetAnalysisStepKey;
+  type: DatasetAnalysisTaskType;
+  objective: string;
+  dependencies: DatasetAnalysisStepKey[];
+  acceptanceCriteria: [string, ...string[]];
+  riskLevel: WorkflowRiskLevel;
+}
+
+export interface DatasetInspectionPlanStep
+  extends DatasetAnalysisStepBase {
+  key: "inspect-dataset";
+  type: "dataset-inspection";
+  dependencies: [];
+  inputs: DatasetInspectionStepInput;
+  expectedArtifacts: ["dataset-profile"];
+  riskLevel: "low";
+}
+
+export interface PrepareAnalysisPlanStep extends DatasetAnalysisStepBase {
+  key: "prepare-analysis";
+  type: "prepare-analysis";
+  dependencies: ["inspect-dataset"];
+  inputs: PrepareAnalysisStepInput;
+  expectedArtifacts: ["analysis-intent"];
+  riskLevel: "medium";
+}
+
+interface ExecuteAnalysisPlanStepBase extends DatasetAnalysisStepBase {
+  key: "execute-analysis";
+  type: "python-data-analysis";
+  dependencies: ["prepare-analysis"];
+  riskLevel: "high";
+}
+
+interface CollectArtifactsPlanStepBase extends DatasetAnalysisStepBase {
+  key: "collect-artifacts";
+  type: "collect-artifacts";
+  dependencies: ["execute-analysis"];
+  riskLevel: "low";
+}
+
+type ExecuteAnalysisPlanStepFor<
+  Outputs extends DatasetAnalysisExecutionExpectedOutputs,
+  Artifacts extends DatasetAnalysisExecutionExpectedArtifacts,
+> = ExecuteAnalysisPlanStepBase & {
+  inputs: Omit<ExecuteAnalysisStepInput, "expectedOutputs"> & {
+    expectedOutputs: Outputs;
+  };
+  expectedArtifacts: Artifacts;
+};
+
+type CollectArtifactsPlanStepFor<
+  Outputs extends DatasetAnalysisExecutionExpectedOutputs,
+  Artifacts extends DatasetAnalysisExecutionExpectedArtifacts,
+> = CollectArtifactsPlanStepBase & {
+  inputs: Omit<CollectArtifactsStepInput, "expectedOutputs"> & {
+    expectedOutputs: Outputs;
+  };
+  expectedArtifacts: Artifacts;
+};
+
+export type ExecuteAnalysisPlanStep =
+  | ExecuteAnalysisPlanStepFor<
+      ["executed-notebook", "analysis-log", "environment-manifest"],
+      ["executed-notebook", "analysis-log", "environment-manifest"]
+    >
+  | ExecuteAnalysisPlanStepFor<
+      [
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >
+  | ExecuteAnalysisPlanStepFor<
+      [
+        "executed-notebook",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >
+  | ExecuteAnalysisPlanStepFor<
+      [
+        "executed-notebook",
+        "summary-table",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "summary-table",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >;
+
+export type CollectArtifactsPlanStep =
+  | CollectArtifactsPlanStepFor<
+      ["executed-notebook", "analysis-log", "environment-manifest"],
+      ["executed-notebook", "analysis-log", "environment-manifest"]
+    >
+  | CollectArtifactsPlanStepFor<
+      [
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >
+  | CollectArtifactsPlanStepFor<
+      [
+        "executed-notebook",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >
+  | CollectArtifactsPlanStepFor<
+      [
+        "executed-notebook",
+        "summary-table",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "summary-table",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >;
+
+export type DatasetAnalysisPlanStep =
+  | DatasetInspectionPlanStep
+  | PrepareAnalysisPlanStep
+  | ExecuteAnalysisPlanStep
+  | CollectArtifactsPlanStep;
+
+export const DATASET_ANALYSIS_STEP_SEQUENCE = [
+  {
+    key: "inspect-dataset",
+    type: "dataset-inspection",
+    riskLevel: "low",
+  },
+  {
+    key: "prepare-analysis",
+    type: "prepare-analysis",
+    riskLevel: "medium",
+  },
+  {
+    key: "execute-analysis",
+    type: "python-data-analysis",
+    riskLevel: "high",
+  },
+  {
+    key: "collect-artifacts",
+    type: "collect-artifacts",
+    riskLevel: "low",
+  },
+] as const;
+
+/** Exhaustive bridge from plan semantics to persisted runtime artifact types. */
+export const DATASET_ANALYSIS_RUNTIME_ARTIFACT_REQUIREMENTS = {
+  "dataset-profile": [],
+  "analysis-code": [],
+  "executed-notebook": ["notebook-executed"],
+  "summary-table": ["dataset"],
+  figures: ["figure"],
+  "analysis-log": ["stdout", "stderr", "log"],
+  "environment-manifest": ["environment"],
+} as const satisfies Record<
+  DatasetAnalysisExpectedOutput,
+  readonly DatasetAnalysisRuntimeArtifactType[]
+>;
+
+/**
+ * Strict, ordered plan accepted for dataset-analysis workflows. The tuple
+ * prevents a model response from omitting, reordering, or inventing handlers.
+ */
+interface DatasetAnalysisPlanSpecBase {
+  schemaVersion: "1";
+  workflowType: "dataset-analysis";
+  goal: string;
+  datasetSourceId: string;
+  datasetContentHash: string;
+  assumptions: string[];
+  questionsForUser: string[];
+}
+
+type DatasetAnalysisPlanSpecFor<
+  Outputs extends DatasetAnalysisExecutionExpectedOutputs,
+  Artifacts extends DatasetAnalysisExecutionExpectedArtifacts,
+> = DatasetAnalysisPlanSpecBase & {
+  steps: [
+    DatasetInspectionPlanStep,
+    PrepareAnalysisPlanStep,
+    ExecuteAnalysisPlanStepFor<Outputs, Artifacts>,
+    CollectArtifactsPlanStepFor<Outputs, Artifacts>,
+  ];
+};
+
+export type DatasetAnalysisPlanSpec =
+  | DatasetAnalysisPlanSpecFor<
+      ["executed-notebook", "analysis-log", "environment-manifest"],
+      ["executed-notebook", "analysis-log", "environment-manifest"]
+    >
+  | DatasetAnalysisPlanSpecFor<
+      [
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "summary-table",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >
+  | DatasetAnalysisPlanSpecFor<
+      [
+        "executed-notebook",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >
+  | DatasetAnalysisPlanSpecFor<
+      [
+        "executed-notebook",
+        "summary-table",
+        "figures",
+        "analysis-log",
+        "environment-manifest",
+      ],
+      [
+        "executed-notebook",
+        "summary-table",
+        "figure",
+        "analysis-log",
+        "environment-manifest",
+      ]
+    >;
 
 export interface ResearchWorkflowMaterializedStep {
   id: string;
@@ -161,7 +631,77 @@ export interface ResearchWorkflowMaterializedStep {
   outputSummary: string | null;
 }
 
-export interface ResearchWorkflowPlan {
+export type DatasetAnalysisMaterializedStep<
+  Key extends DatasetAnalysisStepKey,
+  Type extends DatasetAnalysisTaskType,
+  OrderIndex extends number,
+> = Omit<ResearchWorkflowMaterializedStep, "key" | "type" | "orderIndex"> & {
+  key: Key;
+  type: Type;
+  orderIndex: OrderIndex;
+};
+
+export interface DatasetAnalysisWorkflowPlan
+  extends Omit<LiteratureResearchWorkflowPlan, "spec" | "steps"> {
+  spec: DatasetAnalysisPlanSpec;
+  steps: [
+    DatasetAnalysisMaterializedStep<
+      "inspect-dataset",
+      "dataset-inspection",
+      0
+    >,
+    DatasetAnalysisMaterializedStep<"prepare-analysis", "prepare-analysis", 1>,
+    DatasetAnalysisMaterializedStep<
+      "execute-analysis",
+      "python-data-analysis",
+      2
+    >,
+    DatasetAnalysisMaterializedStep<
+      "collect-artifacts",
+      "collect-artifacts",
+      3
+    >,
+  ];
+}
+
+type CompletedDatasetAnalysisMaterializedStep<
+  Key extends DatasetAnalysisStepKey,
+  Type extends DatasetAnalysisTaskType,
+  OrderIndex extends number,
+> = DatasetAnalysisMaterializedStep<Key, Type, OrderIndex> & {
+  status: "completed";
+};
+
+export type CompletedDatasetAnalysisWorkflowPlan = Omit<
+  DatasetAnalysisWorkflowPlan,
+  "status" | "steps"
+> & {
+  status: "approved";
+  steps: [
+    CompletedDatasetAnalysisMaterializedStep<
+      "inspect-dataset",
+      "dataset-inspection",
+      0
+    >,
+    CompletedDatasetAnalysisMaterializedStep<
+      "prepare-analysis",
+      "prepare-analysis",
+      1
+    >,
+    CompletedDatasetAnalysisMaterializedStep<
+      "execute-analysis",
+      "python-data-analysis",
+      2
+    >,
+    CompletedDatasetAnalysisMaterializedStep<
+      "collect-artifacts",
+      "collect-artifacts",
+      3
+    >,
+  ];
+};
+
+export interface LiteratureResearchWorkflowPlan {
   id: string;
   workflowId: string;
   version: number;
@@ -179,23 +719,75 @@ export interface ResearchWorkflowPlan {
   approvedAt: string | null;
 }
 
-export interface WorkflowPendingApproval {
+export type ResearchWorkflowPlan =
+  | LiteratureResearchWorkflowPlan
+  | DatasetAnalysisWorkflowPlan;
+
+interface WorkflowPendingApprovalBase {
   id: string;
   workflowId: string;
   planId: string;
-  taskId: string | null;
-  kind: "plan";
   status: "waiting";
   subjectType: string;
   subjectId: string;
   action: string;
   payloadSha256: string;
-  riskLevel: string;
+  riskLevel: WorkflowRiskLevel;
   reason: string;
   affectedResources: string[];
   createdAt: string;
   decidedAt: string | null;
 }
+
+export interface WorkflowPlanPendingApproval
+  extends WorkflowPendingApprovalBase {
+  taskId: null;
+  kind: "plan";
+  subjectType: "plan";
+  workflowType?: "literature-synthesis";
+  datasetSourceId?: never;
+  datasetContentHash?: never;
+}
+
+export interface DatasetWorkflowPlanPendingApproval
+  extends WorkflowPendingApprovalBase {
+  taskId: null;
+  kind: "plan";
+  subjectType: "plan";
+  action: "approve-plan";
+  riskLevel: "medium";
+  approvalSchemaVersion: "workflow-plan-approval-v3";
+  workflowType: "dataset-analysis";
+  planVersion: number;
+  planSha256: string;
+  expectedWorkflowRevision: number;
+  datasetSourceId: string;
+  datasetContentHash: string;
+}
+
+export interface WorkflowAnalysisExecutionPendingApproval
+  extends WorkflowPendingApprovalBase {
+  taskId: string;
+  kind: "analysis-execution";
+  subjectType: "analysis-intent";
+  action: "execute-python-data-analysis";
+  riskLevel: "high";
+  approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
+  expectedWorkflowRevision: number;
+  analysisIntentId: string;
+  planStepId: "execute-analysis";
+  datasetSourceId: string;
+  datasetContentHash: string;
+  expectedOutputs: DatasetAnalysisExecutionExpectedOutputs;
+  timeoutSeconds: number;
+  code: string;
+  codeDiff: string | null;
+}
+
+export type WorkflowPendingApproval =
+  | WorkflowPlanPendingApproval
+  | DatasetWorkflowPlanPendingApproval
+  | WorkflowAnalysisExecutionPendingApproval;
 
 /** Future policy approvals stay distinct from plan confirmation. */
 export type WorkflowApprovalKind = "plan" | "remote-data" | "analysis-execution";
@@ -245,11 +837,15 @@ export interface ResearchWorkflowResult {
   unresolvedQuestions: string[];
 }
 
-export type WorkflowReviewVerdict =
+export type LiteratureWorkflowReviewVerdict =
   | "passed"
   | "revision-required"
   | "blocked"
   | "failed";
+
+export type WorkflowReviewVerdict =
+  | LiteratureWorkflowReviewVerdict
+  | "passed-with-warnings";
 
 export interface WorkflowReviewCheck {
   code: string;
@@ -268,7 +864,7 @@ export interface WorkflowClaimReviewResult {
 
 export interface WorkflowDeterministicReviewResult {
   schemaVersion: "1" | "2";
-  verdict: WorkflowReviewVerdict;
+  verdict: LiteratureWorkflowReviewVerdict;
   checks: WorkflowReviewCheck[];
   claimResults: WorkflowClaimReviewResult[];
   requiredRevisions: string[];
@@ -276,24 +872,149 @@ export interface WorkflowDeterministicReviewResult {
   resultSnapshot: ResearchWorkflowResult | null;
 }
 
-export interface ResearchWorkflowReview {
+export type LegacyWorkflowDeterministicReviewResult = Omit<
+  WorkflowDeterministicReviewResult,
+  "schemaVersion" | "resultSnapshotSha256" | "resultSnapshot"
+> & {
+  schemaVersion: "1";
+  resultSnapshotSha256: null;
+  resultSnapshot: null;
+};
+
+export type FrozenWorkflowDeterministicReviewResult = Omit<
+  WorkflowDeterministicReviewResult,
+  "schemaVersion" | "resultSnapshotSha256" | "resultSnapshot"
+> & {
+  schemaVersion: "2";
+  resultSnapshotSha256: string;
+  resultSnapshot: ResearchWorkflowResult;
+};
+
+interface ResearchWorkflowReviewBase<
+  Verdict extends LiteratureWorkflowReviewVerdict,
+> {
   id: string;
-  reviewType: string;
-  verdict: WorkflowReviewVerdict;
+  verdict: Verdict;
   inputSha256: string;
-  result: WorkflowDeterministicReviewResult;
   createdAt: string;
 }
 
-export interface ResearchWorkflowSnapshot {
-  workflow: ResearchWorkflow;
-  plan: ResearchWorkflowPlan | null;
-  pendingApprovals: WorkflowPendingApproval[];
+type ReviewResultWithVerdict<
+  Result extends WorkflowDeterministicReviewResult,
+  Verdict extends LiteratureWorkflowReviewVerdict,
+> = Omit<Result, "verdict"> & { verdict: Verdict };
+
+export type ResearchWorkflowReview = {
+  [Verdict in LiteratureWorkflowReviewVerdict]: ResearchWorkflowReviewBase<Verdict> &
+    (
+      | {
+          reviewType: "deterministic-claims-v1";
+          result: ReviewResultWithVerdict<
+            LegacyWorkflowDeterministicReviewResult,
+            Verdict
+          >;
+        }
+      | {
+          reviewType: "deterministic-claims-v2";
+          result: ReviewResultWithVerdict<
+            FrozenWorkflowDeterministicReviewResult,
+            Verdict
+          >;
+        }
+    );
+}[LiteratureWorkflowReviewVerdict];
+
+interface ResearchWorkflowSnapshotBase {
   result: ResearchWorkflowResult | null;
-  latestReview: ResearchWorkflowReview | null;
   allowedActions: ResearchWorkflowAllowedAction[];
   eventCursor: number;
 }
+
+export interface LiteratureResearchWorkflowSnapshot
+  extends ResearchWorkflowSnapshotBase {
+  workflow: LiteratureResearchWorkflow;
+  plan: LiteratureResearchWorkflowPlan | null;
+  pendingApprovals: WorkflowPlanPendingApproval[];
+  latestReview: ResearchWorkflowReview | null;
+  allowedActions: LiteratureResearchWorkflowAllowedAction[];
+  datasetProfile?: null;
+  analysisIntent?: null;
+  analysisRun?: null;
+  reviewWarningAcceptance?: null;
+}
+
+interface ActiveDatasetAnalysisWorkflowSnapshot
+  extends Omit<ResearchWorkflowSnapshotBase, "result"> {
+  workflow: Omit<DatasetAnalysisWorkflow, "status"> & {
+    status: Exclude<ResearchWorkflowStatus, "completed">;
+  };
+  plan: DatasetAnalysisWorkflowPlan | null;
+  pendingApprovals: Array<
+    | DatasetWorkflowPlanPendingApproval
+    | WorkflowAnalysisExecutionPendingApproval
+  >;
+  /** Dataset results are represented by the exact Intent, Run, and Review records. */
+  result: null;
+  latestReview: DatasetAnalysisReview | null;
+  datasetProfile: DatasetProfile | null;
+  analysisIntent: WorkflowAnalysisIntent | null;
+  analysisRun: WorkflowAnalysisRun | null;
+  reviewWarningAcceptance: DatasetReviewWarningAcceptance | null;
+}
+
+type CompletedDatasetAnalysisWorkflowState = Omit<
+  DatasetAnalysisWorkflow,
+  | "status"
+  | "currentStepId"
+  | "blockingReason"
+  | "cancelRequestedAt"
+  | "completedAt"
+> & {
+  status: "completed";
+  currentStepId: null;
+  blockingReason: null;
+  cancelRequestedAt: null;
+  completedAt: string;
+};
+
+interface CompletedDatasetAnalysisWorkflowSnapshotBase {
+  workflow: CompletedDatasetAnalysisWorkflowState;
+  plan: CompletedDatasetAnalysisWorkflowPlan;
+  pendingApprovals: [];
+  result: null;
+  datasetProfile: DatasetProfile;
+  analysisIntent: WorkflowAnalysisIntent & {
+    status: "completed";
+    decision: "approved";
+  };
+  analysisRun: CompletedWorkflowAnalysisRun;
+  allowedActions: [];
+  eventCursor: number;
+}
+
+type PassedDatasetAnalysisWorkflowSnapshot =
+  CompletedDatasetAnalysisWorkflowSnapshotBase & {
+    latestReview: Extract<DatasetAnalysisReview, { verdict: "passed" }>;
+    reviewWarningAcceptance: null;
+  };
+
+type WarningAcceptedDatasetAnalysisWorkflowSnapshot =
+  CompletedDatasetAnalysisWorkflowSnapshotBase & {
+    latestReview: Extract<
+      DatasetAnalysisReview,
+      { verdict: "passed-with-warnings" }
+    >;
+    reviewWarningAcceptance: DatasetReviewWarningAcceptance;
+  };
+
+export type DatasetAnalysisWorkflowSnapshot =
+  | ActiveDatasetAnalysisWorkflowSnapshot
+  | PassedDatasetAnalysisWorkflowSnapshot
+  | WarningAcceptedDatasetAnalysisWorkflowSnapshot;
+
+export type ResearchWorkflowSnapshot =
+  | LiteratureResearchWorkflowSnapshot
+  | DatasetAnalysisWorkflowSnapshot;
 
 export interface WorkflowCreatedEventData {
   workflowType: ResearchWorkflowType;
@@ -302,13 +1023,26 @@ export interface WorkflowCreatedEventData {
   generationMode?: ResearchGenerationMode;
 }
 
-export interface WorkflowRemoteDataApprovalEventData {
-  provider: string;
+interface WorkflowRemoteDataApprovalEventBase {
+  provider: "openai-compatible";
   endpointHost: string;
   endpointIdentity: string;
   model: string | null;
-  dataCategories: Array<"user-goal">;
 }
+
+export interface LiteratureRemoteDataApprovalEventData
+  extends WorkflowRemoteDataApprovalEventBase {
+  dataCategories: ["user-goal"];
+}
+
+export interface DatasetRemoteDataApprovalEventData
+  extends WorkflowRemoteDataApprovalEventBase {
+  dataCategories: ["user-goal", "dataset-profile"];
+}
+
+export type WorkflowRemoteDataApprovalEventData =
+  | LiteratureRemoteDataApprovalEventData
+  | DatasetRemoteDataApprovalEventData;
 
 export interface WorkflowStatusChangedEventData {
   previousStatus: ResearchWorkflowStatus;
@@ -354,11 +1088,90 @@ export interface WorkflowJobEventData {
 export interface WorkflowReviewEventData {
   reviewId: string;
   verdict: WorkflowReviewVerdict;
-  claimCount: number;
+  claimCount: number | null;
 }
 
 export interface WorkflowCancelEventData {
   requested: boolean;
+}
+
+export interface AnalysisIntentCreatedEventData {
+  analysisIntentId: string;
+  taskId: string;
+  jobId: string;
+  planStepId: "execute-analysis";
+  datasetSourceId: string;
+  datasetContentHash: string;
+  payloadSha256: string;
+  repairAttempt: 0 | 1 | 2;
+}
+
+export interface AnalysisApprovalEventData {
+  approvalId: string;
+  analysisIntentId: string;
+  taskId: string;
+  jobId: string | null;
+  payloadSha256: string;
+  approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
+  expectedWorkflowRevision: number;
+}
+
+interface AnalysisRunEventDataBase {
+  analysisIntentId: string;
+  runId: string;
+  taskId: string;
+  jobId: string;
+  payloadSha256: string;
+}
+
+export interface AnalysisRunStartedEventData extends AnalysisRunEventDataBase {
+  environmentHash: null;
+  artifactCount: null;
+  errorCode: null;
+}
+
+export interface AnalysisRunCompletedEventData extends AnalysisRunEventDataBase {
+  environmentHash: string;
+  artifactCount: number;
+  errorCode: null;
+}
+
+export interface AnalysisRunFailedEventData extends AnalysisRunEventDataBase {
+  environmentHash: string | null;
+  artifactCount: number | null;
+  errorCode: string;
+}
+
+export type AnalysisRunEventData =
+  | AnalysisRunStartedEventData
+  | AnalysisRunCompletedEventData
+  | AnalysisRunFailedEventData;
+
+export interface AnalysisRunProgressEventData {
+  analysisIntentId: string;
+  runId: string;
+  taskId: string;
+  jobId: string;
+  stage: "preparing-input" | "executing-runtime" | "collecting-artifacts";
+  elapsedSeconds: number;
+}
+
+export interface AnalysisArtifactCreatedEventData {
+  analysisIntentId: string;
+  runId: string;
+  taskId: string;
+  jobId: string;
+  artifactId: string;
+  artifactType: DatasetAnalysisRuntimeArtifactType;
+  contentHash: string;
+  path: string;
+}
+
+export interface DatasetReviewWarningsAcceptedEventData {
+  reviewId: string;
+  reviewInputSha256: string;
+  expectedWorkflowRevision: number;
+  decision: "accepted";
 }
 
 export type WorkflowEventData =
@@ -370,17 +1183,78 @@ export type WorkflowEventData =
   | WorkflowTaskEventData
   | WorkflowJobEventData
   | WorkflowReviewEventData
-  | WorkflowCancelEventData;
+  | WorkflowCancelEventData
+  | AnalysisIntentCreatedEventData
+  | AnalysisApprovalEventData
+  | AnalysisRunEventData
+  | AnalysisRunProgressEventData
+  | AnalysisArtifactCreatedEventData
+  | DatasetReviewWarningsAcceptedEventData;
 
-export interface WorkflowEvent {
+interface WorkflowEventEnvelope<Type extends string, Data extends WorkflowEventData> {
   id: string;
   sequence: number;
-  type: string;
+  type: Type;
   taskId: string | null;
   jobId: string | null;
-  data: WorkflowEventData;
+  data: Data;
   createdAt: string;
 }
+
+export type WorkflowEvent =
+  | WorkflowEventEnvelope<"workflow.created", WorkflowCreatedEventData>
+  | WorkflowEventEnvelope<
+      "remote-data.approved",
+      WorkflowRemoteDataApprovalEventData
+    >
+  | WorkflowEventEnvelope<
+      "workflow.status-changed",
+      WorkflowStatusChangedEventData
+    >
+  | WorkflowEventEnvelope<
+      "plan.generated" | "plan.approved",
+      WorkflowPlanEventData
+    >
+  | WorkflowEventEnvelope<"approval.requested", WorkflowApprovalEventData>
+  | WorkflowEventEnvelope<
+      "step.queued" | "step.started" | "step.completed" | "step.failed",
+      WorkflowTaskEventData
+    >
+  | WorkflowEventEnvelope<
+      "job.failed" | "job.retried",
+      WorkflowJobEventData
+    >
+  | WorkflowEventEnvelope<"review.completed", WorkflowReviewEventData>
+  | WorkflowEventEnvelope<"workflow.cancel-requested", WorkflowCancelEventData>
+  | WorkflowEventEnvelope<
+      "analysis.intent-created",
+      AnalysisIntentCreatedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.approval-requested" | "analysis.approved" | "analysis.rejected",
+      AnalysisApprovalEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.run-started",
+      AnalysisRunStartedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.run-completed",
+      AnalysisRunCompletedEventData
+    >
+  | WorkflowEventEnvelope<"analysis.run-failed", AnalysisRunFailedEventData>
+  | WorkflowEventEnvelope<
+      "analysis.run-progress",
+      AnalysisRunProgressEventData
+    >
+  | WorkflowEventEnvelope<
+      "artifact.created",
+      AnalysisArtifactCreatedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.review-warnings-accepted",
+      DatasetReviewWarningsAcceptedEventData
+    >;
 
 export interface WorkflowEventsPage {
   events: WorkflowEvent[];
@@ -484,6 +1358,76 @@ export interface ScienceCoreHealth {
   runtime: "ready" | "unavailable";
 }
 
+export type DatasetColumnInferredType =
+  | "boolean"
+  | "integer"
+  | "number"
+  | "datetime"
+  | "categorical"
+  | "string"
+  | "empty"
+  | "mixed";
+
+export interface DatasetNumericRange {
+  minimum: number | null;
+  maximum: number | null;
+}
+
+export interface DatasetLowCardinalitySummary {
+  /** Values are bounded, sanitized display strings rather than raw records. */
+  values: string[];
+  truncated: boolean;
+}
+
+export interface DatasetColumnProfile {
+  index: number;
+  name: string;
+  inferredType: DatasetColumnInferredType;
+  missingCount: number;
+  uniqueCount: number;
+  numericRange: DatasetNumericRange | null;
+  lowCardinality: DatasetLowCardinalitySummary | null;
+  potentialDate: boolean;
+  potentialId: boolean;
+  mixedType: boolean;
+}
+
+export interface DatasetInspectionWarning {
+  code:
+    | "encoding-fallback"
+    | "duplicate-column-name"
+    | "mixed-column-type"
+    | "malformed-row"
+    | "sample-limited"
+    | "other";
+  message: string;
+  columnName: string | null;
+}
+
+export interface DatasetSamplingRecord {
+  method: "head-and-reservoir-v1";
+  rowsRead: number;
+  rowsProfiled: number;
+  maxSampleRows: number;
+  seed: number;
+}
+
+/** Structured, persisted inspector result; never contains complete source rows. */
+export interface DatasetProfile {
+  schemaVersion: "1";
+  datasetSourceId: string;
+  filename: string;
+  contentHash: string;
+  fileSizeBytes: number;
+  encoding: string;
+  delimiter: string;
+  rowCount: number;
+  columnCount: number;
+  columns: DatasetColumnProfile[];
+  sampling: DatasetSamplingRecord;
+  warnings: DatasetInspectionWarning[];
+}
+
 export type AnalysisIntentStatus =
   | "waiting-approval"
   | "approved"
@@ -494,16 +1438,115 @@ export type AnalysisIntentStatus =
 
 export interface AnalysisIntent {
   id: string;
+  taskId: string;
   projectId: string;
   datasetSourceId: string;
+  /** Required for new intents; optional only for legacy API snapshots. */
+  datasetContentHash?: string;
   objective: string;
   code: string;
   payloadSha256: string;
   riskLevel: "high";
   affectedResources: string[];
   status: AnalysisIntentStatus;
+  decision: "approved" | "rejected" | null;
+  workflowId?: string | null;
+  planStepId?: string | null;
+  previousIntentId?: string | null;
+  expectedOutputs?: DatasetAnalysisExpectedOutput[] | null;
+  timeoutSeconds?: number | null;
+  repairAttempt?: 0 | 1 | 2 | null;
+  errorSummary?: AnalysisErrorSummary | null;
+  codeDiff?: string | null;
   createdAt: string;
+  updatedAt: string;
 }
+
+export interface AnalysisErrorSummary {
+  schemaVersion: "1";
+  category:
+    | "policy"
+    | "runtime"
+    | "timeout"
+    | "input-integrity"
+    | "artifact-integrity"
+    | "unknown";
+  code: string;
+  userMessage: string;
+  stderrExcerpt: string | null;
+  retryable: boolean;
+}
+
+interface WorkflowAnalysisIntentBase
+  extends Omit<
+    AnalysisIntent,
+    | "datasetContentHash"
+    | "workflowId"
+    | "planStepId"
+    | "previousIntentId"
+    | "expectedOutputs"
+    | "timeoutSeconds"
+    | "repairAttempt"
+    | "errorSummary"
+    | "codeDiff"
+    | "status"
+    | "decision"
+  > {
+  datasetContentHash: string;
+  workflowId: string;
+  planStepId: "execute-analysis";
+  taskId: string;
+  expectedOutputs: DatasetAnalysisExecutionExpectedOutputs;
+  timeoutSeconds: number;
+}
+
+type NonFailedWorkflowAnalysisIntentLifecycle =
+  | { status: "waiting-approval"; decision: null }
+  | { status: "rejected"; decision: "rejected" }
+  | {
+      status: "approved" | "executing" | "completed";
+      decision: "approved";
+    };
+
+type FailedWorkflowAnalysisIntentLifecycle = {
+  status: "failed";
+  decision: "approved";
+};
+
+type WorkflowAnalysisIntentLifecycle =
+  | NonFailedWorkflowAnalysisIntentLifecycle
+  | FailedWorkflowAnalysisIntentLifecycle;
+
+interface InitialWorkflowAnalysisIntentLineage {
+  previousIntentId: null;
+  repairAttempt: 0;
+  codeDiff: null;
+}
+
+export type InitialWorkflowAnalysisIntent = WorkflowAnalysisIntentBase &
+  InitialWorkflowAnalysisIntentLineage &
+  (
+    | (NonFailedWorkflowAnalysisIntentLifecycle & { errorSummary: null })
+    | (FailedWorkflowAnalysisIntentLifecycle & {
+        errorSummary: AnalysisErrorSummary;
+      })
+  );
+
+interface RepairWorkflowAnalysisIntentLineage {
+  previousIntentId: string;
+  repairAttempt: 1 | 2;
+  errorSummary: AnalysisErrorSummary;
+  codeDiff: string;
+}
+
+export type RepairWorkflowAnalysisIntent = WorkflowAnalysisIntentBase &
+  RepairWorkflowAnalysisIntentLineage &
+  WorkflowAnalysisIntentLifecycle;
+
+/** Fully bound AnalysisIntent created by a dataset workflow step. */
+export type WorkflowAnalysisIntent =
+  | InitialWorkflowAnalysisIntent
+  | RepairWorkflowAnalysisIntent;
 
 export interface AnalysisArtifact {
   id: string;
@@ -511,6 +1554,7 @@ export interface AnalysisArtifact {
   path: string;
   mimeType: string;
   contentHash: string;
+  sizeBytes: number;
   createdAt: string;
 }
 
@@ -519,11 +1563,139 @@ export type AnalysisRunStatus = "pending" | "running" | "completed" | "failed";
 export interface AnalysisRun {
   id: string;
   intentId: string;
+  taskId: string;
   projectId: string;
+  datasetSourceId: string;
+  objective: string;
+  code: string;
+  payloadSha256: string;
   status: AnalysisRunStatus;
+  environmentHash: string | null;
+  inputArtifacts: string[];
+  outputArtifacts: string[];
+  stdout: string;
+  stderr: string;
+  log: string;
   logs: string;
   artifacts: AnalysisArtifact[];
   createdAt: string;
   finishedAt: string | null;
   error: string | null;
+}
+
+export interface WorkflowAnalysisArtifact
+  extends Omit<AnalysisArtifact, "artifactType"> {
+  artifactType: DatasetAnalysisRuntimeArtifactType;
+}
+
+interface WorkflowAnalysisRunBase
+  extends Omit<
+    AnalysisRun,
+    | "status"
+    | "environmentHash"
+    | "finishedAt"
+    | "error"
+    | "artifacts"
+    | "inputArtifacts"
+  > {
+  artifacts: WorkflowAnalysisArtifact[];
+  inputArtifacts: [string];
+}
+
+export interface ActiveWorkflowAnalysisRun extends WorkflowAnalysisRunBase {
+  status: "pending" | "running";
+  environmentHash: string | null;
+  finishedAt: null;
+  error: string | null;
+}
+
+export interface CompletedWorkflowAnalysisRun
+  extends Omit<WorkflowAnalysisRunBase, "artifacts" | "outputArtifacts"> {
+  status: "completed";
+  environmentHash: string;
+  finishedAt: string;
+  error: null;
+  outputArtifacts: [string, string, string, string, string, ...string[]];
+  artifacts: [
+    WorkflowAnalysisArtifact,
+    WorkflowAnalysisArtifact,
+    WorkflowAnalysisArtifact,
+    WorkflowAnalysisArtifact,
+    WorkflowAnalysisArtifact,
+    ...WorkflowAnalysisArtifact[],
+  ];
+}
+
+export interface FailedWorkflowAnalysisRun extends WorkflowAnalysisRunBase {
+  status: "failed";
+  environmentHash: string | null;
+  finishedAt: string;
+  error: string;
+}
+
+/** Run whose intentId is resolved through RunRecord.analysis_intent_id. */
+export type WorkflowAnalysisRun =
+  | ActiveWorkflowAnalysisRun
+  | CompletedWorkflowAnalysisRun
+  | FailedWorkflowAnalysisRun;
+
+export type DatasetAnalysisReviewVerdict =
+  | "passed"
+  | "passed-with-warnings"
+  | "revision-required"
+  | "blocked"
+  | "failed";
+
+export interface DatasetAnalysisReviewCheck {
+  code: string;
+  status: "passed" | "warning" | "failed";
+  message: string;
+  artifactId: string | null;
+}
+
+export interface DatasetAnalysisReviewIssue {
+  code: string;
+  message: string;
+  artifactId: string | null;
+}
+
+export interface DatasetAnalysisReviewResult {
+  schemaVersion: "1";
+  verdict: DatasetAnalysisReviewVerdict;
+  checks: DatasetAnalysisReviewCheck[];
+  artifactIssues: DatasetAnalysisReviewIssue[];
+  numericIssues: DatasetAnalysisReviewIssue[];
+  methodWarnings: DatasetAnalysisReviewIssue[];
+  requiredRevisions: string[];
+  runId: string;
+  analysisIntentId: string;
+  inputDatasetContentHash: string;
+}
+
+interface DatasetAnalysisReviewBase<
+  Verdict extends DatasetAnalysisReviewVerdict,
+> {
+  id: string;
+  reviewType: "deterministic-analysis-v1";
+  verdict: Verdict;
+  inputSha256: string;
+  createdAt: string;
+}
+
+export type DatasetAnalysisReview = {
+  [Verdict in DatasetAnalysisReviewVerdict]: DatasetAnalysisReviewBase<Verdict> & {
+    result: Omit<DatasetAnalysisReviewResult, "verdict"> & {
+      verdict: Verdict;
+    };
+  };
+}[DatasetAnalysisReviewVerdict];
+
+/** Durable acceptance required before a warning-bearing review may complete. */
+export interface DatasetReviewWarningAcceptance {
+  eventId: string;
+  reviewId: string;
+  reviewInputSha256: string;
+  expectedWorkflowRevision: number;
+  decision: "accepted";
+  acceptedAt: string;
 }

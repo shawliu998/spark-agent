@@ -1,4 +1,11 @@
-import { AlertTriangle, CheckCircle2, Loader2, Plus, Sparkles } from "lucide-react";
+import {
+  AlertTriangle,
+  BarChart3,
+  CheckCircle2,
+  Loader2,
+  Plus,
+  Sparkles,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ResearchWorkflowSnapshot } from "@spark/research-domain";
 import { cn } from "@/lib/cn";
@@ -61,7 +68,13 @@ export function ResearchWorkflowList({
         )}
         {workflows.map((item) => {
           const attention = item.allowedActions.some(
-            (action) => action === "approve-plan" || action === "retry" || action === "resume",
+            (action) =>
+              action === "approve-plan" ||
+              action === "approve-analysis" ||
+              action === "reject-analysis" ||
+              action === "accept-review-warnings" ||
+              action === "retry" ||
+              action === "resume",
           );
           const status = item.workflow.cancelRequestedAt
             ? t("research.workflowStatus.cancelling", { defaultValue: "cancelling" })
@@ -75,8 +88,9 @@ export function ResearchWorkflowList({
               key={item.workflow.id}
               type="button"
               onClick={() => onSelect(item.workflow.id)}
+              disabled={disabled}
               className={cn(
-                "flex w-full items-start gap-2 rounded-input px-2 py-2 text-left hover:bg-surface-2",
+                "flex w-full items-start gap-2 rounded-input px-2 py-2 text-left hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
                 selectedWorkflowId === item.workflow.id && "bg-surface-2",
               )}
             >
@@ -84,6 +98,8 @@ export function ResearchWorkflowList({
                 <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
               ) : item.workflow.status === "completed" ? (
                 <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-ok" />
+              ) : item.workflow.workflowType === "dataset-analysis" ? (
+                <BarChart3 size={13} className="mt-0.5 shrink-0 text-accent" />
               ) : (
                 <Sparkles size={13} className="mt-0.5 shrink-0 text-accent" />
               )}
@@ -94,13 +110,17 @@ export function ResearchWorkflowList({
                 <span className={cn("mt-1 block text-[10px]", statusTone(item))}>
                   {status}
                   <span className="text-muted">
-                    {remoteAssisted
-                      ? t("research.workflow.listRemoteMode", {
-                          defaultValue: " · model-assisted",
+                    {item.workflow.workflowType === "dataset-analysis"
+                      ? t("research.workflow.listDatasetType", {
+                          defaultValue: " · dataset analysis · local isolated runtime",
                         })
-                      : t("research.workflow.listLocalMode", {
-                          defaultValue: " · local",
-                        })}
+                      : remoteAssisted
+                        ? t("research.workflow.listLiteratureRemoteType", {
+                            defaultValue: " · literature synthesis · model-assisted",
+                          })
+                        : t("research.workflow.listLiteratureLocalType", {
+                            defaultValue: " · literature synthesis · local",
+                          })}
                   </span>
                 </span>
               </span>

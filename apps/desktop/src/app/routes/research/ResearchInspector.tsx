@@ -8,6 +8,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import type {
+  DatasetAnalysisReview,
   ResearchSource,
   ResearchWorkflowReview,
   WorkflowEvent,
@@ -29,7 +30,7 @@ export interface ResearchInspectorProps {
   onTabChange: (tab: ResearchInspectorTab) => void;
   selectedSource: ResearchSource | null;
   selection: ResearchPdfSelection | null;
-  review: ResearchWorkflowReview | null;
+  review: ResearchWorkflowReview | DatasetAnalysisReview | null;
   events: WorkflowEvent[];
 }
 
@@ -240,6 +241,15 @@ function WorkflowActivity({ events }: { events: WorkflowEvent[] }) {
 function activityMessage(event: WorkflowEvent): string {
   const data = event.data;
   if (
+    "stage" in data &&
+    typeof data.stage === "string" &&
+    "elapsedSeconds" in data &&
+    typeof data.elapsedSeconds === "number"
+  ) {
+    const stage = data.stage.split("-").join(" ");
+    return `Analysis ${stage} · ${formatElapsedSeconds(data.elapsedSeconds)} elapsed`;
+  }
+  if (
     "stepKey" in data &&
     typeof data.stepKey === "string" &&
     "status" in data &&
@@ -275,13 +285,21 @@ function activityMessage(event: WorkflowEvent): string {
   return event.type.split(".").join(" ");
 }
 
+function formatElapsedSeconds(value: number): string {
+  return `${Math.max(0, value).toFixed(1)} seconds`;
+}
+
 function approvalActivityDetails(event: WorkflowEvent): string[] {
   const data = event.data;
   if (!("approvalId" in data) || !("payloadSha256" in data)) return [];
   const details: string[] = [];
-  if (typeof data.riskLevel === "string") details.push(`Risk: ${data.riskLevel}`);
-  if (typeof data.reason === "string") details.push(`Reason: ${data.reason}`);
-  if (Array.isArray(data.affectedResources)) {
+  if ("riskLevel" in data && typeof data.riskLevel === "string") {
+    details.push(`Risk: ${data.riskLevel}`);
+  }
+  if ("reason" in data && typeof data.reason === "string") {
+    details.push(`Reason: ${data.reason}`);
+  }
+  if ("affectedResources" in data && Array.isArray(data.affectedResources)) {
     details.push(...data.affectedResources.map((resource) => `Resource: ${resource}`));
   }
   if (typeof data.approvalSchemaVersion === "string") {

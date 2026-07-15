@@ -8,6 +8,41 @@ vi.mock("./useSourcePdfBlob", () => ({
 }));
 
 describe("ResearchInspector", () => {
+  it("shows an honest analysis stage and elapsed seconds without inventing a percentage", () => {
+    const event: WorkflowEvent = {
+      id: "event-progress-1",
+      sequence: 12,
+      type: "analysis.run-progress",
+      taskId: "task-1",
+      jobId: "job-1",
+      data: {
+        analysisIntentId: "intent-1",
+        runId: "run-1",
+        taskId: "task-1",
+        jobId: "job-1",
+        stage: "executing-runtime",
+        elapsedSeconds: 1.25,
+      },
+      createdAt: "2026-07-15T08:00:01Z",
+    };
+
+    render(
+      <ResearchInspector
+        activeTab="activity"
+        onTabChange={vi.fn()}
+        selectedSource={null}
+        selection={null}
+        review={null}
+        events={[event]}
+      />,
+    );
+
+    expect(
+      screen.getByText("Analysis executing runtime · 1.3 seconds elapsed"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/%/)).not.toBeInTheDocument();
+  });
+
   it("keeps a decided plan approval envelope auditable in activity", () => {
     const event: WorkflowEvent = {
       id: "event-1",
