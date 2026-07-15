@@ -21,6 +21,7 @@ run_step() {
 }
 
 run_step "desktop lint" bash "$CHECK" desktop lint
+run_step "release sidecar integrity" bash "$ROOT/scripts/quality/check-release-assets.sh"
 run_step "desktop typecheck" bash "$CHECK" desktop typecheck
 run_step "desktop tests" bash "$CHECK" desktop test
 run_step "Rust formatting" bash "$CHECK" rust fmt

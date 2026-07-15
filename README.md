@@ -148,8 +148,10 @@ Every check also has a focused root command: `lint:desktop`,
 `typecheck:desktop`, `test:desktop`, `fmt:rust`, `lint:rust`, `test:rust`,
 `lint:core`, `typecheck:core`, `test:core`, `lint:runtime`,
 `typecheck:runtime`, `test:runtime`, and `test:integration`. Invoke one with
-`pnpm <command>`. Rust lint and test use a compile-only Tauri override that omits
-packaged sidecars; release builds still fetch and verify the pinned binaries.
+`pnpm <command>`. `test:release-assets` verifies the fail-closed SHA-256 policy
+for every supported OpenCode and uv sidecar. Rust lint and test use a compile-only
+Tauri override that omits packaged sidecars; release builds fetch pinned binaries
+and verify their committed SHA-256 digests before unpacking them.
 
 ## Internal MVP boundary
 

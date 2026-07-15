@@ -27,6 +27,7 @@
     "typecheck:runtime": "bash scripts/quality/run-check.sh runtime typecheck",
     "test:runtime": "bash scripts/quality/run-check.sh runtime test",
     "test:integration": "bash scripts/quality/docker-smoke.sh",
+    "test:release-assets": "bash scripts/quality/check-release-assets.sh",
     "quality": "bash scripts/quality/run-all.sh",
     "test": "pnpm test:desktop",
     "typecheck": "pnpm typecheck:desktop",

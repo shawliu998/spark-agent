@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-15 16:55 · fix(release): closed sidecar supply-chain and double-bootstrap races with committed fail-closed SHA-256 verification for all 12 supported OpenCode/uv release assets plus a serialized runtime lifecycle covering start/restart/stop; independent review reports 0 P0/P1, the root quality gate passes with 502 Desktop, 86 Rust, 263 Core passed/2 skipped, 72 Runtime tests and Docker persistence, and the verified official Tauri app reaches ready with one authenticated loopback sidecar before exiting cleanly.
+
 2026-07-15 15:45 · fix(dataset-workflow): closed final production-readiness edges with deterministic same/different-key mutation replay, retryable committed-winner revision conflicts, fixed-policy v3 approval/runtime attestations, exact canonical notebooks, and bounded JSON-aware Runtime output previews that preserve full hashed evidence; independent final audits report 0 P0/P1/P2, while Desktop 502, Rust 84, Core 263 passed/2 skipped, Runtime 72, isolated Docker literature/dataset execution plus restart persistence, production build, Compose validation, diff/policy-parity checks, and changed-file credential scans all pass.
 
 2026-07-15 15:18 · fix(analysis): closed runtime attestation gaps with exact three-cell notebook binding, UTC/order/bounded-duration log validation, identity-only 16 MiB streamed HTTP response limits, and an aligned 8,000-character Runtime objective contract; adversarial notebook/log/oversize tests pass, with Core Ruff/Pyright plus 261 passed/2 skipped and Runtime Ruff/Pyright plus 68 passed green.

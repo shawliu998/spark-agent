@@ -12,9 +12,40 @@ use crate::opencode_config::merge_config;
 
 #[derive(Default)]
 pub struct RuntimeState {
+    /// Serializes every start/restart/stop transition. The frontend may issue
+    /// duplicate bootstrap calls (React StrictMode does this in development),
+    /// so checking `url` and publishing the spawned child must be one critical
+    /// section rather than separate per-field mutex operations.
+    lifecycle: Mutex<()>,
     child: Mutex<Option<CommandChild>>,
     url: Mutex<Option<String>>,
     port: Mutex<Option<u16>>,
+}
+
+fn with_lifecycle<T>(lifecycle: &Mutex<()>, operation: impl FnOnce() -> T) -> T {
+    let _guard = lifecycle.lock().unwrap();
+    operation()
+}
+
+/// Start a runtime exactly once across concurrent callers. The successful
+/// payload (the child process in production) is published before its URL, so a
+/// visible URL always names a fully-owned runtime. Failures publish neither and
+/// leave a later call free to retry.
+fn start_once<T, E>(
+    lifecycle: &Mutex<()>,
+    published_url: &Mutex<Option<String>>,
+    start: impl FnOnce() -> Result<(String, T), E>,
+    publish: impl FnOnce(T),
+) -> Result<String, E> {
+    with_lifecycle(lifecycle, || {
+        if let Some(url) = published_url.lock().unwrap().clone() {
+            return Ok(url);
+        }
+        let (url, payload) = start()?;
+        publish(payload);
+        *published_url.lock().unwrap() = Some(url.clone());
+        Ok(url)
+    })
 }
 
 /// App-private runtime root, e.g. ~/Library/Application Support/io.github.shawliu998.sparkagent/runtime
@@ -149,9 +180,7 @@ pub fn import_opencode_login(
     std::fs::copy(&src, &dst).map_err(|e| format!("copy failed: {e}"))?;
 
     // Restart the running sidecar so /config/providers reflects the login.
-    if state.url.lock().unwrap().is_some() {
-        restart_sidecar(&app, &state)?;
-    }
+    let _ = restart_sidecar_if_running(&app, &state)?;
     Ok(true)
 }
 
@@ -623,21 +652,35 @@ fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
     Ok(child)
 }
 
-/// Kill and respawn the sidecar on its stable port, returning the base URL.
-/// The whole kill→spawn runs while HOLDING the child mutex — it doubles as
-/// the lifecycle lock, so two concurrent restarts (e.g. Settings saves racing
-/// an approval-mode switch) can never double-spawn and orphan a child. This
-/// is the single restart path; config-changing commands must use it.
-fn restart_sidecar(app: &AppHandle, state: &RuntimeState) -> Result<String, String> {
-    let mut child = state.child.lock().unwrap();
-    if let Some(c) = child.take() {
+/// Kill and respawn the sidecar on its stable port. The caller must hold the
+/// lifecycle mutex for this entire transition.
+fn restart_sidecar_locked(app: &AppHandle, state: &RuntimeState) -> Result<String, String> {
+    if let Some(c) = state.child.lock().unwrap().take() {
         let _ = c.kill();
     }
+    // Never leave a dead process advertised if spawning its replacement fails.
+    *state.url.lock().unwrap() = None;
     let port = { *state.port.lock().unwrap().get_or_insert_with(free_port) };
-    *child = Some(spawn_sidecar(app, port)?);
+    let child = spawn_sidecar(app, port)?;
     let url = format!("http://127.0.0.1:{port}");
+    *state.child.lock().unwrap() = Some(child);
     *state.url.lock().unwrap() = Some(url.clone());
     Ok(url)
+}
+
+/// Restart only when the runtime is still running at the point this operation
+/// acquires the lifecycle lock. This keeps a concurrent explicit stop from
+/// being undone by a stale pre-restart `url.is_some()` check.
+fn restart_sidecar_if_running(
+    app: &AppHandle,
+    state: &RuntimeState,
+) -> Result<Option<String>, String> {
+    with_lifecycle(&state.lifecycle, || {
+        if state.url.lock().unwrap().is_none() {
+            return Ok(None);
+        }
+        restart_sidecar_locked(app, state).map(Some)
+    })
 }
 
 /// Start the bundled OpenCode (idempotent). Returns its base URL. `async`:
@@ -645,19 +688,20 @@ fn restart_sidecar(app: &AppHandle, state: &RuntimeState) -> Result<String, Stri
 /// thread while the first window paints.
 #[tauri::command(async)]
 pub fn start_runtime(app: AppHandle, state: State<'_, RuntimeState>) -> Result<String, String> {
-    if let Some(url) = state.url.lock().unwrap().clone() {
-        return Ok(url);
-    }
-    // Reuse a stable port across restarts so the frontend URL doesn't change.
-    let port = {
-        let mut p = state.port.lock().unwrap();
-        *p.get_or_insert_with(free_port)
-    };
-    let child = spawn_sidecar(&app, port)?;
-    let url = format!("http://127.0.0.1:{port}");
-    *state.child.lock().unwrap() = Some(child);
-    *state.url.lock().unwrap() = Some(url.clone());
-    Ok(url)
+    start_once(
+        &state.lifecycle,
+        &state.url,
+        || {
+            // Reuse a stable port across restarts so the frontend URL doesn't change.
+            let port = {
+                let mut p = state.port.lock().unwrap();
+                *p.get_or_insert_with(free_port)
+            };
+            let child = spawn_sidecar(&app, port)?;
+            Ok((format!("http://127.0.0.1:{port}"), child))
+        },
+        |child| *state.child.lock().unwrap() = Some(child),
+    )
 }
 
 /// The workspace directory the sidecar runs in — the frontend passes it to the
@@ -799,25 +843,123 @@ pub async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
 /// Kill the bundled OpenCode if running.
 #[tauri::command]
 pub fn stop_runtime(state: State<'_, RuntimeState>) {
-    if let Some(child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
-    }
-    *state.url.lock().unwrap() = None;
+    stop_runtime_inner(&state);
 }
 
 pub fn kill_child(state: &RuntimeState) {
-    if let Some(child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
-    }
+    stop_runtime_inner(state);
+}
+
+fn stop_runtime_inner(state: &RuntimeState) {
+    with_lifecycle(&state.lifecycle, || {
+        if let Some(child) = state.child.lock().unwrap().take() {
+            let _ = child.kill();
+        }
+        *state.url.lock().unwrap() = None;
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         parse_scutil_proxy, prune_stale_skills, random_hex, remove_key_from_config,
-        resolve_proxy_env, sync_skill_pack, validate_proxy_url,
+        resolve_proxy_env, start_once, sync_skill_pack, validate_proxy_url,
     };
     use std::fs;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier, Mutex,
+    };
+    use std::thread;
+
+    #[test]
+    fn start_once_makes_concurrent_start_single_flight() {
+        const CALLERS: usize = 8;
+        let lifecycle = Arc::new(Mutex::new(()));
+        let published_url = Arc::new(Mutex::new(None::<String>));
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let publish_count = Arc::new(AtomicUsize::new(0));
+        let rendezvous = Arc::new(Barrier::new(CALLERS));
+
+        let handles: Vec<_> = (0..CALLERS)
+            .map(|_| {
+                let lifecycle = Arc::clone(&lifecycle);
+                let published_url = Arc::clone(&published_url);
+                let spawn_count = Arc::clone(&spawn_count);
+                let publish_count = Arc::clone(&publish_count);
+                let rendezvous = Arc::clone(&rendezvous);
+                thread::spawn(move || {
+                    rendezvous.wait();
+                    start_once(
+                        &lifecycle,
+                        &published_url,
+                        || {
+                            spawn_count.fetch_add(1, Ordering::SeqCst);
+                            Ok::<_, ()>(("http://127.0.0.1:54321".to_string(), ()))
+                        },
+                        |_| {
+                            publish_count.fetch_add(1, Ordering::SeqCst);
+                        },
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+
+        let urls: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+        assert!(urls.iter().all(|url| url == &urls[0]));
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        assert_eq!(publish_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn start_once_failure_publishes_nothing_and_can_retry() {
+        let lifecycle = Mutex::new(());
+        let published_url = Mutex::new(None::<String>);
+        let attempts = AtomicUsize::new(0);
+        let publish_count = AtomicUsize::new(0);
+        let published_payload = AtomicUsize::new(0);
+
+        let first = start_once(
+            &lifecycle,
+            &published_url,
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err::<(String, usize), _>("spawn failed")
+            },
+            |_| {
+                publish_count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(first, Err("spawn failed"));
+        assert!(published_url.lock().unwrap().is_none());
+        assert_eq!(publish_count.load(Ordering::SeqCst), 0);
+
+        let second = start_once(
+            &lifecycle,
+            &published_url,
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, &str>(("http://127.0.0.1:54321".to_string(), 7))
+            },
+            |payload| {
+                assert!(published_url.lock().unwrap().is_none());
+                published_payload.store(payload, Ordering::SeqCst);
+                publish_count.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        assert_eq!(second.as_deref(), Ok("http://127.0.0.1:54321"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(publish_count.load(Ordering::SeqCst), 1);
+        assert_eq!(published_payload.load(Ordering::SeqCst), 7);
+        assert_eq!(
+            published_url.lock().unwrap().as_deref(),
+            Some("http://127.0.0.1:54321")
+        );
+    }
 
     #[test]
     fn proxy_url_validation() {
@@ -1041,9 +1183,7 @@ pub fn remove_config_entry(
     std::fs::write(&path, out).map_err(|e| e.to_string())?;
     tighten_private(&path);
 
-    if state.url.lock().unwrap().is_some() {
-        restart_sidecar(&app, &state)?;
-    }
+    let _ = restart_sidecar_if_running(&app, &state)?;
     Ok(())
 }
 
@@ -1090,11 +1230,8 @@ pub fn set_approval_mode(
     tighten_private(&path);
 
     // Same restart flow as configure_opencode: reload rules on a stable port.
-    if state.url.lock().unwrap().is_some() {
-        restart_sidecar(&app, &state)
-    } else {
-        Ok(path.to_string_lossy().to_string())
-    }
+    Ok(restart_sidecar_if_running(&app, &state)?
+        .unwrap_or_else(|| path.to_string_lossy().to_string()))
 }
 
 /// The persisted proxy setting plus the proxy the sidecar would use right now.
@@ -1131,11 +1268,8 @@ pub fn set_proxy_setting(
     std::fs::write(&path, line).map_err(|e| e.to_string())?;
 
     // Same restart flow as set_approval_mode: the env only applies at spawn.
-    if state.url.lock().unwrap().is_some() {
-        restart_sidecar(&app, &state)
-    } else {
-        Ok(path.to_string_lossy().to_string())
-    }
+    Ok(restart_sidecar_if_running(&app, &state)?
+        .unwrap_or_else(|| path.to_string_lossy().to_string()))
 }
 
 /// Write the provider key/model into the app-private OpenCode config and restart
@@ -1159,9 +1293,6 @@ pub fn configure_opencode(
     tighten_private(&path);
 
     // Restart so the running server reloads the new provider config.
-    if state.url.lock().unwrap().is_some() {
-        restart_sidecar(&app, &state)
-    } else {
-        Ok(path.to_string_lossy().to_string())
-    }
+    Ok(restart_sidecar_if_running(&app, &state)?
+        .unwrap_or_else(|| path.to_string_lossy().to_string()))
 }
