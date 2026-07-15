@@ -66,9 +66,7 @@ pub async fn run_uv(
                 ));
             }
             // Channel closed without a Terminated event: treat as failure.
-            Ok(None) => {
-                return Err(format!("{label} exited without a status: {}", last(&tail)))
-            }
+            Ok(None) => return Err(format!("{label} exited without a status: {}", last(&tail))),
             Ok(Some(event)) => event,
         };
         match event {
@@ -80,7 +78,13 @@ pub async fn run_uv(
                         continue;
                     }
                     push_tail(&mut tail, line);
-                    let _ = app.emit("setup-progress", SetupProgress { task, line: line.to_string() });
+                    let _ = app.emit(
+                        "setup-progress",
+                        SetupProgress {
+                            task,
+                            line: line.to_string(),
+                        },
+                    );
                 }
             }
             CommandEvent::Error(e) => push_tail(&mut tail, &e),

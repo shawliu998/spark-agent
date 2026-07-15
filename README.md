@@ -13,6 +13,8 @@ and provenance in one auditable desktop workspace.
 - Create local research projects and import PDF papers.
 - Start a durable literature-synthesis workflow from a research goal, inspect its
   typed three-step plan, and explicitly approve or cancel it.
+- Start a durable dataset-analysis workflow from an immutable CSV, approve its
+  typed four-step plan and exact Python payload, then review verified run artifacts.
 - Extract page-addressable evidence across local papers, build atomic claims, and
   require a deterministic evidence-integrity Reviewer pass before completion.
 - Bind approved remote sources to their PDF and parsed-page hashes, then freeze
@@ -126,17 +128,48 @@ Normally, pressing `Ctrl-C` in the `mvp:dev` terminal performs the same scoped
 cleanup. Project data remains under `.local/science-core`; the ephemeral runtime
 exchange and socket volumes are removed.
 
+## Quality checks
+
+Pull requests and pushes to `main` run independent Desktop, Rust, Science Core,
+Science Runtime, migration, and Docker integration jobs. To run the same complete
+gate locally, install Node.js 20 with pnpm 9, Python 3.12, the stable Rust
+toolchain with `rustfmt` and `clippy`, and Docker, then prepare the workspace:
+
+```bash
+pnpm install --frozen-lockfile
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e './services/science-core[literature,dev]' \
+  -e './services/science-runtime[dev]'
+pnpm quality
+```
+
+Every check also has a focused root command: `lint:desktop`,
+`typecheck:desktop`, `test:desktop`, `fmt:rust`, `lint:rust`, `test:rust`,
+`lint:core`, `typecheck:core`, `test:core`, `lint:runtime`,
+`typecheck:runtime`, `test:runtime`, and `test:integration`. Invoke one with
+`pnpm <command>`. Rust lint and test use a compile-only Tauri override that omits
+packaged sidecars; release builds still fetch and verify the pinned binaries.
+
 ## Internal MVP boundary
 
-- The durable orchestrator currently supports one coherent workflow type:
+- The durable orchestrator supports two coherent workflow types:
   `literature-synthesis` (inspect sources → extract local evidence → synthesize
-  extractive claims → deterministic review).
+  extractive claims → deterministic review) and `dataset-analysis` (profile an
+  immutable CSV → prepare and approve exact Python → execute in science-runtime
+  → verify artifacts and deterministic review).
 - The default plan is deterministic and local. The optional model-assisted mode
   proposes a schema-validated plan and extractive claims, while the durable local
   workflow remains canonical and evidence verification stays fail-closed.
 - The Reviewer verifies immutable result materialization, exact citation links,
   local quote location, and source-file/page fingerprints. It does not establish
   scientific correctness, methodological quality, entailment, or generalizability.
+- Dataset analysis currently provides a deterministic descriptive baseline. Its
+  Reviewer verifies input/run/artifact lineage and required output integrity, but
+  does not prove causal validity or that a requested inferential method was used.
+  Workflow execution accepts only the versioned baseline or bounded repair template
+  AST selected by science-core, with the same contract checked again by science-runtime;
+  standalone editable analyses retain their separate explicit-approval container policy.
 - Workflow activity uses authenticated cursor polling (1.5 seconds while active),
   not SSE yet.
 - This remains a source-run internal build. Tauri-managed packaging of the Python
@@ -156,6 +189,10 @@ exchange and socket volumes are removed.
   resource limits, and a Unix-domain socket instead of a TCP runtime port.
 - Artifact paths, regular files, source containment, and SHA-256 are verified
   before files are served or accepted.
+- "Immutable" in this boundary means the content-addressed identity and its
+  approved or reviewed database record. Workspace materializations remain local
+  and user-editable, so every trusted read re-verifies SHA-256 and fails closed
+  instead of treating the workspace file as WORM storage.
 
 This is research software. Model answers and generated analyses must still be
 reviewed before publication or consequential use.

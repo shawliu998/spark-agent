@@ -85,10 +85,8 @@ pub fn base_workspace_dir(app: &AppHandle) -> Result<PathBuf, String> {
     // data must remain an explicit action.
     if !dir.exists() {
         let old = runtime_root(app)?.join("workspace");
-        if old.is_dir() {
-            if std::fs::rename(&old, &dir).is_err() {
-                return Ok(old);
-            }
+        if old.is_dir() && std::fs::rename(&old, &dir).is_err() {
+            return Ok(old);
         }
     }
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -134,11 +132,17 @@ fn user_auth_source() -> Option<PathBuf> {
 /// (from the Settings page) — never silently. Returns false when there is no
 /// CLI login to import. Restarts the sidecar so it picks the credentials up.
 #[tauri::command(async)]
-pub fn import_opencode_login(app: AppHandle, state: State<'_, RuntimeState>) -> Result<bool, String> {
+pub fn import_opencode_login(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<bool, String> {
     let Some(src) = user_auth_source() else {
         return Ok(false);
     };
-    let dst = runtime_root(&app)?.join("xdg-data").join("opencode").join("auth.json");
+    let dst = runtime_root(&app)?
+        .join("xdg-data")
+        .join("opencode")
+        .join("auth.json");
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -162,7 +166,8 @@ fn deploy_bundled_skills(app: &AppHandle) {
         Ok(cfg) => cfg.join("opencode").join("skills"),
         Err(_) => return,
     };
-    let mut bundled: std::collections::HashSet<std::ffi::OsString> = std::collections::HashSet::new();
+    let mut bundled: std::collections::HashSet<std::ffi::OsString> =
+        std::collections::HashSet::new();
     let mut all_ok = true;
     for resource in ["skills", "skills-core"] {
         let src = match app
@@ -198,12 +203,12 @@ fn deploy_bundled_skills(app: &AppHandle) {
 /// Remove every SKILL.md-bearing directory in `dst` whose name is not in
 /// `bundled` (the set just deployed). Non-skill directories are left untouched.
 fn prune_stale_skills(dst: &Path, bundled: &std::collections::HashSet<std::ffi::OsString>) {
-    let Ok(entries) = std::fs::read_dir(dst) else { return };
+    let Ok(entries) = std::fs::read_dir(dst) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir()
-            && path.join("SKILL.md").is_file()
-            && !bundled.contains(&entry.file_name())
+        if path.is_dir() && path.join("SKILL.md").is_file() && !bundled.contains(&entry.file_name())
         {
             let _ = std::fs::remove_dir_all(&path);
         }
@@ -312,15 +317,17 @@ pub(crate) fn enriched_path() -> String {
     roots.push("C:\\ProgramData\\miniconda3".into());
     let mut extras: Vec<String> = Vec::new();
     for root in roots {
-        for dir in [root.clone(), format!("{root}\\Scripts"), format!("{root}\\Library\\bin")] {
+        for dir in [
+            root.clone(),
+            format!("{root}\\Scripts"),
+            format!("{root}\\Library\\bin"),
+        ] {
             extras.push(dir);
         }
     }
     let mut parts: Vec<String> = extras
         .into_iter()
-        .filter(|p| {
-            !base.split(';').any(|b| b.eq_ignore_ascii_case(p)) && Path::new(p).is_dir()
-        })
+        .filter(|p| !base.split(';').any(|b| b.eq_ignore_ascii_case(p)) && Path::new(p).is_dir())
         .collect();
     if !base.is_empty() {
         parts.push(base);
@@ -507,8 +514,11 @@ fn system_proxy_url() -> Option<String> {
 fn parse_scutil_proxy(text: &str) -> Option<String> {
     let get = |key: &str| -> Option<String> {
         let prefix = format!("{key} : ");
-        text.lines()
-            .find_map(|l| l.trim().strip_prefix(prefix.as_str()).map(|v| v.trim().to_string()))
+        text.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix(prefix.as_str())
+                .map(|v| v.trim().to_string())
+        })
     };
     let enabled = |key: &str| get(key).as_deref() == Some("1");
     for (en, host, port, scheme) in [
@@ -569,7 +579,13 @@ fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
         .shell()
         .sidecar("opencode")
         .map_err(|e| format!("sidecar not found: {e}"))?
-        .args(["serve", "--hostname", "127.0.0.1", "--port", port_str.as_str()])
+        .args([
+            "serve",
+            "--hostname",
+            "127.0.0.1",
+            "--port",
+            port_str.as_str(),
+        ])
         // Require auth on every request (P0-7): without a password the server
         // trusts ANY localhost-origin page (verified in the 1.17.13 source —
         // its CORS allowlist admits http://localhost:*/127.0.0.1:* wholesale,
@@ -585,7 +601,10 @@ fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
         // Lets bundled skill helpers (e.g. remote-compute's record_run.py) stamp
         // the recording app version into provenance — they run outside the app
         // and can't otherwise know it.
-        .env("OPENSCIENCE_APP_VERSION", app.package_info().version.to_string())
+        .env(
+            "OPENSCIENCE_APP_VERSION",
+            app.package_info().version.to_string(),
+        )
         .current_dir(workspace);
     // GUI-launched apps get a minimal PATH; give the agent the user's real tools.
     let mut cmd = cmd.env("PATH", enriched_path());
@@ -596,7 +615,9 @@ fn spawn_sidecar(app: &AppHandle, port: u16) -> Result<CommandChild, String> {
         cmd = cmd.env(k, v);
     }
 
-    let (mut rx, child) = cmd.spawn().map_err(|e| format!("failed to spawn opencode: {e}"))?;
+    let (mut rx, child) = cmd
+        .spawn()
+        .map_err(|e| format!("failed to spawn opencode: {e}"))?;
     // Drain events so the child's stdout/stderr buffer never blocks it.
     tauri::async_runtime::spawn(async move { while rx.recv().await.is_some() {} });
     Ok(child)
@@ -663,8 +684,11 @@ pub fn set_workspace_base(app: AppHandle, path: String) -> Result<String, String
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create folder: {e}"))?;
     let canon = dir.canonicalize().map_err(|e| e.to_string())?;
-    std::fs::write(base_workspace_file(&app)?, canon.to_string_lossy().as_bytes())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        base_workspace_file(&app)?,
+        canon.to_string_lossy().as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(canon.to_string_lossy().to_string())
 }
 
@@ -694,8 +718,11 @@ pub fn set_workspace(
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create folder: {e}"))?;
     let canon = dir.canonicalize().map_err(|e| e.to_string())?;
-    std::fs::write(active_workspace_file(&app)?, canon.to_string_lossy().as_bytes())
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        active_workspace_file(&app)?,
+        canon.to_string_lossy().as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
 
     // No sidecar restart: OpenCode serves every folder from one process via
     // per-directory instances, and the frontend reconnects its event stream
@@ -807,20 +834,32 @@ mod tests {
     fn proxy_env_modes() {
         let none = resolve_proxy_env("none", "");
         assert!(none.iter().any(|(k, v)| *k == "NO_PROXY" && v == "*"));
-        assert!(none.iter().any(|(k, v)| *k == "HTTPS_PROXY" && v.is_empty()));
+        assert!(none
+            .iter()
+            .any(|(k, v)| *k == "HTTPS_PROXY" && v.is_empty()));
 
         let custom = resolve_proxy_env("custom", "http://127.0.0.1:7890");
-        assert!(custom.iter().any(|(k, v)| *k == "HTTPS_PROXY" && v == "http://127.0.0.1:7890"));
-        assert!(custom.iter().any(|(k, v)| *k == "NO_PROXY" && v.contains("127.0.0.1")));
+        assert!(custom
+            .iter()
+            .any(|(k, v)| *k == "HTTPS_PROXY" && v == "http://127.0.0.1:7890"));
+        assert!(custom
+            .iter()
+            .any(|(k, v)| *k == "NO_PROXY" && v.contains("127.0.0.1")));
     }
 
     #[test]
     fn scutil_proxy_parses_and_prefers_https() {
         // Real `scutil --proxy` shape (indented `Key : value` lines).
         let all = "<dictionary> {\n  HTTPEnable : 1\n  HTTPPort : 1087\n  HTTPProxy : 127.0.0.1\n  HTTPSEnable : 1\n  HTTPSPort : 1087\n  HTTPSProxy : 127.0.0.1\n  SOCKSEnable : 1\n  SOCKSPort : 1087\n  SOCKSProxy : 127.0.0.1\n}";
-        assert_eq!(parse_scutil_proxy(all).as_deref(), Some("http://127.0.0.1:1087"));
+        assert_eq!(
+            parse_scutil_proxy(all).as_deref(),
+            Some("http://127.0.0.1:1087")
+        );
         let socks_only = "  SOCKSEnable : 1\n  SOCKSPort : 7890\n  SOCKSProxy : 10.0.0.2\n";
-        assert_eq!(parse_scutil_proxy(socks_only).as_deref(), Some("socks5://10.0.0.2:7890"));
+        assert_eq!(
+            parse_scutil_proxy(socks_only).as_deref(),
+            Some("socks5://10.0.0.2:7890")
+        );
         let disabled = "  HTTPEnable : 0\n  HTTPPort : 1087\n  HTTPProxy : 127.0.0.1\n";
         assert_eq!(parse_scutil_proxy(disabled), None);
         assert_eq!(parse_scutil_proxy(""), None);
@@ -842,7 +881,10 @@ mod tests {
         prune_stale_skills(&dst, &bundled);
 
         assert!(dst.join("remote-compute").is_dir(), "bundled skill kept");
-        assert!(!dst.join("hpc-slurm").exists(), "stale renamed skill removed");
+        assert!(
+            !dst.join("hpc-slurm").exists(),
+            "stale renamed skill removed"
+        );
         assert!(dst.join("notes").is_dir(), "non-skill dir left alone");
         let _ = fs::remove_dir_all(&dst);
     }
@@ -863,9 +905,15 @@ mod tests {
         // auth.json) — it must be unreadable to other users even when the
         // sidecar later rewrites files inside with a default umask.
         super::tighten_private(&dir);
-        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         super::tighten_private(&cfg);
-        assert_eq!(fs::metadata(&cfg).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            fs::metadata(&cfg).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -923,15 +971,30 @@ mod tests {
 
         sync_skill_pack(&src, &dst).unwrap();
 
-        assert_eq!(fs::read_to_string(dst.join("paper-writer/SKILL.md")).unwrap(), "v2");
+        assert_eq!(
+            fs::read_to_string(dst.join("paper-writer/SKILL.md")).unwrap(),
+            "v2"
+        );
         assert_eq!(
             fs::read_to_string(dst.join("paper-writer/references/guide.md")).unwrap(),
             "ref"
         );
-        assert!(!dst.join("paper-writer/obsolete.md").exists(), "stale file must be gone");
-        assert_eq!(fs::read_to_string(dst.join("my-skill/SKILL.md")).unwrap(), "user");
-        assert!(!dst.join(".commit").exists(), "top-level files are not skills");
-        assert!(!dst.join("placeholder").exists(), "dirs without SKILL.md are not skills");
+        assert!(
+            !dst.join("paper-writer/obsolete.md").exists(),
+            "stale file must be gone"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("my-skill/SKILL.md")).unwrap(),
+            "user"
+        );
+        assert!(
+            !dst.join(".commit").exists(),
+            "top-level files are not skills"
+        );
+        assert!(
+            !dst.join("placeholder").exists(),
+            "dirs without SKILL.md are not skills"
+        );
 
         fs::remove_dir_all(&tmp).unwrap();
     }
@@ -995,7 +1058,9 @@ fn remove_key_from_config(text: &str, section: &str, key: &str) -> Result<String
         .map(|p| p.remove(key).is_some())
         .unwrap_or(false);
     if !removed {
-        return Err(format!("\"{key}\" is not in the config's {section} section"));
+        return Err(format!(
+            "\"{key}\" is not in the config's {section} section"
+        ));
     }
     serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
 }

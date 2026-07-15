@@ -14,9 +14,23 @@
     "model-key:delete": "bash scripts/dev/model-keychain.sh delete",
     "mvp:dev": "bash scripts/dev/start-internal.sh",
     "build": "pnpm --filter @ai4s/desktop build",
-    "test": "pnpm --filter @ai4s/desktop test",
-    "typecheck": "pnpm --filter @ai4s/desktop typecheck",
-    "lint": "pnpm --filter @ai4s/desktop lint"
+    "lint:desktop": "bash scripts/quality/run-check.sh desktop lint",
+    "typecheck:desktop": "bash scripts/quality/run-check.sh desktop typecheck",
+    "test:desktop": "bash scripts/quality/run-check.sh desktop test",
+    "fmt:rust": "bash scripts/quality/run-check.sh rust fmt",
+    "lint:rust": "bash scripts/quality/run-check.sh rust lint",
+    "test:rust": "bash scripts/quality/run-check.sh rust test",
+    "lint:core": "bash scripts/quality/run-check.sh core lint",
+    "typecheck:core": "bash scripts/quality/run-check.sh core typecheck",
+    "test:core": "bash scripts/quality/run-check.sh core test",
+    "lint:runtime": "bash scripts/quality/run-check.sh runtime lint",
+    "typecheck:runtime": "bash scripts/quality/run-check.sh runtime typecheck",
+    "test:runtime": "bash scripts/quality/run-check.sh runtime test",
+    "test:integration": "bash scripts/quality/docker-smoke.sh",
+    "quality": "bash scripts/quality/run-all.sh",
+    "test": "pnpm test:desktop",
+    "typecheck": "pnpm typecheck:desktop",
+    "lint": "pnpm lint:desktop"
   },
   "engines": {
     "node": ">=20"

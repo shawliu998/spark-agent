@@ -70,6 +70,7 @@ pub fn seed_default_permission(existing: &str) -> Option<String> {
 
 /// The approval mode a config encodes: None when the `permission` key was
 /// never written (first run — the caller seeds the "approve" default).
+#[cfg(test)]
 pub fn permission_mode_of(existing: &str) -> Option<&'static str> {
     let root: Value = serde_json::from_str(existing).ok()?;
     let permission = root.get("permission")?;
@@ -141,7 +142,14 @@ mod tests {
 
     #[test]
     fn writes_provider_key_model_into_empty_config() {
-        let out = merge_config("", "anthropic", "sk-test", "anthropic/claude-sonnet-4-5", None).unwrap();
+        let out = merge_config(
+            "",
+            "anthropic",
+            "sk-test",
+            "anthropic/claude-sonnet-4-5",
+            None,
+        )
+        .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["model"], "anthropic/claude-sonnet-4-5");
         assert_eq!(v["provider"]["anthropic"]["options"]["apiKey"], "sk-test");
@@ -161,7 +169,10 @@ mod tests {
     fn sets_base_url_when_provided() {
         let out = merge_config("", "openai", "k", "openai/gpt-4o", Some("https://x/v1")).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["provider"]["openai"]["options"]["baseURL"], "https://x/v1");
+        assert_eq!(
+            v["provider"]["openai"]["options"]["baseURL"],
+            "https://x/v1"
+        );
     }
 
     #[test]
@@ -187,7 +198,8 @@ mod tests {
 
     #[test]
     fn set_permission_mode_preserves_unrelated_keys() {
-        let existing = r#"{"model":"anthropic/claude","provider":{"openai":{"options":{"apiKey":"k"}}}}"#;
+        let existing =
+            r#"{"model":"anthropic/claude","provider":{"openai":{"options":{"apiKey":"k"}}}}"#;
         let out = set_permission_mode(existing, MODE_APPROVE).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["model"], "anthropic/claude");

@@ -140,7 +140,9 @@ pub(crate) fn hardware_info() -> HardwareInfo {
 }
 
 fn probe_hardware() -> HardwareInfo {
-    let cores = std::thread::available_parallelism().ok().map(|n| n.get() as u32);
+    let cores = std::thread::available_parallelism()
+        .ok()
+        .map(|n| n.get() as u32);
     let (cpu, mem_gb) = probe_cpu_mem();
     let gpu = probe_nvidia_gpus();
     let accelerator = if !gpu.is_empty() {
@@ -150,7 +152,13 @@ fn probe_hardware() -> HardwareInfo {
     } else {
         Some("cpu".to_string())
     };
-    HardwareInfo { cpu, cores, mem_gb, gpu, accelerator }
+    HardwareInfo {
+        cpu,
+        cores,
+        mem_gb,
+        gpu,
+        accelerator,
+    }
 }
 
 /// CPU brand + total RAM (GB). macOS via `sysctl`, Linux via `/proc`.
@@ -235,7 +243,10 @@ fn python_version(app: &tauri::AppHandle) -> Option<String> {
     CACHE
         .get_or_init(|| {
             let (bin, _) = crate::kernel::python_bin(app).ok()?;
-            let out = crate::runtime::quiet_command(bin).arg("--version").output().ok()?;
+            let out = crate::runtime::quiet_command(bin)
+                .arg("--version")
+                .output()
+                .ok()?;
             let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let text = if text.is_empty() {
                 String::from_utf8_lossy(&out.stderr).trim().to_string() // Python 2 printed -V to stderr
@@ -274,9 +285,7 @@ fn normalize_rel(root: &Path, path: &str) -> Result<String, String> {
     } else {
         p.to_path_buf()
     };
-    if rel.as_os_str().is_empty()
-        || rel.components().any(|c| !matches!(c, Component::Normal(_)))
-    {
+    if rel.as_os_str().is_empty() || rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return Err("path must stay inside the workspace".into());
     }
     Ok(rel
@@ -394,7 +403,10 @@ pub fn link_run_outputs(
         let e = max_ver.entry(r.path).or_insert(0);
         *e = (*e).max(r.version);
     }
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let mut buf = String::new();
     for p in paths {
         let rel = normalize_rel(root, p)?;
@@ -422,7 +434,8 @@ pub fn link_run_outputs(
         .append(true)
         .open(&file)
         .map_err(|e| format!("provenance open failed: {e}"))?;
-    f.write_all(buf.as_bytes()).map_err(|e| format!("provenance write failed: {e}"))?;
+    f.write_all(buf.as_bytes())
+        .map_err(|e| format!("provenance write failed: {e}"))?;
     Ok(())
 }
 
@@ -458,7 +471,18 @@ pub fn record_provenance(
     let env = capture_env(&app, &root, app.package_info().version.to_string());
     // Writes are authored, not runs — no run_id here (runs.rs sets it for
     // files produced by executing code).
-    let record = append_record(&root, &path, &tool, session_id, model, content, diff, log, Some(env), None)?;
+    let record = append_record(
+        &root,
+        &path,
+        &tool,
+        session_id,
+        model,
+        content,
+        diff,
+        log,
+        Some(env),
+        None,
+    )?;
     drop(_guard);
     crate::git_snapshot::commit_best_effort(&root, &format!("Record {}", record.path));
     Ok(record)
@@ -498,11 +522,47 @@ mod tests {
     #[test]
     fn versions_increment_per_path_and_round_trip() {
         let root = temp_root("versions");
-        let r1 = append_record(&root, "fig/plot.py", "write", Some("ses_1".into()), Some("m".into()), Some("print(1)".into()), None, None, None, None).unwrap();
+        let r1 = append_record(
+            &root,
+            "fig/plot.py",
+            "write",
+            Some("ses_1".into()),
+            Some("m".into()),
+            Some("print(1)".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         // A file produced by a run carries its run_id (link to the recipe).
-        let r2 = append_record(&root, "fig/plot.py", "run", Some("ses_1".into()), None, None, None, None, None, Some("run_abc".into())).unwrap();
+        let r2 = append_record(
+            &root,
+            "fig/plot.py",
+            "run",
+            Some("ses_1".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("run_abc".into()),
+        )
+        .unwrap();
         // An edit records its diff for lineage (no full content).
-        let e = append_record(&root, "fig/plot.py", "edit", None, None, None, Some("@@ -1 +1 @@\n-print(1)\n+print(2)".into()), None, None, None).unwrap();
+        let e = append_record(
+            &root,
+            "fig/plot.py",
+            "edit",
+            None,
+            None,
+            None,
+            Some("@@ -1 +1 @@\n-print(1)\n+print(2)".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(e.version, 3);
         assert!(e.content.is_none());
         assert_eq!(e.diff.as_deref(), Some("@@ -1 +1 @@\n-print(1)\n+print(2)"));
@@ -519,7 +579,10 @@ mod tests {
                 python: Some("3.12.4".into()),
                 platform: "macos-aarch64".into(),
                 app: "0.1.0".into(),
-                packages: Some(super::PackageSnapshot { count: 2, hash: "abc123".into() }),
+                packages: Some(super::PackageSnapshot {
+                    count: 2,
+                    hash: "abc123".into(),
+                }),
                 hardware: None,
             }),
             None,
@@ -531,7 +594,10 @@ mod tests {
         assert_eq!(v.len(), 3);
         assert_eq!(v[0].content.as_deref(), Some("print(1)"));
         assert_eq!(v[0].run_id, None); // an authored write has no run
-        assert_eq!(v[2].diff.as_deref(), Some("@@ -1 +1 @@\n-print(1)\n+print(2)"));
+        assert_eq!(
+            v[2].diff.as_deref(),
+            Some("@@ -1 +1 @@\n-print(1)\n+print(2)")
+        );
         assert_eq!(v[1].tool, "run");
         assert_eq!(v[1].run_id.as_deref(), Some("run_abc")); // round-trips
         assert_eq!(v[1].session_id.as_deref(), Some("ses_1"));
@@ -558,7 +624,9 @@ mod tests {
         // Blank lines are not counted as packages.
         assert_eq!(s1.count, 3);
         assert_eq!(s1.hash, content_hash(freeze)); // deterministic addressing
-        let lock = root.join(".openscience/env").join(format!("{}.txt", s1.hash));
+        let lock = root
+            .join(".openscience/env")
+            .join(format!("{}.txt", s1.hash));
         assert_eq!(std::fs::read_to_string(&lock).unwrap(), freeze);
 
         // Same environment -> same hash, no duplicate file rewrite.
@@ -577,7 +645,19 @@ mod tests {
         let root = temp_root("norm");
         // Absolute path under the workspace → same key as the relative form.
         let abs = root.join("a/b.txt");
-        append_record(&root, abs.to_str().unwrap(), "write", None, None, None, None, None, None, None).unwrap();
+        append_record(
+            &root,
+            abs.to_str().unwrap(),
+            "write",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let v = versions_for(&root, "a/b.txt").unwrap();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].path, "a/b.txt");
@@ -592,13 +672,22 @@ mod tests {
     #[test]
     fn corrupt_lines_are_skipped_and_content_is_capped() {
         let root = temp_root("corrupt");
-        append_record(&root, "x.py", "write", None, None, None, None, None, None, None).unwrap();
+        append_record(
+            &root, "x.py", "write", None, None, None, None, None, None, None,
+        )
+        .unwrap();
         // A corrupt line must not lose the rest of the history.
         use std::io::Write;
         let file = root.join(".openscience/provenance.jsonl");
-        let mut f = std::fs::OpenOptions::new().append(true).open(&file).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap();
         writeln!(f, "not json").unwrap();
-        append_record(&root, "x.py", "write", None, None, None, None, None, None, None).unwrap();
+        append_record(
+            &root, "x.py", "write", None, None, None, None, None, None, None,
+        )
+        .unwrap();
         let v = versions_for(&root, "x.py").unwrap();
         assert_eq!(v.iter().map(|r| r.version).collect::<Vec<_>>(), vec![1, 2]);
 
