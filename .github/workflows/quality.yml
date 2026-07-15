@@ -36,6 +36,9 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Verify release asset integrity policy
+        run: pnpm test:release-assets
+
       - name: Lint desktop
         run: pnpm lint:desktop
 

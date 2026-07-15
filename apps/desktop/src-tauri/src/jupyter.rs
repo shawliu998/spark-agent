@@ -195,7 +195,7 @@ pub async fn setup_jupyter(app: AppHandle) -> Result<(), String> {
     // Fix port + token once so the MCP config entry stays valid.
     if load_meta(&app).is_none() {
         let meta = ServerMeta {
-            port: free_port(),
+            port: free_port()?,
             token: random_token(),
         };
         std::fs::write(

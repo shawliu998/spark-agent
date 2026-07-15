@@ -115,14 +115,10 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Spark Agent")
         .run(|app, event| {
-            // Clean up on exit. macOS Cmd+Q / Quit terminates via RunEvent::Exit
-            // (ExitRequested is not always delivered), so handle BOTH — otherwise
-            // the OpenCode sidecar / kernel / Jupyter orphan on every quit. The
-            // cleanup is idempotent, so running on both is safe.
-            if matches!(
-                event,
-                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-            ) {
+            // Clean up only once exit is final. ExitRequested is cancellable;
+            // latching shutdown there would strand a still-running app without
+            // a runtime if a future unsaved-work prompt prevents the exit.
+            if matches!(event, tauri::RunEvent::Exit) {
                 runtime::kill_child(&app.state::<RuntimeState>());
                 kernel::kill_kernel(&app.state::<KernelState>());
                 jupyter::kill_jupyter(&app.state::<JupyterState>());

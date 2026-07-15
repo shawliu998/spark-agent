@@ -5,22 +5,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# shellcheck source=sidecar-integrity.sh
 source "$ROOT/scripts/dev/sidecar-integrity.sh"
-UV_VERSION="${UV_VERSION:-$PINNED_UV_VERSION}"
+UV_VERSION="${UV_VERSION:-$(sidecar_pinned_version uv)}"
 OUT_DIR="$ROOT/apps/desktop/src-tauri/binaries"
 
 TRIPLE="${1:-$(rustc -Vv | sed -n 's/host: //p')}"
-
-case "$TRIPLE" in
-  aarch64-apple-darwin | x86_64-apple-darwin) ASSET="uv-$TRIPLE.tar.gz" ;;
-  x86_64-unknown-linux-gnu | aarch64-unknown-linux-gnu) ASSET="uv-$TRIPLE.tar.gz" ;;
-  x86_64-pc-windows-msvc | aarch64-pc-windows-msvc) ASSET="uv-$TRIPLE.zip" ;;
-  *) echo "Unsupported triple: $TRIPLE" >&2; exit 1 ;;
-esac
+RESOLVED_SIDECAR="$(resolve_sidecar uv "$UV_VERSION" "$TRIPLE")"
+IFS='|' read -r ASSET EXPECTED_SHA256 <<<"$RESOLVED_SIDECAR"
 
 URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${ASSET}"
-EXPECTED_SHA256="$(sidecar_sha256 uv "$UV_VERSION" "$ASSET")"
-mkdir -p "$OUT_DIR"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 echo "Downloading $URL"
@@ -33,11 +27,11 @@ esac
 
 if [ -f "$TMP/uv.exe" ] || find "$TMP" -type f -name uv.exe -print -quit | grep -q .; then
   BIN="$(find "$TMP" -type f -name uv.exe -print -quit)"
-  cp "$BIN" "$OUT_DIR/uv-$TRIPLE.exe"
+  DESTINATION="$OUT_DIR/uv-$TRIPLE.exe"
 else
   BIN="$(find "$TMP" -type f -name uv -print -quit)"
   [ -n "$BIN" ] || { echo "No uv binary in archive" >&2; exit 1; }
-  cp "$BIN" "$OUT_DIR/uv-$TRIPLE"
-  chmod +x "$OUT_DIR/uv-$TRIPLE"
+  DESTINATION="$OUT_DIR/uv-$TRIPLE"
 fi
+install_sidecar_atomically "$BIN" "$DESTINATION"
 echo "Placed uv sidecar for $TRIPLE in $OUT_DIR"
