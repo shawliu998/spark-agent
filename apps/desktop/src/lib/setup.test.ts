@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   addMcpServer: vi.fn(async () => {}),
   loadCatalog: vi.fn(async () => {}),
+  saveScienceConnectorApiKey: vi.fn(async (_connectorId: string, _apiKey: string) => {}),
   /** Resolver for the in-flight setupJupyter promise, so tests hold it open. */
   resolveSetup: (() => {}) as () => void,
   setupJupyter: vi.fn(),
@@ -20,7 +21,12 @@ mocks.setupJupyter.mockImplementation(
 
 vi.mock("./runtime", () => ({
   getClient: () => mocks.client,
-  useRuntimeStore: { getState: () => ({ loadCatalog: mocks.loadCatalog }) },
+  useRuntimeStore: {
+    getState: () => ({
+      loadCatalog: mocks.loadCatalog,
+      saveScienceConnectorApiKey: mocks.saveScienceConnectorApiKey,
+    }),
+  },
 }));
 vi.mock("./tauri", () => ({
   setupJupyter: mocks.setupJupyter,
@@ -34,9 +40,24 @@ vi.mock("./tauri", () => ({
 }));
 vi.mock("./scienceConnectors", () => ({
   SCIENCE_CONNECTORS: [
-    { id: "papers", label: "Papers", pkg: "paper-search-mcp" },
+    { id: "papers", label: "Papers" },
+    {
+      id: "fred",
+      label: "FRED",
+      apiKeyEnv: "FRED_API_KEY",
+    },
+    {
+      id: "materials-project",
+      label: "Materials Project",
+      apiKeyEnv: "MP_API_KEY",
+      securityGated: true,
+    },
   ],
-  connectorConfig: () => ({ type: "local", command: ["/env/bin/python"], enabled: true }),
+  connectorConfig: (c: { id: string }, python: string) => ({
+    type: "local",
+    command: [python, c.id],
+    enabled: true,
+  }),
 }));
 vi.mock("./toast", () => ({ toast: { success: () => {}, error: () => {} } }));
 
@@ -96,7 +117,34 @@ describe("setup store", () => {
     expect(useSetupStore.getState().connectorId).toBe("papers");
     await run;
     expect(useSetupStore.getState().connectorId).toBeNull();
+    expect(mocks.setupScienceMcp).toHaveBeenCalledWith("papers");
     expect(mocks.addMcpServer).toHaveBeenCalledWith("papers", expect.anything());
+  });
+
+  it("sends keyed connectors only through the native credential transaction", async () => {
+    await useSetupStore.getState().enableConnector("fred", "  fred-secret  ");
+
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
+    expect(mocks.setupScienceMcp).toHaveBeenCalledWith("fred");
+    expect(mocks.saveScienceConnectorApiKey).toHaveBeenCalledWith("fred", "fred-secret");
+    expect(mocks.saveScienceConnectorApiKey.mock.calls[0]).toHaveLength(2);
+  });
+
+  it("fails closed before provisioning a security-gated keyed connector", async () => {
+    await useSetupStore
+      .getState()
+      .enableConnector("materials-project", "materials-secret");
+
+    expect(mocks.setupScienceMcp).not.toHaveBeenCalled();
+    expect(mocks.saveScienceConnectorApiKey).not.toHaveBeenCalled();
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing keyed-connector secret before provisioning", async () => {
+    await useSetupStore.getState().enableConnector("fred", "   ");
+
+    expect(mocks.setupScienceMcp).not.toHaveBeenCalled();
+    expect(mocks.saveScienceConnectorApiKey).not.toHaveBeenCalled();
   });
 
   it("does not register a provisioned connector on a replacement endpoint", async () => {
@@ -108,5 +156,15 @@ describe("setup store", () => {
     expect(mocks.addMcpServer).not.toHaveBeenCalled();
     expect(mocks.client!.addMcpServer).not.toHaveBeenCalled();
     expect(useSetupStore.getState().connectorId).toBeNull();
+  });
+
+  it("does not expose a keyed connector secret after the endpoint is replaced", async () => {
+    const run = useSetupStore.getState().enableConnector("fred", "fred-secret");
+    mocks.client = { addMcpServer: vi.fn(async () => {}) };
+
+    await run;
+
+    expect(mocks.saveScienceConnectorApiKey).not.toHaveBeenCalled();
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
   });
 });

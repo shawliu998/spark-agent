@@ -391,11 +391,23 @@ figures; virtualized log lists.
 No silent permission escalation; every General write/edit/Shell/web/MCP operation
 prompts, unknown concrete tools ask, and outside-workspace file-tool access is
 denied. Stricter isolation and immutable approvals apply in Verified mode; remote
-connections are auditable. Verified-workflow model keys and simple General
-provider API keys use the OS credential manager; unsupported structured provider
-records fail closed rather than being silently weakened or corrupted. OAuth,
-scientific-connector, and Jupyter secret migration plus execution-time secret
-isolation remain release-blocking work.
+connections are auditable. Verified-workflow model keys, simple General provider
+API keys, and Spark-managed Materials Project/FRED connector keys use separate OS
+credential-manager services. MP/FRED migration and the native private-broker
+substrate are implemented, and the legacy DYLD-sensitive Spark launcher is gone.
+Their disabled managed config contains only Apple platform-signed `/usr/bin/nc -U`
+to a private Unix-domain socket. The staged Tauri broker binds relay identity to
+the owned OpenCode PID/start-time/generation and validates strict config/target,
+but credential-bearing execution remains disabled by default and fails closed;
+MP/FRED are security-gated rather than available to the runtime. This is staged
+defense in depth, not a delivered key-delivery or hard-confinement guarantee.
+The single P0 release gate requires immutable signed/verified downloaded targets
+or isolated execution, native per-call approval, and closure of the OpenCode
+config-dependency approval bypass. Two P1 gates require a fully hashed transitive
+lock with staged atomic install and packaged macOS E2E. Unsupported structured
+provider records fail closed rather than being silently weakened or corrupted.
+OAuth and Jupyter secret migration plus broader execution-time secret isolation
+remain release-blocking work.
 
 ### 10.3 Maintainability
 

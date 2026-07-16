@@ -29,32 +29,32 @@ describe("connectorConfig", () => {
   });
 
   it("launches a console-script connector beside the interpreter (unix)", () => {
-    const cfg = connectorConfig(byId("materials-project"), "/env/bin/python");
+    const cfg = connectorConfig(byId("spaceweather"), "/env/bin/python");
     expect(cfg.type === "local" && cfg.command).toEqual([
-      "/env/bin/mcp-materials-project",
+      "/env/bin/spaceweather-mcp",
     ]);
   });
 
   it("resolves the console script on Windows with .exe", () => {
-    const cfg = connectorConfig(byId("fred"), "C:\\env\\Scripts\\python.exe", "KEY");
+    const cfg = connectorConfig(byId("spaceweather"), "C:\\env\\Scripts\\python.exe");
     expect(cfg.type === "local" && cfg.command).toEqual([
-      "C:\\env\\Scripts\\fred-mcp.exe",
+      "C:\\env\\Scripts\\spaceweather-mcp.exe",
     ]);
   });
 
-  it("passes an API key via environment, trimmed", () => {
-    const cfg = connectorConfig(byId("materials-project"), "/env/bin/python", "  mp-secret  ");
-    expect(cfg.type === "local" && cfg.environment).toEqual({ MP_API_KEY: "mp-secret" });
+  it("rejects keyed connectors from the renderer config path", () => {
+    for (const id of ["materials-project", "fred"]) {
+      const connector = byId(id);
+      expect(connector.securityGated).toBe(true);
+      expect(() => connectorConfig(connector, "/env/bin/python")).toThrow(
+        "requires native credential setup",
+      );
+    }
   });
 
-  it("omits environment when the key is blank", () => {
-    const cfg = connectorConfig(byId("fred"), "/env/bin/python", "   ");
-    expect(cfg.type === "local" && cfg.environment).toBeUndefined();
-  });
-
-  it("every connector declares an id, discipline, package, and a launch path", () => {
+  it("every connector declares an id, discipline, source, and a launch path", () => {
     for (const c of SCIENCE_CONNECTORS) {
-      expect(c.id && c.discipline && c.pkg && c.source).toBeTruthy();
+      expect(c.id && c.discipline && c.source).toBeTruthy();
       expect(Boolean(c.bin) || Boolean(c.module)).toBe(true);
       if (c.apiKeyEnv) expect(c.apiKeyUrl).toBeTruthy(); // key-needing → tell users where to get one
     }

@@ -45,6 +45,19 @@ cloud-GPU, and OpenScience CLI assumptions. See `THIRD_PARTY_NOTICES.md`.
   reference, and the sidecar is restarted with the value in its process
   environment. This protects storage at rest, not an approved child tool from
   inheriting the environment.
+- Spark-managed Materials Project and FRED connector keys use a separate OS
+  credential-manager service. Migration and private-broker infrastructure are
+  implemented, and the legacy DYLD-sensitive Spark launcher has been removed.
+  Managed entries are disabled by default: credential-bearing execution fails
+  closed and Settings marks it security-gated. The staged native path contains
+  only Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain socket; the
+  Tauri broker binds relay identity to the owned OpenCode PID/start-time/generation
+  and validates the strict config and canonical target. This is staged defense,
+  not a delivered key-delivery or hard-confinement guarantee. The P0 release gate
+  requires immutable signed/verified targets or isolated execution, native
+  per-call approval, and closure of the config-dependency approval bypass. P1
+  gates require a fully hashed transitive lock with staged atomic install and
+  packaged macOS E2E. Custom/BYO MCP credential custody is not covered.
 - Bundled agents are deployed into the app-private profile's global `agents/`
   directory. A workspace's `.opencode/agents/` definitions remain project-owned
   and can override global agents through OpenCode's native precedence.

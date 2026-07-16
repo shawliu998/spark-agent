@@ -84,6 +84,8 @@
     "enterKeyFirstTitle": "请先输入 API 密钥",
     "settingUp": "正在设置…",
     "enable": "启用",
+    "securityGated": "安全门禁中",
+    "securityGatedTitle": "在原生逐调用审批以及不可变、完整锁定的连接器目标落实前保持禁用",
     "freeKeySuffix": "（免费密钥）",
     "getFreeKey": "获取免费密钥",
     "jupyterLabel": "Jupyter",
@@ -151,7 +153,7 @@
       "workspaceFiles": "您的工作区文件和原始数据",
       "codeExecution": "代码执行——Python 内核和 Jupyter 均在本地运行；数据集在此处处理，从不批量上传。",
       "sessionHistory": "会话历史和溯源记录，存储在应用的私有数据文件夹中。",
-      "providerKeys": "供应商 API 密钥——由操作系统凭据管理器提供静态存储保护。OAuth 记录、连接器密钥和 Jupyter 令牌仍存储于仅当前账户可读的应用私有文件中。已获批准的本地工具可能继承运行时密钥；执行期隔离仍在完善中。"
+      "providerKeys": "简单供应商 API 密钥以及由 Spark 管理的 Materials Project/FRED 连接器密钥，均由操作系统凭据管理器提供静态存储保护。MP/FRED 迁移与私有代理基础设施已实现，旧的易受 DYLD 环境影响的 Spark 启动器已移除。其托管条目默认禁用：带凭据执行会以关闭方式失败，设置页将其标记为安全门禁中。已预置的路径使用带 Apple 平台签名的 /usr/bin/nc -U 连接私有 Unix 域套接字；Tauri 代理会将中继的 UID、PID、可执行文件和父进程绑定到当前由 Spark 持有的 OpenCode PID、启动时间和代际，并校验严格的应用配置和规范目标。这是分阶段的纵深防御，不是已交付的“密钥路径不可穿越”或“目标已强制隔离”保证。发布门槛为：P0——下载目标必须不可变且经签名/验证，或隔离于同 UID 篡改，同时落实原生逐调用审批并关闭配置依赖安装绕过审批的路径；P1——完整哈希固定的传递依赖锁与分阶段原子安装；P1——打包后的 macOS 端到端测试。OAuth 记录和应用管理的 Jupyter 令牌仍存储于仅当前账户可读的应用私有文件中；自定义/BYO MCP 凭据不在此边界内。已获批准的本地工具仍可能继承供应商或其他运行时密钥；更广泛的执行期隔离仍在完善中。"
     },
     "remote": {
       "heading": "发送给您的模型供应商",

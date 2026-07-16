@@ -85,6 +85,8 @@
     "enterKeyFirstTitle": "Introduce primero la clave de API",
     "settingUp": "Configurando…",
     "enable": "Habilitar",
+    "securityGated": "Bloqueado por seguridad",
+    "securityGatedTitle": "Deshabilitado hasta aplicar aprobación nativa por llamada y objetivos de conector inmutables y totalmente bloqueados",
     "freeKeySuffix": "(clave gratuita)",
     "getFreeKey": "Obtener una clave gratuita",
     "jupyterLabel": "Jupyter",
@@ -152,7 +154,7 @@
       "workspaceFiles": "Los archivos de tu espacio de trabajo y los datos sin procesar",
       "codeExecution": "Ejecución de código — el kernel de Python y Jupyter se ejecutan localmente; los conjuntos de datos se procesan aquí y nunca se suben en bloque.",
       "sessionHistory": "Historial de sesiones y registros de procedencia, en la carpeta de datos privada de la app.",
-      "providerKeys": "Claves API de proveedores — protegidas en reposo por el gestor de credenciales del sistema. Los registros OAuth, las claves de conectores y el token de Jupyter aún usan archivos privados de la app, legibles solo por tu cuenta. Las herramientas locales aprobadas pueden heredar secretos de ejecución; el aislamiento sigue en desarrollo."
+      "providerKeys": "Las claves API simples de proveedores y las claves de los conectores Materials Project/FRED gestionados por Spark están protegidas en reposo por el gestor de credenciales del sistema. La migración de MP/FRED y la infraestructura del bróker privado están implementadas, y se eliminó el iniciador de Spark heredado sensible a DYLD. Sus entradas gestionadas están deshabilitadas de forma predeterminada: la ejecución con credenciales falla de forma cerrada y Ajustes las marca como Bloqueadas por seguridad. La ruta preparada usa /usr/bin/nc -U, firmado por Apple para la plataforma, hacia un socket de dominio Unix privado; el bróker Tauri vincula el UID, PID, ejecutable y proceso padre del relé con el PID, hora de inicio y generación del OpenCode actualmente controlado por Spark, y valida la configuración estricta de la app y el destino canónico. Es una defensa por capas preparada, no una garantía entregada de que la ruta de la clave sea infranqueable o el destino esté confinado de forma estricta. Puertas de lanzamiento: P0 — destinos descargados inmutables y firmados/verificados o aislamiento frente a cambios de la misma UID, aprobación nativa por llamada y cierre de la omisión de aprobación de dependencias de configuración; P1 — bloqueo transitivo totalmente protegido con hashes e instalación atómica por etapas; P1 — E2E de macOS empaquetado. Los registros OAuth y el token de Jupyter gestionado por la app aún usan archivos privados legibles solo por tu cuenta; las credenciales de MCP personalizados/BYO quedan fuera de este límite. Las herramientas locales aprobadas aún pueden heredar secretos del proveedor u otros secretos de ejecución; el aislamiento general sigue en desarrollo."
     },
     "remote": {
       "heading": "Enviado a tu proveedor de modelos",

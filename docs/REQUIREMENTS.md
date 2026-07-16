@@ -306,13 +306,27 @@ competitors.
     approval layer, not an OS sandbox. Use Sandbox or Verified execution when
     confinement is required.
   - [ ] **Secret custody is only partially migrated.** Simple provider API keys
-    now move transactionally to the OS credential manager and leave environment
-    references in config; unsupported structured API records fail closed. OAuth
-    records, MP/FRED connector keys, and the persistent Jupyter token still use
-    owner-only app-private files. Provider keys are also injected into the
-    sidecar environment, which an approved local tool can inherit. The runtime
-    root/config/auth modes and authenticated loopback API remain defense in depth,
-    not substitutes for completing custody and execution-time isolation.
+    now move transactionally to the OS credential manager, leave environment
+    references in config, and are supplied to the sidecar at launch; an approved
+    local tool can still inherit them. Spark-managed MP/FRED connector keys use
+    separate credential-manager items. Migration/private-broker infrastructure is
+    implemented, and the legacy DYLD-sensitive Spark launcher is removed. Managed
+    entries are disabled and contain only Apple platform-signed
+    `/usr/bin/nc -U <private-socket>` to a private Unix-domain socket. The staged
+    broker authenticates relay UID/PID/executable/parent against the owned OpenCode
+    PID/start-time/generation and validates strict config/target, but
+    credential-bearing execution remains disabled by default and fails closed.
+    MP/FRED are security-gated and unavailable to the runtime. This is defense in
+    depth, not a delivered key-delivery or hard-confinement guarantee. The single
+    P0 release
+    gate requires immutable signed/verified targets or same-UID-resistant isolated
+    execution, native per-call approval, and closure of the config-dependency
+    approval bypass. Two P1 gates require a fully hashed transitive lock with staged
+    atomic install and packaged macOS E2E. Unsupported structured provider API
+    records fail closed. OAuth records and the persistent Jupyter token still use
+    owner-only app-private files, and custom/BYO MCP custody remains outside this
+    boundary. The runtime root/config/auth modes and authenticated loopback API
+    remain defense in depth, not substitutes for broader execution-time isolation.
   - [ ] **OpenCode config dependency installation bypasses product approval.**
     The pinned loader may install config-directory packages (with lifecycle
     scripts disabled) before the tool-permission layer, including for project
@@ -423,31 +437,35 @@ competitors.
   | Literature (all) | arXiv, PubMed, Crossref, Semantic Scholar; OpenAlex | ✅ shipped (paper-search-mcp) |
   | Biology | PubMed, trials, variants (biomcp); PDB/UniProt/ChEMBL/ClinVar | 🟡 partial |
   | Physics/astro | Space weather (`spaceweather-mcp` — NOAA SWPC/NASA DONKI/USGS) ✅ shipped; NASA ADS, SIMBAD, VizieR, MAST/IRSA, Gaia, SDSS/DESI, GWOSC/LIGO next | 🟡 partial |
-  | Chemistry/materials | Materials Project (`mcp-materials-project`) ✅ shipped; PubChem, ChEMBL, ICSD, COD, NIST next | 🟡 partial |
+  | Chemistry/materials | Materials Project (`mcp-materials-project`) migration/broker substrate shipped, credential execution security-gated; PubChem, ChEMBL, ICSD, COD, NIST next | 🟡 partial |
   | Earth/climate | Open-Meteo weather/climate (`mcp-weather-server`) ✅ + USGS water (`usgs-mcp`) ✅ shipped; NASA Earthdata, Copernicus/Sentinel, CDS/ERA5, NOAA CDO, GEE, ESGF/CMIP6 next | 🟡 partial |
-  | Social science | FRED (`fred-mcp`) ✅ shipped; IPUMS API, ICPSR, OSF, GSS, World Bank next | 🟡 partial |
+  | Social science | FRED (`fred-mcp`) migration/broker substrate shipped, credential execution security-gated; IPUMS API, ICPSR, OSF, GSS, World Bank next | 🟡 partial |
 
 - **Acceptance.** From chat, query literature (PubMed/arXiv/Crossref) auditable by
   the reviewer, plus **at least one non-bio domain database per targeted
   discipline**; the BYO-MCP path is documented and works.
-- **Status.** 🟡 Literature + bio + **five non-bio** connectors ship with
-  one-click Enable (isolated env via bundled uv) + `docs/CONNECT_YOUR_TOOLS.md`,
-  now spanning **all five targeted disciplines** — the acceptance's "≥1 non-bio
-  domain database per targeted discipline" is met: **Materials Project**
-  (`mcp-materials-project`, materials), **FRED** (`fred-mcp`, economics),
-  **Space weather** (`spaceweather-mcp` — NOAA SWPC/NASA DONKI/USGS, physics),
-  **Open-Meteo weather/climate** (`mcp-weather-server`, earth), and **USGS water**
-  (`usgs-mcp`, earth). The catalog carries a discipline chip, a per-connector
-  free-API-key field (currently persisted in the owner-only MCP config and
-  passed via its `environment`; OS credential custody remains open), and
-  console-script *or* `-m module` launch (resolved next to
-  the managed interpreter, cross-platform). **Every connector is verified by a
-  real MCP `initialize`/`tools/list` stdio handshake in the bundled-uv env
-  before shipping** (spaceweather → 15 tools, open-meteo → 8, usgs → 10; the
-  three no-key ones need no credentials at all) — the discipline that caught two
-  false friends earlier (`astro-mcp` is Airflow, not astronomy; earlier
-  usgs/open-meteo doubts were an inadequate check, now disproven by the real
-  handshake). We integrate existing open-source servers, not reimplement them.
+- **Status.** 🟡 Literature, bio, and the three credential-free non-bio connectors
+  ship with one-click Enable (managed env via bundled uv) plus
+  `docs/CONNECT_YOUR_TOOLS.md`: **Space weather** (`spaceweather-mcp` — NOAA
+  SWPC/NASA DONKI/USGS, physics), **Open-Meteo weather/climate**
+  (`mcp-weather-server`, earth), and **USGS water** (`usgs-mcp`, earth).
+  Materials Project and FRED remain visible in the catalog, and their credential
+  migration/private-broker substrate is implemented, but credential-bearing
+  execution is disabled by default and fails closed. The chemistry/materials and
+  social-science runtime portions of the “≥1 non-bio domain database per targeted
+  discipline” acceptance are therefore not yet met. Package-level development
+  probes have completed real MCP `initialize`/`tools/list` stdio handshakes, but
+  they are not packaged credential-path E2E evidence. The disabled MP/FRED config
+  contains only Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain
+  socket; the PID/generation broker checks are staged defenses after removal of
+  the legacy DYLD-sensitive Spark launcher, not a delivered key-path guarantee.
+  One P0 release gate requires immutable signed/verified downloaded targets or
+  same-UID-resistant isolated execution, native per-call approval, and closure of
+  the config-dependency approval bypass. Two P1 gates require a fully hashed
+  transitive lock with staged atomic install and packaged macOS E2E. The current
+  top-level exact pins, cleared caller environment, disabled uv configuration,
+  and official PyPI do not satisfy those gates. We integrate existing open-source
+  servers, not reimplement them.
   Gap: the classic astronomy catalogs (NASA ADS, SIMBAD, Gaia, MAST) have no
   pip-installable stdio MCP yet — GitHub-only, would need vendoring; and more
   chem/social DBs (see the table).
@@ -645,11 +663,22 @@ competitors.
   their provider; audit confirms keys/data never enter provenance, logs, exports.
 - **Status.** 🟡 The plain-language data-flow card, workspace file boundary, and
   manual approval policy ship. Verified-workflow model keys use macOS Keychain;
-  simple General provider API keys now migrate transactionally to the OS
-  credential manager. The item remains partial because OAuth records,
-  scientific-connector keys, and the Jupyter token remain in owner-only files,
-  and an approved local tool can inherit provider keys from the sidecar process
-  environment. Execution-time redaction and hard confinement are not yet proven.
+  simple General provider API keys and Spark-managed Materials Project/FRED
+  connector keys now migrate transactionally to separate OS credential-manager
+  services. The MP/FRED migration/private-broker substrate is implemented and the
+  legacy DYLD-sensitive Spark launcher is removed. Disabled config contains only
+  Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain socket, and the
+  staged broker binds the relay to the owned OpenCode PID/start-time/generation
+  before validating strict config/target. Credential-bearing execution remains
+  disabled by default and fails closed, so MP/FRED are security-gated and not
+  available to the runtime. Those staged controls are not a delivered claim that
+  a key cannot cross the path or that the target is hard-confined. The item remains
+  partial because the P0 target-integrity/native-approval/config-dependency gate
+  and the P1 hashed-atomic-install and packaged-macOS-E2E gates remain open; OAuth
+  records and the Jupyter token remain in owner-only files; custom/BYO MCP custody
+  is outside the verified boundary; and approved local tools can still inherit
+  provider or other runtime secrets. Broader execution-time redaction and hard
+  confinement are not yet proven.
 
 ### P2-4 · Beta stability & guardrails — 🟡 Partial
 
@@ -686,16 +715,16 @@ competitors.
 | P0-4 | Reviewer: traceable claims (3 checks) | P0 | 🟡 Partial — 3 checks + PDF-manuscript extractor shipped; weak-model robustness pending |
 | **P0-5** | **Domain-correctness gates ("runs" ≠ "right")** | **P0** | 🟡 **Partial — 5 gates ship (physics/earth/biology/chemistry/social science), deterministic + pluggable; chemistry now uses real RDKit round-trip when installed; only POSCAR→pymatgen round-trip pending** |
 | P0-6 | Large files: reference, don't load | P0 | ✅ Done — memory-pointer probe (table/parquet/hdf5/fits/netcdf/log + genomics FASTQ/FASTA/VCF/BAM, GRIB, ROOT) + one-click "Inspect without loading" in the too-large-preview card |
-| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — manual-only permission floor, sidecar/preview auth, simple provider-key credential custody, kernel deadlock, and Windows injection are addressed; hard confinement, remaining secret classes, execution-time isolation, and config dependency-install approval remain open** |
+| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — manual-only permission floor, sidecar/preview auth, provider plus MP/FRED at-rest credential custody, kernel deadlock, and Windows injection are addressed; MP/FRED execution is fail-closed pending target integrity/native approval, while hard confinement, OAuth/Jupyter custody, execution-time isolation, and config dependency-install approval remain open** |
 | P1-1 | Multi-discipline from day one | P1 | 🟡 Partial — pluggable + climate example; non-bio depth pending |
-| P1-2 | Domain + literature connectors | P1 | 🟡 Partial — literature/bio + non-bio across ALL 5 disciplines (materials, economics, physics space-weather, earth Open-Meteo + USGS) shipped, each MCP-handshake verified; astronomy catalogs (no PyPI MCP) + more chem/social DBs pending |
+| P1-2 | Domain + literature connectors | P1 | 🟡 Partial — literature/bio plus credential-free physics/earth connectors ship; Materials/FRED migration/broker infrastructure exists but execution is security-gated, so runnable coverage does not yet span all 5 disciplines |
 | P1-3 | Scientific renderers | P1 | 🟡 Partial — base + 3D structure + genome + FITS + DOS + band + phase + qualitative-coding + anomaly map (all 4 disciplines; materials trio complete); ternary/coastlines next |
 | P1-4 | Windows + macOS installers | P1 | 🟡 Partial — macOS done; Windows CI ready (signing/verify host-bound) |
 | P1-5 | Interaction & visualization craft | P1 | 🟡 Partial — chart system + palette + command palette + native table→chart surface shipped |
 | **P1-6** | **Social-science analysis integrity** | **P1** | 🟡 **Partial — stats-integrity skill: interpretation/prereg/seed checks + verified .dta→R round-trip** |
 | P2-1 | Notebook + larger-project handling | P2 | ✅ Done — notebook + workspace Files explorer |
 | P2-2 | HPC / SSH / Slurm / Modal | P2 | 🟡 Partial — SSH+Slurm + Modal (detection + skill) shipped; multi-env mgmt pending |
-| P2-3 | Plain-language privacy posture | P2 | 🟡 Partial — disclosure and simple provider-key custody ship; remaining secrets and execution-time isolation remain open |
+| P2-3 | Plain-language privacy posture | P2 | 🟡 Partial — disclosure and provider plus MP/FRED at-rest custody ship; MP/FRED execution fails closed pending P0/P1 release gates, while OAuth/Jupyter, custom MCP custody, and execution-time isolation remain open |
 | P2-4 | Beta stability & guardrails | P2 | 🟡 Partial — prompts + exit-cleanup + large-file-preview OOM guard fixed; broader first-run pass pending |
 
 **What's done vs. what's next.** The shared 80% (the moat) is largely ✅: workflow

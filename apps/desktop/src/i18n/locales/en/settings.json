@@ -85,6 +85,8 @@
     "enterKeyFirstTitle": "Enter the API key first",
     "settingUp": "Setting up…",
     "enable": "Enable",
+    "securityGated": "Security gated",
+    "securityGatedTitle": "Disabled until native per-call approval and immutable, fully locked connector targets are enforced",
     "freeKeySuffix": "(free key)",
     "getFreeKey": "Get a free key",
     "jupyterLabel": "Jupyter",
@@ -152,7 +154,7 @@
       "workspaceFiles": "Your workspace files and raw data",
       "codeExecution": "Code execution — the Python kernel and Jupyter run locally; datasets are processed here, never uploaded in bulk.",
       "sessionHistory": "Session history and provenance records, in the app's private data folder.",
-      "providerKeys": "Provider API keys — protected at rest by the OS credential manager. OAuth records, connector keys, and the Jupyter token still use owner-only app-private files. Approved local tools may inherit runtime secrets; execution isolation is still in progress."
+      "providerKeys": "Simple provider API keys and Spark-managed Materials Project/FRED connector keys are protected at rest by the OS credential manager. MP/FRED migration and private-broker infrastructure are implemented, and the legacy DYLD-sensitive Spark launcher is removed. Their managed entries are disabled by default: credential-bearing execution fails closed and Settings marks them Security gated. The staged path uses Apple platform-signed /usr/bin/nc -U to a private Unix-domain socket; the Tauri broker binds relay UID/PID/executable/parent to the currently owned OpenCode PID/start time/generation and validates strict app config and the canonical target. This is staged defense in depth, not a delivered claim that the key path is uncrossable or the target is hard-confined. Release gates are: P0, immutable signed/verified downloaded targets or isolation from same-UID mutation, native per-call approval, and closure of the config-dependency approval bypass; P1, a fully hashed transitive lock with staged atomic install; P1, packaged macOS E2E. OAuth records and the app-managed Jupyter token still use owner-only app-private files, and custom/BYO MCP credentials are outside this boundary. Approved local tools may still inherit provider or other runtime secrets; broader execution isolation is still in progress."
     },
     "remote": {
       "heading": "Sent to your model provider",

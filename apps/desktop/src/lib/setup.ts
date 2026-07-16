@@ -71,6 +71,17 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     if (get().connectorId) return; // one connector provisioning at a time
     const c = SCIENCE_CONNECTORS.find((x) => x.id === id);
     if (!c) return;
+    if (c.securityGated) {
+      toast.error(
+        `${c.label} remains disabled until native per-call approval and immutable connector targets are enforced.`,
+      );
+      return;
+    }
+    const connectorApiKey = apiKey?.trim();
+    if (c.apiKeyEnv && !connectorApiKey) {
+      toast.error(`${c.label} requires an API key.`);
+      return;
+    }
     const setupClient = getClient();
     if (!setupClient) {
       toast.error("Connect the runtime before enabling a science connector.");
@@ -79,15 +90,25 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     set({ connectorId: id, line: null });
     try {
       toast.success(`Setting up ${c.label} — first run downloads a managed Python, please wait…`);
-      const python = await setupScienceMcp(c.pkg);
+      const python = await setupScienceMcp(c.id);
       if (getClient() !== setupClient) {
         toast.error(
           `${c.label} was installed locally, but the runtime endpoint changed before MCP registration. Reconnect and enable it again.`,
         );
         return;
       }
-      await setupClient.addMcpServer(c.id, connectorConfig(c, python, apiKey));
-      if (getClient() !== setupClient) return;
+      if (c.apiKeyEnv) {
+        // Native code owns the whole credential/config/restart transaction and
+        // reconnects to the authoritative endpoint. The secret never enters
+        // the OpenCode config API.
+        await useRuntimeStore
+          .getState()
+          .saveScienceConnectorApiKey(c.id, connectorApiKey!);
+      } else {
+        const config = connectorConfig(c, python);
+        await setupClient.addMcpServer(c.id, config);
+        if (getClient() !== setupClient) return;
+      }
       toast.success(`${c.label} enabled — the agent can now use it from chat.`);
       await useRuntimeStore.getState().loadCatalog();
     } catch (e) {

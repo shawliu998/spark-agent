@@ -66,6 +66,8 @@ pub fn run() {
             runtime::import_opencode_login,
             runtime::save_provider_api_key,
             runtime::remove_provider_api_key,
+            runtime::save_science_connector_api_key,
+            runtime::remove_science_connector,
             runtime::finalize_provider_login,
             runtime::remove_config_entry,
             jupyter::jupyter_status,
@@ -125,6 +127,7 @@ pub fn run() {
             // a runtime if a future unsaved-work prompt prevents the exit.
             if matches!(event, tauri::RunEvent::Exit) {
                 runtime::kill_child(&app.state::<RuntimeState>());
+                science_mcp::shutdown_connector_broker();
                 kernel::kill_kernel(&app.state::<KernelState>());
                 jupyter::kill_jupyter(&app.state::<JupyterState>());
             }

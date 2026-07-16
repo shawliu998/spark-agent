@@ -27,8 +27,10 @@ import {
   newDatedWorkspace,
   removeConfigEntry as persistConfigRemoval,
   removeProviderApiKey as persistProviderApiKeyRemoval,
+  removeScienceConnector as persistScienceConnectorRemoval,
   runtimePassword,
   saveProviderApiKey as persistProviderApiKey,
+  saveScienceConnectorApiKey as persistScienceConnectorApiKey,
   setApprovalMode as persistApprovalMode,
   setProxySetting as persistProxySetting,
   setWorkspace,
@@ -129,6 +131,13 @@ interface RuntimeState {
   /** Remove a file-backed provider/MCP config entry and reconnect to the
    *  authoritative post-restart endpoint. */
   removeConfigEntry: (section: "provider" | "mcp", key: string) => Promise<void>;
+  /** Persist a curated connector API key and its non-secret MCP config. */
+  saveScienceConnectorApiKey: (
+    connectorId: string,
+    apiKey: string,
+  ) => Promise<void>;
+  /** Remove a curated connector and its managed credential. */
+  removeScienceConnector: (connectorId: string) => Promise<void>;
   /** Persist a provider API key in the OS credential manager and reconnect. */
   saveProviderApiKey: (providerId: string, apiKey: string) => Promise<void>;
   /** Remove a provider key and optionally its full custom-provider config. */
@@ -1312,6 +1321,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   removeConfigEntry: async (section, key) => {
     await runMaskedRuntimeMutation(() => persistConfigRemoval(section, key));
+  },
+
+  saveScienceConnectorApiKey: async (connectorId, apiKey) => {
+    await runMaskedRuntimeMutation(() => persistScienceConnectorApiKey(connectorId, apiKey));
+  },
+
+  removeScienceConnector: async (connectorId) => {
+    await runMaskedRuntimeMutation(() => persistScienceConnectorRemoval(connectorId));
   },
 
   saveProviderApiKey: async (providerId, apiKey) => {

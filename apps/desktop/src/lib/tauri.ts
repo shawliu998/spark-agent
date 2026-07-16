@@ -161,6 +161,29 @@ export async function removeProviderApiKey(
   });
 }
 
+/** Save an allowlisted curated connector key in the OS credential manager.
+ * Native code derives the exact managed executable and complete MCP config. */
+export async function saveScienceConnectorApiKey(
+  connectorId: string,
+  apiKey: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("save_science_connector_api_key", {
+    connectorId,
+    apiKey,
+  });
+}
+
+/** Remove an allowlisted curated connector's config references and credential. */
+export async function removeScienceConnector(
+  connectorId: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("remove_science_connector", { connectorId });
+}
+
 /** Finalize a login written by OpenCode: API keys move to the keychain while
  * OAuth records remain OpenCode-owned in its app-private auth file. */
 export async function finalizeProviderLogin(
@@ -266,12 +289,12 @@ export async function scienceMcpPython(): Promise<string | null> {
   return invoke<string | null>("science_mcp_python");
 }
 
-/** Provision one open-source MCP pip package into the shared isolated env and
- *  return the managed Python path to launch it with (desktop only). */
-export async function setupScienceMcp(pkg: string): Promise<string> {
+/** Provision one native-allowlisted science connector and return its managed
+ * Python path (desktop only). The renderer never supplies a package spec. */
+export async function setupScienceMcp(connectorId: string): Promise<string> {
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("setup_science_mcp", { package: pkg });
+  return invoke<string>("setup_science_mcp", { connectorId });
 }
 
 /** Auto-start Jupyter on launch when it was enabled before. Silent no-op otherwise. */

@@ -22,6 +22,12 @@ const SIDECAR_PORT_ATTEMPTS: usize = 3;
 const EXPECTED_OPENCODE_VERSION: &str = "1.17.13";
 const SIDECAR_START_TIMEOUT_ERROR: &str =
     "OpenCode did not become ready before the startup timeout";
+#[cfg(target_os = "macos")]
+const SANDBOX_EXEC_PATH: &str = "/usr/bin/sandbox-exec";
+#[cfg(any(target_os = "macos", test))]
+const MANAGED_SCIENCE_MCP_DIR: &str = "science-mcp-managed";
+#[cfg(any(target_os = "macos", test))]
+const UV_PYTHON_DIR: &str = "uv-python";
 
 #[derive(Default)]
 struct ExitSignal {
@@ -200,6 +206,153 @@ fn runtime_root(app: &AppHandle) -> Result<PathBuf, String> {
         .join("runtime"))
 }
 
+/// Mirror tauri-plugin-shell's bundled-sidecar resolution exactly: external
+/// binaries are copied beside the starting executable, while Rust test
+/// executables live one level lower in `deps`.
+#[cfg(any(target_os = "macos", test))]
+fn bundled_sidecar_path_from(current_exe: &Path, command: &Path) -> Result<PathBuf, String> {
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| "the Spark executable has no parent directory".to_string())?;
+    let base_dir = if exe_dir.ends_with("deps") {
+        exe_dir.parent().unwrap_or(exe_dir)
+    } else {
+        exe_dir
+    };
+    let mut command_path = base_dir.join(command);
+
+    #[cfg(windows)]
+    {
+        if !command_path.extension().is_some_and(|ext| ext == "exe") {
+            command_path.as_mut_os_string().push(".exe");
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if command_path.extension().is_some_and(|ext| ext == "exe") {
+            command_path.set_extension("");
+        }
+    }
+
+    Ok(command_path)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn canonical_sandbox_subdir(runtime: &Path, name: &str) -> Result<PathBuf, String> {
+    if !runtime.is_absolute() {
+        return Err("the Spark runtime path is not absolute".to_string());
+    }
+    std::fs::create_dir_all(runtime)
+        .map_err(|error| format!("could not create the Spark runtime directory: {error}"))?;
+    let canonical_runtime = runtime
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize the Spark runtime directory: {error}"))?;
+    let path = runtime.join(name);
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => {
+            return Err(format!(
+                "sandbox root is not a regular directory: {}",
+                path.display()
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&path).map_err(|error| {
+                format!("could not create sandbox root {}: {error}", path.display())
+            })?;
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not inspect sandbox root {}: {error}",
+                path.display()
+            ))
+        }
+    }
+    let canonical = path.canonicalize().map_err(|error| {
+        format!(
+            "could not canonicalize sandbox root {}: {error}",
+            path.display()
+        )
+    })?;
+    if canonical.parent() != Some(canonical_runtime.as_path()) {
+        return Err(format!(
+            "sandbox root escaped the Spark runtime directory: {}",
+            canonical.display()
+        ));
+    }
+    Ok(canonical)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn seatbelt_path_literal(path: &Path) -> Result<String, String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| "sandbox root is not valid UTF-8".to_string())?;
+    if text.chars().any(char::is_control) {
+        return Err("sandbox root contains a control character".to_string());
+    }
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            _ => escaped.push(character),
+        }
+    }
+    Ok(format!("\"{escaped}\""))
+}
+
+/// Keep this OpenCode Seatbelt layer deliberately narrow. Direct paths into a
+/// managed connector environment are denied, while the shared uv Python root
+/// remains readable/executable but direct writes are denied. This is defense
+/// in depth only: ancestor rename/symlink swaps and hard-link aliases remain
+/// release blockers, so credential-bearing connector execution stays gated.
+#[cfg(any(target_os = "macos", test))]
+fn opencode_sandbox_profile(managed_root: &Path, uv_python_root: &Path) -> Result<String, String> {
+    let managed_root = seatbelt_path_literal(managed_root)?;
+    let uv_python_root = seatbelt_path_literal(uv_python_root)?;
+    Ok(format!(
+        "(version 1)\n(allow default)\n(deny file-read* (subpath {managed_root}))\n(deny file-write* (subpath {managed_root}))\n(deny file-write* (subpath {uv_python_root}))"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn sandboxed_opencode_launch(
+    app: &AppHandle,
+    runtime: &Path,
+) -> Result<tauri_plugin_shell::process::Command, String> {
+    let managed_root = canonical_sandbox_subdir(runtime, MANAGED_SCIENCE_MCP_DIR)?;
+    let uv_python_root = canonical_sandbox_subdir(runtime, UV_PYTHON_DIR)?;
+    let profile = opencode_sandbox_profile(&managed_root, &uv_python_root)?;
+
+    let current_exe = tauri::utils::platform::current_exe()
+        .map_err(|error| format!("could not resolve the Spark executable: {error}"))?;
+    let opencode = bundled_sidecar_path_from(&current_exe, Path::new("opencode"))?;
+    if !opencode.is_absolute() {
+        return Err("bundled OpenCode path is not absolute".to_string());
+    }
+    let metadata = std::fs::symlink_metadata(&opencode)
+        .map_err(|error| format!("bundled OpenCode sidecar is unavailable: {error}"))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err("bundled OpenCode sidecar is not a regular file".to_string());
+    }
+    let sandbox_metadata = std::fs::symlink_metadata(SANDBOX_EXEC_PATH)
+        .map_err(|error| format!("macOS sandbox-exec is unavailable: {error}"))?;
+    if !sandbox_metadata.file_type().is_file() || sandbox_metadata.file_type().is_symlink() {
+        return Err("macOS sandbox-exec is not a regular file".to_string());
+    }
+
+    // sandbox-exec applies the profile in this process and then execs the exact
+    // sidecar path. There is no shell/intermediate child: CommandChild's PID is
+    // therefore still the OpenCode PID authorized by the connector broker.
+    Ok(app
+        .shell()
+        .command(SANDBOX_EXEC_PATH)
+        .arg("-p")
+        .arg(profile)
+        .arg(opencode))
+}
+
 fn xdg_config_home(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(runtime_root(app)?.join("xdg-config"))
 }
@@ -308,6 +461,45 @@ fn opencode_config_files(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
         }
     }
     Ok(paths)
+}
+
+fn managed_science_connector_commands(
+    app: &AppHandle,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    crate::credential::managed_connector_ids()
+        .map(|connector_id| {
+            Ok((
+                connector_id.to_string(),
+                crate::science_mcp::managed_connector_command(app, connector_id)?,
+            ))
+        })
+        .collect()
+}
+
+fn previous_managed_science_connector_commands(
+    app: &AppHandle,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    crate::credential::managed_connector_ids()
+        .map(|connector_id| {
+            Ok((
+                connector_id.to_string(),
+                crate::science_mcp::managed_connector_target_command(app, connector_id)?,
+            ))
+        })
+        .collect()
+}
+
+fn legacy_managed_science_connector_commands(
+    app: &AppHandle,
+) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
+    crate::credential::managed_connector_ids()
+        .map(|connector_id| {
+            Ok((
+                connector_id.to_string(),
+                crate::science_mcp::legacy_managed_connector_command(app, connector_id)?,
+            ))
+        })
+        .collect()
 }
 
 /// Read an optional config file without confusing a real I/O failure with a
@@ -1831,6 +2023,76 @@ fn resolve_proxy_env(mode: &str, url: &str) -> Vec<(&'static str, String)> {
     }
 }
 
+const PROVISIONING_PROXY_KEYS: [&str; 8] = [
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
+
+/// Resolve the proxy subset for an env-cleared provisioning process. Unlike
+/// the sidecar, uv cannot implicitly inherit existing proxy variables, so
+/// system mode copies only the explicit proxy allowlist before consulting the
+/// operating-system proxy fallback. The injected iterator keeps this logic
+/// deterministic and independently testable.
+fn resolve_provisioning_proxy_env(
+    mode: &str,
+    url: &str,
+    inherited: impl IntoIterator<Item = (String, String)>,
+    system_proxy: impl FnOnce() -> Option<String>,
+) -> Vec<(&'static str, String)> {
+    const NO_PROXY_LOOPBACK: &str = "localhost,127.0.0.1,::1";
+    match mode {
+        "none" => vec![
+            ("HTTP_PROXY", String::new()),
+            ("HTTPS_PROXY", String::new()),
+            ("http_proxy", String::new()),
+            ("https_proxy", String::new()),
+            ("ALL_PROXY", String::new()),
+            ("NO_PROXY", "*".to_string()),
+        ],
+        "custom" => vec![
+            ("HTTP_PROXY", url.to_string()),
+            ("HTTPS_PROXY", url.to_string()),
+            ("NO_PROXY", NO_PROXY_LOOPBACK.to_string()),
+        ],
+        _ => {
+            let inherited = inherited
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let forwarded = PROVISIONING_PROXY_KEYS
+                .into_iter()
+                .filter_map(|key| inherited.get(key).cloned().map(|value| (key, value)))
+                .collect::<Vec<_>>();
+            if !forwarded.is_empty() {
+                return forwarded;
+            }
+            match system_proxy() {
+                Some(system_proxy) => vec![
+                    ("HTTP_PROXY", system_proxy.clone()),
+                    ("HTTPS_PROXY", system_proxy),
+                    ("NO_PROXY", NO_PROXY_LOOPBACK.to_string()),
+                ],
+                None => Vec::new(),
+            }
+        }
+    }
+}
+
+/// The only caller environment forwarded into product-managed dependency
+/// provisioning. Index/config/build variables are deliberately excluded; uv
+/// receives a cleared environment and a native fixed-index policy.
+pub(crate) fn provisioning_proxy_env(app: &AppHandle) -> Vec<(&'static str, String)> {
+    let (mode, url) = read_proxy_setting(app);
+    let inherited = std::env::vars_os()
+        .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?)));
+    resolve_provisioning_proxy_env(&mode, &url, inherited, system_proxy_url)
+}
+
 /// The proxy the sidecar would actually use right now, for display in
 /// Settings. None ⇒ direct connections.
 fn effective_proxy(mode: &str, url: &str) -> Option<String> {
@@ -2334,6 +2596,7 @@ fn terminate_current_sidecar(state: &RuntimeState, context: &str) -> Result<(), 
     let Some(sidecar) = state.child.lock().unwrap().take() else {
         return Ok(());
     };
+    crate::science_mcp::revoke_connector_broker(sidecar.pid);
     match terminate_managed(sidecar, context) {
         Ok(()) => Ok(()),
         Err(TerminationFailure { retained, message }) => {
@@ -2388,16 +2651,20 @@ fn spawn_sidecar(
         for d in [&cfg, &data, &cache, &runtime_state] {
             std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
+        crate::science_mcp::ensure_connector_broker(app)?;
         // Refresh Spark-managed agents and skills, then merge missing profile
         // defaults. Existing providers, models, MCP servers, custom permission,
         // user-global entries, and project `.opencode` content remain untouched.
         let cfg_file = effective_config_file(app)?;
         deploy_bundled_profile(app, &cfg_file)?;
-        // On successful migration, provider API keys no longer remain in
-        // config/auth at rest. Remove legacy plaintext only after a durable
-        // credential-manager save, then resolve every Spark-owned env
-        // placeholder before spawning. Unsupported metadata records and missing
-        // credentials fail closed while retaining their source unchanged.
+        // On successful migration, provider and curated-connector API keys no
+        // longer remain in config/auth at rest. Remove legacy plaintext only
+        // after a durable credential-manager save. Provider placeholders are
+        // resolved only for the OpenCode parent. Curated connector config is
+        // migrated to a secretless relay shape, but credential-bearing
+        // execution remains force-disabled by the independent security gate.
+        // Conflicts and unsupported records fail closed, while a missing key
+        // disables only that connector so Settings can recover.
         let auth_file = opencode_auth_file(app)?;
         let config_files = opencode_config_files(app)?;
         let provider_env = crate::credential::migrate_and_collect_env(
@@ -2406,18 +2673,31 @@ fn spawn_sidecar(
             &auth_file,
             &write_private_atomic,
         )?;
+        crate::credential::migrate_and_collect_connector_env(
+            &crate::credential::SystemConnectorCredentialStore,
+            &config_files,
+            &managed_science_connector_commands(app)?,
+            &previous_managed_science_connector_commands(app)?,
+            &legacy_managed_science_connector_commands(app)?,
+            crate::science_mcp::managed_connector_execution_enabled(),
+            &write_private_atomic,
+        )?;
         let permission_floor = crate::opencode_config::effective_permission_floor_json()?;
-        // OAuth and connector state still live under the private runtime root.
-        // Repair owner-only access on every start.
+        // OAuth and non-secret connector state still live under the private
+        // runtime root. Repair owner-only access on every start.
         tighten_private(&root);
         tighten_private(&cfg_file);
         let home = std::env::var("HOME").unwrap_or_default();
         let port_str = port.to_string();
 
+        #[cfg(target_os = "macos")]
+        let cmd = sandboxed_opencode_launch(app, &root)?;
+        #[cfg(not(target_os = "macos"))]
         let cmd = app
             .shell()
             .sidecar("opencode")
-            .map_err(|e| format!("sidecar not found: {e}"))?
+            .map_err(|e| format!("sidecar not found: {e}"))?;
+        let cmd = cmd
             .args([
                 "serve",
                 "--hostname",
@@ -2460,7 +2740,6 @@ fn spawn_sidecar(
         for (key, value) in provider_env {
             cmd = cmd.env(key, value);
         }
-
         cmd.spawn()
             .map_err(|e| format!("failed to spawn opencode: {e}"))?
     };
@@ -2550,6 +2829,30 @@ fn spawn_sidecar(
         return Err(SpawnAttemptError::fatal(message));
     }
 
+    // A process is never credential-broker-authorized before it is healthy
+    // and its resolved permission floor has passed. Credential-bearing
+    // connectors are currently security-gated, so production does not grant
+    // this process-wide capability at all.
+    if crate::science_mcp::managed_connector_execution_enabled() {
+        if let Err(authorize_error) = crate::science_mcp::authorize_connector_broker(pid) {
+            let sidecar = SpawnedSidecar {
+                process,
+                events,
+                pid,
+            };
+            let cleanup = terminate_unpublished(
+                state,
+                sidecar,
+                "reject connector broker authorization failure",
+            );
+            let message = match cleanup {
+                Ok(()) => authorize_error,
+                Err(kill_error) => format!("{authorize_error}; {kill_error}"),
+            };
+            return Err(SpawnAttemptError::fatal(message));
+        }
+    }
+
     Ok(SpawnedSidecar {
         process,
         events,
@@ -2629,6 +2932,12 @@ fn publish_sidecar(state: &RuntimeState, sidecar: SpawnedSidecar) {
             }
             matches
         });
+        // Unexpected exits must revoke the matching broker generation too.
+        // Otherwise an orphaned relay could keep a credential-bearing child
+        // alive after the OpenCode process that authorized it is gone.
+        if cleared {
+            crate::science_mcp::revoke_connector_broker(pid);
+        }
         if cleared && !expected_exit.load(Ordering::Acquire) {
             eprintln!("OpenCode process {pid} exited unexpectedly ({reason})");
         }
@@ -3063,16 +3372,19 @@ fn stop_runtime_inner(state: &RuntimeState) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        base64_encode, before_startup_deadline, config_transaction, current_sidecar_matches,
+        base64_encode, before_startup_deadline, bundled_sidecar_path_from,
+        canonical_sandbox_subdir, config_transaction, current_sidecar_matches,
         discover_user_skill_names, fingerprint_agent_file, fingerprint_skill_dir,
-        load_managed_profile_registry, parse_scutil_proxy, parse_sidecar_health_response,
-        prune_stale_agents, prune_stale_skills, random_hex, recover_skill_replacement,
-        register_skill_pack_names, remove_key_from_config, resolve_proxy_env, server_password,
+        load_managed_profile_registry, opencode_sandbox_profile, parse_scutil_proxy,
+        parse_sidecar_health_response, prune_stale_agents, prune_stale_skills, random_hex,
+        recover_skill_replacement, register_skill_pack_names, remove_key_from_config,
+        resolve_provisioning_proxy_env, resolve_proxy_env, seatbelt_path_literal, server_password,
         sidecar_health_ready, skill_manifest_name, start_once, start_with_port_retry,
         sync_managed_agent_pack, sync_managed_skill_pack, sync_skill_pack, terminate_checked,
         termination_outcome, validate_proxy_url, validate_resolved_agents, wait_until_ready,
         with_lifecycle, write_managed_profile_registry, write_private_atomic,
         ManagedProfileRegistry, ResolvedAgent, SpawnAttemptError, EXPECTED_OPENCODE_VERSION,
+        MANAGED_SCIENCE_MCP_DIR, UV_PYTHON_DIR,
     };
     use std::cell::{Cell, RefCell};
     use std::fs;
@@ -3084,6 +3396,217 @@ mod tests {
     };
     use std::thread;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn bundled_sidecar_path_matches_tauri_sibling_and_test_deps_rules() {
+        let app = std::path::Path::new("/Applications/Spark Agent.app/Contents/MacOS/spark-agent");
+        let app_sidecar = bundled_sidecar_path_from(app, std::path::Path::new("opencode")).unwrap();
+        let test = std::path::Path::new("/repo/target/debug/deps/runtime-a1b2c3");
+        let test_sidecar =
+            bundled_sidecar_path_from(test, std::path::Path::new("opencode")).unwrap();
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                app_sidecar,
+                std::path::Path::new("/Applications/Spark Agent.app/Contents/MacOS/opencode.exe")
+            );
+            assert_eq!(
+                test_sidecar,
+                std::path::Path::new("/repo/target/debug/opencode.exe")
+            );
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(
+                app_sidecar,
+                std::path::Path::new("/Applications/Spark Agent.app/Contents/MacOS/opencode")
+            );
+            assert_eq!(
+                test_sidecar,
+                std::path::Path::new("/repo/target/debug/opencode")
+            );
+        }
+        assert!(bundled_sidecar_path_from(
+            std::path::Path::new("/"),
+            std::path::Path::new("opencode")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sandbox_profile_is_narrow_and_escapes_paths() {
+        let managed = std::path::Path::new("/private/tmp/managed\"quote\\slash");
+        let uv_python = std::path::Path::new("/private/tmp/uv-python");
+        assert_eq!(
+            seatbelt_path_literal(managed).unwrap(),
+            r#""/private/tmp/managed\"quote\\slash""#
+        );
+        let profile = opencode_sandbox_profile(managed, uv_python).unwrap();
+        assert!(profile.starts_with("(version 1)\n(allow default)\n"));
+        assert!(
+            profile.contains(r#"(deny file-read* (subpath "/private/tmp/managed\"quote\\slash"))"#)
+        );
+        assert!(profile
+            .contains(r#"(deny file-write* (subpath "/private/tmp/managed\"quote\\slash"))"#));
+        assert!(profile.contains(r#"(deny file-write* (subpath "/private/tmp/uv-python"))"#));
+        assert!(!profile.contains("deny process"));
+        assert!(!profile.contains("deny network"));
+        assert!(seatbelt_path_literal(std::path::Path::new("/private/tmp/bad\npath")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_profile_rejects_non_utf8_paths() {
+        use std::os::unix::ffi::OsStringExt;
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(vec![
+            b'/', b't', b'm', b'p', b'/', 0xff,
+        ]));
+        assert!(seatbelt_path_literal(&path).is_err());
+    }
+
+    #[test]
+    fn canonical_sandbox_roots_are_direct_runtime_children() {
+        let tmp = std::env::temp_dir().join(format!(
+            "spark-sandbox-roots-{}-{}",
+            std::process::id(),
+            random_hex(4)
+        ));
+        let runtime = tmp.join("runtime");
+        let managed = canonical_sandbox_subdir(&runtime, MANAGED_SCIENCE_MCP_DIR).unwrap();
+        let uv_python = canonical_sandbox_subdir(&runtime, UV_PYTHON_DIR).unwrap();
+        let canonical_runtime = runtime.canonicalize().unwrap();
+        assert_eq!(managed.parent(), Some(canonical_runtime.as_path()));
+        assert_eq!(uv_python.parent(), Some(canonical_runtime.as_path()));
+        assert_eq!(managed.file_name().unwrap(), MANAGED_SCIENCE_MCP_DIR);
+        assert_eq!(uv_python.file_name().unwrap(), UV_PYTHON_DIR);
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_sandbox_root_rejects_a_leaf_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = std::env::temp_dir().join(format!(
+            "spark-sandbox-symlink-{}-{}",
+            std::process::id(),
+            random_hex(4)
+        ));
+        let runtime = tmp.join("runtime");
+        let outside = tmp.join("outside");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, runtime.join(MANAGED_SCIENCE_MCP_DIR)).unwrap();
+        let error = canonical_sandbox_subdir(&runtime, MANAGED_SCIENCE_MCP_DIR).unwrap_err();
+        assert!(error.contains("not a regular directory"));
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn sandbox_output(
+        profile: &str,
+        program: &std::path::Path,
+        args: &[&std::ffi::OsStr],
+    ) -> std::process::Output {
+        std::process::Command::new(super::SANDBOX_EXEC_PATH)
+            .arg("-p")
+            .arg(profile)
+            .arg(program)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sandbox_denies_managed_access_and_uv_writes_only() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = std::env::temp_dir().join(format!(
+            "spark-sandbox-live-{}-{}",
+            std::process::id(),
+            random_hex(4)
+        ));
+        let runtime = tmp.join("runtime");
+        let managed = canonical_sandbox_subdir(&runtime, MANAGED_SCIENCE_MCP_DIR).unwrap();
+        let uv_python = canonical_sandbox_subdir(&runtime, UV_PYTHON_DIR).unwrap();
+        let profile = opencode_sandbox_profile(&managed, &uv_python).unwrap();
+
+        let managed_secret = managed.join("secret");
+        fs::write(&managed_secret, "secret").unwrap();
+        let uv_interpreter = uv_python.join("cpython/bin/python3");
+        fs::create_dir_all(uv_interpreter.parent().unwrap()).unwrap();
+        fs::write(&uv_interpreter, "#!/bin/sh\nprintf python-ok\n").unwrap();
+        fs::set_permissions(&uv_interpreter, fs::Permissions::from_mode(0o755)).unwrap();
+        let shared_python = runtime.join("science-mcp-env/bin/python");
+        fs::create_dir_all(shared_python.parent().unwrap()).unwrap();
+        symlink(&uv_interpreter, &shared_python).unwrap();
+
+        let denied_read = sandbox_output(
+            &profile,
+            std::path::Path::new("/bin/cat"),
+            &[managed_secret.as_os_str()],
+        );
+        assert!(!denied_read.status.success());
+        let denied_managed_write = sandbox_output(
+            &profile,
+            std::path::Path::new("/usr/bin/touch"),
+            &[managed.join("new-file").as_os_str()],
+        );
+        assert!(!denied_managed_write.status.success());
+
+        let allowed_interpreter = sandbox_output(&profile, &shared_python, &[]);
+        assert!(
+            allowed_interpreter.status.success(),
+            "shared interpreter could not read/execute its uv target: {}",
+            String::from_utf8_lossy(&allowed_interpreter.stderr)
+        );
+        assert_eq!(allowed_interpreter.stdout, b"python-ok");
+        let denied_symlink_target_write = sandbox_output(
+            &profile,
+            std::path::Path::new("/usr/bin/touch"),
+            &[shared_python.as_os_str()],
+        );
+        assert!(
+            !denied_symlink_target_write.status.success(),
+            "the shared interpreter symlink bypassed the direct uv-python write deny"
+        );
+
+        let outside = runtime.join("outside");
+        let allowed_outside_write = sandbox_output(
+            &profile,
+            std::path::Path::new("/usr/bin/touch"),
+            &[outside.as_os_str()],
+        );
+        assert!(
+            allowed_outside_write.status.success(),
+            "narrow profile changed unrelated write access: {}",
+            String::from_utf8_lossy(&allowed_outside_write.stderr)
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_sandbox_exec_preserves_the_exec_pid() {
+        use std::process::Stdio;
+
+        let child = std::process::Command::new(super::SANDBOX_EXEC_PATH)
+            .arg("-p")
+            .arg("(version 1)\n(allow default)")
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg("printf %s $$")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let launcher_pid = child.id();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            launcher_pid.to_string()
+        );
+    }
 
     #[test]
     fn start_once_makes_concurrent_start_single_flight() {
@@ -3710,6 +4233,81 @@ mod tests {
         assert!(custom
             .iter()
             .any(|(k, v)| *k == "NO_PROXY" && v.contains("127.0.0.1")));
+    }
+
+    #[test]
+    fn provisioning_proxy_env_forwards_only_the_explicit_allowlist() {
+        let inherited = vec![
+            ("HTTP_PROXY".to_string(), "http://upper-http:1".to_string()),
+            (
+                "HTTPS_PROXY".to_string(),
+                "http://upper-https:2".to_string(),
+            ),
+            ("http_proxy".to_string(), "http://lower-http:3".to_string()),
+            (
+                "https_proxy".to_string(),
+                "http://lower-https:4".to_string(),
+            ),
+            ("ALL_PROXY".to_string(), "socks5://upper-all:5".to_string()),
+            ("all_proxy".to_string(), "socks5://lower-all:6".to_string()),
+            ("NO_PROXY".to_string(), "upper.example".to_string()),
+            ("no_proxy".to_string(), "lower.example".to_string()),
+            (
+                "PIP_INDEX_URL".to_string(),
+                "https://untrusted.invalid/simple".to_string(),
+            ),
+            (
+                "UV_CONFIG_FILE".to_string(),
+                "/tmp/untrusted.toml".to_string(),
+            ),
+            ("RUSTFLAGS".to_string(), "--cfg injected".to_string()),
+        ];
+        let forwarded = resolve_provisioning_proxy_env("system", "", inherited, || {
+            panic!("system proxy must not be read when an allowlisted env value exists")
+        });
+        assert_eq!(
+            forwarded,
+            vec![
+                ("HTTP_PROXY", "http://upper-http:1".to_string()),
+                ("HTTPS_PROXY", "http://upper-https:2".to_string()),
+                ("http_proxy", "http://lower-http:3".to_string()),
+                ("https_proxy", "http://lower-https:4".to_string()),
+                ("ALL_PROXY", "socks5://upper-all:5".to_string()),
+                ("all_proxy", "socks5://lower-all:6".to_string()),
+                ("NO_PROXY", "upper.example".to_string()),
+                ("no_proxy", "lower.example".to_string()),
+            ]
+        );
+        assert!(!forwarded
+            .iter()
+            .any(|(key, _)| { matches!(*key, "PIP_INDEX_URL" | "UV_CONFIG_FILE" | "RUSTFLAGS") }));
+
+        let fallback = resolve_provisioning_proxy_env("system", "", Vec::new(), || {
+            Some("http://system-proxy:7890".to_string())
+        });
+        assert_eq!(
+            fallback,
+            vec![
+                ("HTTP_PROXY", "http://system-proxy:7890".to_string()),
+                ("HTTPS_PROXY", "http://system-proxy:7890".to_string()),
+                ("NO_PROXY", "localhost,127.0.0.1,::1".to_string()),
+            ]
+        );
+
+        let custom = resolve_provisioning_proxy_env(
+            "custom",
+            "http://custom:8080",
+            vec![("HTTP_PROXY".to_string(), "http://ignored:1".to_string())],
+            || panic!("custom mode has no system fallback"),
+        );
+        assert_eq!(custom, resolve_proxy_env("custom", "http://custom:8080"));
+        let none = resolve_provisioning_proxy_env(
+            "none",
+            "",
+            vec![("HTTP_PROXY".to_string(), "http://ignored:1".to_string())],
+            || panic!("none mode has no system fallback"),
+        );
+        assert_eq!(none, resolve_proxy_env("none", ""));
     }
 
     #[test]
@@ -5118,6 +5716,52 @@ pub fn remove_provider_api_key(
             &opencode_auth_file(&app)?,
             &provider_id,
             remove_provider_config,
+            &write_private_atomic,
+        )
+    })?;
+    Ok(RuntimeRestartResult { runtime_url })
+}
+
+/// Future allowlisted credential save boundary. It is deliberately fail-closed
+/// until native per-call approval and immutable, fully locked targets are
+/// enforced; renderer-supplied commands and environments are never accepted.
+#[tauri::command(async)]
+pub fn save_science_connector_api_key(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    connector_id: String,
+    api_key: String,
+) -> Result<RuntimeRestartResult, String> {
+    crate::science_mcp::ensure_managed_connector_execution_enabled()?;
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
+        let command = crate::science_mcp::managed_connector_command(&app, &connector_id)?;
+        crate::credential::save_connector_api_key(
+            &crate::credential::SystemConnectorCredentialStore,
+            &opencode_config_files(&app)?,
+            &connector_id,
+            &api_key,
+            &command,
+            &write_private_atomic,
+        )
+    })?;
+    Ok(RuntimeRestartResult { runtime_url })
+}
+
+/// Remove every live config reference for an allowlisted curated connector,
+/// then delete its system credential and restart the sidecar.
+#[tauri::command(async)]
+pub fn remove_science_connector(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    connector_id: String,
+) -> Result<RuntimeRestartResult, String> {
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
+        let command = crate::science_mcp::managed_connector_command(&app, &connector_id)?;
+        crate::credential::remove_connector_api_key(
+            &crate::credential::SystemConnectorCredentialStore,
+            &opencode_config_files(&app)?,
+            &connector_id,
+            &command,
             &write_private_atomic,
         )
     })?;

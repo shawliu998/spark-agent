@@ -31,14 +31,14 @@ for deliberately unported code.
 | Product positioning | `README.md`, workspace copy | `README.md`, `AGENTS.md`, product copy | behavior-only / Spark | General research is the default; verified workflows are optional. Product | Foundation | parity | Copy assertions and desktop tests |
 | General research agent | `backend/cli/src/agent/agent.ts`, `prompt/research.txt` | App-private OpenCode profile + desktop session | adapted / Apache-2.0 | OpenCode owns the session and loop. Runtime | Foundation | partial | Profile, SDK, desktop tests, deterministic live agent/tool smoke |
 | Agent roster | `backend/cli/src/agent/**` | `runtime/opencode-profile/agents/` | adapted / Apache-2.0 | Ship a runtime-loaded roster in pinned OpenCode format. Runtime | Foundation | parity | Profile fixture, live discovery, `listAgents`, grouped picker tests |
-| Sub-agent delegation | native agents in `agent.ts` | OpenCode agent/task events | behavior-only / Spark | Use OpenCode delegation; do not add a second scheduler. Runtime | PR 2 | partial | SDK event normalization tests |
+| Sub-agent delegation | native agents in `agent.ts` | OpenCode agent/task events | behavior-only / Spark | Use OpenCode delegation; do not add a second scheduler. Runtime | Foundation | parity | SDK normalization plus live task-child creation, one-time child approval, result return, and restart-lineage smoke |
 | Research workflow | `prompt/research.txt` | Research agent prompt and workspace | adapted / Apache-2.0 | Preserve iterative scope/reason/compute/analyze/write behavior. Runtime | Foundation | partial | Prompt contract + deterministic vertical smoke |
 | Sessions | `backend/cli/src/session/**` | OpenCode sessions through `OpenCodeClient` | behavior-only / Spark | OpenCode is canonical; persist its app-private data directory. SDK | Foundation | partial | Session restore desktop test |
 | Context compaction | `prompt/compaction.txt`, session runtime | OpenCode native context handling | excluded / OpenCode | Do not fork or duplicate OpenCode compaction. Runtime | Foundation | excluded | OpenCode boundary assertion |
 | Planning | plan agent in `agent.ts` | OpenCode `plan` agent | adapted / Apache-2.0 | Read-only planning is selectable; no science-core gate in General mode. Runtime | Foundation | parity | Agent profile and fail-closed permission tests |
 | Todo | OpenScience todo tools | OpenCode native tools/events | behavior-only / OpenCode | Render native events when exposed; no duplicate store. Desktop | PR 7 | partial | Event rendering tests |
 | Model providers | `backend/cli/src/provider/**` | OpenCode provider APIs + native credential custody | behavior-only / Spark | Keep providers model-agnostic. Simple API keys use the OS credential manager at rest; structured API and OAuth records remain explicitly partial. SDK/desktop | Foundation | partial | Provider/config preservation and credential migration tests |
-| MCP | `backend/cli/src/mcp/**` | OpenCode MCP APIs | behavior-only / Spark | OpenCode owns MCP lifecycle and credentials. SDK | PR 8 | partial | Existing SDK MCP tests |
+| MCP | `backend/cli/src/mcp/**` | OpenCode MCP APIs + native curated-key custody | behavior-only / Spark | OpenCode owns MCP lifecycle. Materials/FRED migration and private-broker infrastructure ship, and the legacy DYLD-sensitive launcher is removed. Their managed entry is disabled and uses only Apple platform-signed `/usr/bin/nc -U` to a private socket; credential-bearing execution fails closed and remains security-gated. The broker identity/config/target checks are staged defenses, not a delivered key-delivery guarantee. Custom/BYO MCP custody remains outside this boundary. SDK/desktop | Foundation | partial | Migration and broker tests now; release requires the P0 target-integrity/native-approval/config-dependency gate plus P1 hashed-atomic-install and packaged-macOS-E2E gates |
 | Custom agents | config markdown loading | Project/global OpenCode agents | behavior-only / OpenCode | Surface only agents returned by runtime. Runtime | PR 8 | partial | Runtime-list desktop test |
 | Custom commands | `backend/cli/src/command/**` | OpenCode command APIs and slash composer | behavior-only / Spark | Forward runtime commands with selected agent/model; do not hardcode a catalog. SDK | Foundation | partial | `listCommands`, selection payload, and invocation tests |
 | Plugins | OpenScience plugin packages | OpenCode extension boundaries | excluded / OpenCode | No OpenScience plugin runtime import. Runtime | PR 8 | not-started | None |
@@ -60,7 +60,7 @@ for deliberately unported code.
 | Python | research prompt + coding skills | Workspace Python through OpenCode | behavior-only / Spark | General scripts run without Docker only after Shell approval; hard arbitrary-code isolation and broader environment/dependency parity remain open. Runtime | Foundation | partial | Live Research Agent approved bash + CSV/PNG smoke |
 | Notebook | `src/science/kernel/**`, notebook UI | Persistent local Python/R kernels plus verified science-runtime | behavior-only / Spark | Keep current local and verified paths; add a fully isolated general sandbox later. Runtime | PR 5 | partial | Kernel, notebook UI, and science-runtime tests |
 | R | skill/runtime references | Persistent local R kernel and notebook UI | behavior-only / Spark | Preserve current R execution; add environment management and sandbox parity later. Runtime | PR 5 | partial | Rust kernel and R notebook UI tests |
-| Scientific databases | `src/science/connectors/**` | Curated paper-search, BioMCP, Materials Project, FRED, and related MCP setup | behavior-only / Spark | Keep shipped connectors optional; add the unified typed result contract and missing OpenScience sources incrementally. Connectors | PR 4/6 | partial | Connector config/setup tests |
+| Scientific databases | `src/science/connectors/**` | Curated paper-search, BioMCP, Materials Project, FRED, and related MCP setup | behavior-only / Spark | Keep credential-free shipped connectors optional; Materials/FRED stay visible but security-gated until credential-execution release gates pass. Add the unified typed result contract and missing OpenScience sources incrementally. Connectors | PR 4/6 | partial | Connector config/setup and fail-closed keyed-connector tests |
 
 ## Rendering, writing, and verification matrix
 
@@ -87,20 +87,37 @@ Create project -> create/restore OpenCode session -> select research agent
 ```
 
 General Research must complete this path without Docker or science-core. The
-existing Verified Dataset Analysis smoke remains a separate regression gate.
+same live run must also create a real task-child session, route its one-time
+approval, return its artifact to the parent, and preserve that lineage over a
+sidecar restart. The existing Verified Dataset Analysis smoke remains a
+separate regression gate.
 
 Known Foundation limits are explicit: the credential-free live smoke uses a
 deterministic loopback model double while exercising the real pinned OpenCode
-Research Agent and `skill`/`write`/`bash` loop; it does not validate an external
-paid provider or a packaged desktop-process restart. Skill source labels cannot
-yet distinguish app-bundled from user-global entries returned from the same
-OpenCode directory. The smoke observes and grants the real bash permission once,
-but manual approval is not workspace confinement; hard arbitrary-code isolation
-remains open. Simple provider API keys are migrated from OpenCode files to the OS
-credential manager and referenced through runtime-only environment placeholders.
-That is at-rest protection, not execution-time isolation: an approved local tool
-can inherit the sidecar environment. Structured provider API records are rejected
-until they can be migrated without losing metadata, while OAuth records,
-scientific-connector keys, and the persistent Jupyter token still use owner-only
-app-private files. Foundation must not be declared complete while those
+Research Agent and `skill`/`apply_patch`/`bash`/`task` loops; it does not validate
+an external paid provider or a packaged desktop-process restart. Skill source
+labels cannot yet distinguish app-bundled from user-global entries returned from
+the same OpenCode directory. The smoke observes and grants the real main-agent
+bash permission once and two child edit requests once each, but manual approval
+is not workspace confinement; hard arbitrary-code isolation remains open. Simple
+provider API keys are migrated from OpenCode files to the OS credential manager,
+referenced through runtime-only environment placeholders, and supplied to the
+sidecar at launch. An approved local tool can still inherit those provider keys.
+Spark-managed Materials Project/FRED keys use separate credential-manager items.
+Migration and private-broker infrastructure are implemented, and the legacy
+DYLD-sensitive Spark launcher is removed. Their disabled native MCP config contains
+only Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain socket. The
+staged Tauri broker authenticates relay UID/PID/executable/parent against the owned
+OpenCode PID/start-time/generation and validates the strict app config and canonical
+target. Credential-bearing execution is disabled by default and fails closed, so
+MP/FRED remain security-gated and unavailable to the runtime. These checks are
+staged defense in depth, not a delivered assertion that the key path is uncrossable
+or the downloaded target is confined. One P0 release gate requires immutable
+signed/verified targets or same-UID-resistant isolated execution, native approval
+for each broker call, and closure of the OpenCode config-dependency approval bypass.
+Two P1 gates require a fully hashed transitive lock with staged atomic install and
+packaged macOS E2E. Structured provider API records are rejected until they can be
+migrated without losing metadata, while OAuth records and the persistent Jupyter
+token still use owner-only app-private files. Custom/BYO MCP custody is outside the
+verified boundary. Foundation must not be declared complete while those
 non-negotiable custody and isolation gaps remain.

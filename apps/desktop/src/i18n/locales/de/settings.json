@@ -85,6 +85,8 @@
     "enterKeyFirstTitle": "Zuerst den API-Schlüssel eingeben",
     "settingUp": "Wird eingerichtet…",
     "enable": "Aktivieren",
+    "securityGated": "Sicherheitsgesperrt",
+    "securityGatedTitle": "Deaktiviert, bis native Freigaben pro Aufruf und unveränderliche, vollständig gesperrte Connector-Ziele durchgesetzt werden",
     "freeKeySuffix": "(kostenloser Schlüssel)",
     "getFreeKey": "Kostenlosen Schlüssel anfordern",
     "jupyterLabel": "Jupyter",
@@ -152,7 +154,7 @@
       "workspaceFiles": "Ihre Arbeitsbereichsdateien und Rohdaten",
       "codeExecution": "Codeausführung — der Python-Kernel und Jupyter laufen lokal; Datensätze werden hier verarbeitet, nie in großen Mengen hochgeladen.",
       "sessionHistory": "Sitzungsverlauf und Herkunftsnachweise, im privaten Datenordner der App.",
-      "providerKeys": "Anbieter-API-Schlüssel — im Ruhezustand durch die Anmeldeinformationsverwaltung des Betriebssystems geschützt. OAuth-Datensätze, Connector-Schlüssel und das Jupyter-Token liegen weiterhin in kontoeigenen App-Dateien. Genehmigte lokale Tools können Laufzeitgeheimnisse erben; die Ausführungsisolation ist noch in Arbeit."
+      "providerKeys": "Einfache Anbieter-API-Schlüssel und von Spark verwaltete Materials-Project-/FRED-Connector-Schlüssel sind im Ruhezustand durch die Anmeldeinformationsverwaltung des Betriebssystems geschützt. Die MP/FRED-Migration und die private Broker-Infrastruktur sind implementiert; der veraltete DYLD-empfindliche Spark-Starter ist entfernt. Die verwalteten Einträge sind standardmäßig deaktiviert: Eine Ausführung mit Anmeldedaten schlägt geschlossen fehl und wird in den Einstellungen als sicherheitsgesperrt markiert. Der gestufte Pfad verwendet nur das von Apple für die Plattform signierte /usr/bin/nc -U zu einem privaten Unix-Domain-Socket; der Tauri-Broker bindet UID, PID, Programmdatei und Elternprozess des Relays an PID, Startzeit und Generation des aktuell von Spark verwalteten OpenCode-Prozesses und validiert die strikte App-Konfiguration sowie das kanonische Ziel. Dies ist gestufte Tiefenverteidigung und keine ausgelieferte Zusicherung, dass der Schlüsselpfad unüberwindbar oder das Ziel hart isoliert ist. Freigabesperren: P0 — unveränderliche signierte/verifizierte heruntergeladene Ziele oder Isolation vor Änderungen durch Prozesse derselben UID, native Freigabe pro Aufruf und Schließen der Umgehung bei Konfigurationsabhängigkeiten; P1 — eine vollständig hashgebundene transitive Sperrdatei mit gestufter atomarer Installation; P1 — paketierte macOS-E2E-Tests. OAuth-Datensätze und das von der App verwaltete Jupyter-Token liegen weiterhin in kontoeigenen App-Dateien; Anmeldedaten eigener/BYO-MCPs fallen nicht unter diese Grenze. Genehmigte lokale Tools können weiterhin Anbieter- oder andere Laufzeitgeheimnisse erben; eine breitere Ausführungsisolation ist noch in Arbeit."
     },
     "remote": {
       "heading": "An Ihren Modellanbieter gesendet",

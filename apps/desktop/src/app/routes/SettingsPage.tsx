@@ -51,7 +51,7 @@ import { RUNTIME_POLICY } from "@/lib/runtimePolicy";
 
 /**
  * Settings. ONE configuration surface: everything talks to the bundled
- * OpenCode's own config/auth API — no separate "model key" concept.
+ * OpenCode's config/auth API, with native credential custody for secrets.
  */
 export function SettingsPage() {
   const theme = useUiStore((s) => s.theme);
@@ -72,6 +72,7 @@ export function SettingsPage() {
   const defaultModel = useRuntimeStore((s) => s.defaultModel);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
   const removeConfigEntry = useRuntimeStore((s) => s.removeConfigEntry);
+  const removeScienceConnector = useRuntimeStore((s) => s.removeScienceConnector);
   const saveProviderApiKey = useRuntimeStore((s) => s.saveProviderApiKey);
   const removeProviderApiKey = useRuntimeStore((s) => s.removeProviderApiKey);
   const finalizeProviderLogin = useRuntimeStore((s) => s.finalizeProviderLogin);
@@ -550,7 +551,11 @@ export function SettingsPage() {
 
   const removeMcp = (name: string) =>
     run(t("toast.couldNotRemoveMcp"), async () => {
-      await removeConfigEntry("mcp", name);
+      const managedCredential = SCIENCE_CONNECTORS.some(
+        (connector) => connector.id === name && Boolean(connector.apiKeyEnv),
+      );
+      if (managedCredential) await removeScienceConnector(name);
+      else await removeConfigEntry("mcp", name);
       toast.success(t("toast.mcpRemoved", { name }));
     });
 
@@ -952,6 +957,7 @@ export function SettingsPage() {
                 SCIENCE_CONNECTORS.filter((c) => !mcpServers.some((s) => s.name === c.id)).map(
                   (c) => {
                     const keyMissing = Boolean(c.apiKeyEnv) && !connectorKeys[c.id]?.trim();
+                    const securityGated = Boolean(c.securityGated);
                     return (
                       <div
                         key={c.id}
@@ -976,15 +982,23 @@ export function SettingsPage() {
                           <button
                             className={btnAccent("h-8")}
                             onClick={() => void enableConnector(c.id)}
-                            disabled={enablingConnector !== null || busy || keyMissing}
-                            title={keyMissing ? t("mcp.enterKeyFirstTitle") : undefined}
+                            disabled={
+                              enablingConnector !== null || busy || keyMissing || securityGated
+                            }
+                            title={
+                              securityGated
+                                ? t("mcp.securityGatedTitle")
+                                : keyMissing
+                                  ? t("mcp.enterKeyFirstTitle")
+                                  : undefined
+                            }
                           >
                             {enablingConnector === c.id ? (
                               <>
                                 <Loader2 size={12} className="animate-spin" /> {t("mcp.settingUp")}
                               </>
                             ) : (
-                              t("mcp.enable")
+                              t(securityGated ? "mcp.securityGated" : "mcp.enable")
                             )}
                           </button>
                         </div>
@@ -992,6 +1006,7 @@ export function SettingsPage() {
                           <div className="mt-2 flex items-center gap-2 pl-6">
                             <input
                               type="password"
+                              disabled={securityGated}
                               value={connectorKeys[c.id] ?? ""}
                               onChange={(e) =>
                                 setConnectorKeys((k) => ({ ...k, [c.id]: e.target.value }))

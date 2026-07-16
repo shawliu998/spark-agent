@@ -5,8 +5,10 @@
 // frontend as a `setup-progress` event and kills the process when it produces
 // no output for STALL_SECS, turning a silent hang into a readable error.
 use std::collections::VecDeque;
+use std::ffi::OsString;
+use std::path::Path;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
@@ -26,6 +28,46 @@ const STALL_SECS: u64 = 600;
 
 /// How many trailing output lines to keep for the error message.
 const TAIL_LINES: usize = 12;
+const PYPI_INDEX: &str = "https://pypi.org/simple";
+
+fn isolated_uv_args(args: Vec<String>) -> Vec<String> {
+    let mut isolated = Vec::with_capacity(args.len() + 1);
+    isolated.push("--no-config".to_string());
+    isolated.extend(args);
+    isolated
+}
+
+fn isolated_uv_environment(
+    provisioning_home: &Path,
+    cache: &Path,
+    python_install: &Path,
+    safe_path: &str,
+    proxy: Vec<(&'static str, String)>,
+) -> Vec<(OsString, OsString)> {
+    let mut environment = vec![
+        (
+            OsString::from("HOME"),
+            provisioning_home.as_os_str().to_owned(),
+        ),
+        (OsString::from("PATH"), OsString::from(safe_path)),
+        (OsString::from("UV_CACHE_DIR"), cache.as_os_str().to_owned()),
+        (
+            OsString::from("UV_PYTHON_INSTALL_DIR"),
+            python_install.as_os_str().to_owned(),
+        ),
+        (OsString::from("UV_NO_CONFIG"), OsString::from("1")),
+        (
+            OsString::from("UV_DEFAULT_INDEX"),
+            OsString::from(PYPI_INDEX),
+        ),
+    ];
+    environment.extend(
+        proxy
+            .into_iter()
+            .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+    );
+    environment
+}
 
 /// Keep the last TAIL_LINES lines: uv puts the actual failure reason at the
 /// end of its output, and the full log of a 300 MB install is noise.
@@ -45,11 +87,40 @@ pub async fn run_uv(
     args: Vec<String>,
     label: &str,
 ) -> Result<(), String> {
-    let (mut rx, child) = app
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let cache = app
+        .path()
+        .app_cache_dir()
+        .map_err(|error| error.to_string())?
+        .join("uv");
+    let python_install = app_data.join("runtime").join("uv-python");
+    let provisioning_home = app_data.join("runtime").join("provisioning-home");
+    for directory in [&cache, &python_install, &provisioning_home] {
+        std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    }
+
+    #[cfg(not(windows))]
+    let safe_path = "/usr/bin:/bin:/usr/sbin:/sbin".to_string();
+    #[cfg(windows)]
+    let safe_path = std::env::var("PATH").unwrap_or_default();
+    let environment = isolated_uv_environment(
+        &provisioning_home,
+        &cache,
+        &python_install,
+        &safe_path,
+        crate::runtime::provisioning_proxy_env(app),
+    );
+    let command = app
         .shell()
         .sidecar("uv")
         .map_err(|e| format!("uv sidecar not found: {e}"))?
-        .args(args)
+        .env_clear()
+        .envs(environment)
+        .args(isolated_uv_args(args));
+    let (mut rx, child) = command
         .spawn()
         .map_err(|e| format!("{label} failed to run: {e}"))?;
 
@@ -111,6 +182,7 @@ fn last(tail: &VecDeque<String>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn tail_keeps_only_the_last_lines() {
@@ -129,5 +201,48 @@ mod tests {
         let mut tail = VecDeque::new();
         push_tail(&mut tail, "error: boom");
         assert!(last(&tail).contains("boom"));
+    }
+
+    #[test]
+    fn provisioning_disables_config_and_forwards_only_allowlisted_environment() {
+        let args = isolated_uv_args(vec!["pip".into(), "install".into(), "pkg==1".into()]);
+        assert_eq!(args[0], "--no-config");
+
+        let environment = isolated_uv_environment(
+            Path::new("/private/home"),
+            Path::new("/private/cache"),
+            Path::new("/private/python"),
+            "/usr/bin:/bin",
+            vec![
+                ("HTTPS_PROXY", "http://proxy.invalid:8080".into()),
+                ("NO_PROXY", "localhost,127.0.0.1,::1".into()),
+            ],
+        );
+        let keys = environment
+            .iter()
+            .map(|(key, _)| key.to_string_lossy().to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "HOME".to_string(),
+                "PATH".to_string(),
+                "UV_CACHE_DIR".to_string(),
+                "UV_DEFAULT_INDEX".to_string(),
+                "UV_NO_CONFIG".to_string(),
+                "UV_PYTHON_INSTALL_DIR".to_string(),
+                "HTTPS_PROXY".to_string(),
+                "NO_PROXY".to_string(),
+            ])
+        );
+        assert!(!keys.iter().any(|key| {
+            matches!(
+                key.as_str(),
+                "UV_INDEX" | "UV_FIND_LINKS" | "UV_CONFIG_FILE" | "PIP_CONFIG_FILE"
+            )
+        }));
+        assert!(environment
+            .iter()
+            .any(|(key, value)| { key == "UV_DEFAULT_INDEX" && value == PYPI_INDEX }));
     }
 }

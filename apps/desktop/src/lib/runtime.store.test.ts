@@ -98,6 +98,14 @@ const mocks = vi.hoisted(() => ({
     mocks.mutationSawClosedClient = !mocks.clientOpen;
     return { runtimeUrl: mocks.restartUrl };
   }),
+  saveScienceConnectorApiKey: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { runtimeUrl: mocks.restartUrl };
+  }),
+  removeScienceConnector: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { runtimeUrl: mocks.restartUrl };
+  }),
   finalizeProviderLogin: vi.fn(async () => {
     mocks.mutationSawClosedClient = !mocks.clientOpen;
     return { runtimeUrl: mocks.restartUrl };
@@ -127,6 +135,8 @@ vi.mock("./tauri", () => ({
   removeConfigEntry: mocks.removeConfigEntry,
   saveProviderApiKey: mocks.saveProviderApiKey,
   removeProviderApiKey: mocks.removeProviderApiKey,
+  saveScienceConnectorApiKey: mocks.saveScienceConnectorApiKey,
+  removeScienceConnector: mocks.removeScienceConnector,
   finalizeProviderLogin: mocks.finalizeProviderLogin,
   importOpenCodeLogin: mocks.importOpenCodeLogin,
   runtimePassword: async () => "pw-test",
@@ -2631,6 +2641,20 @@ describe("approval mode", () => {
     mocks.restartUrl = "http://127.0.0.1:43133";
     await useRuntimeStore.getState().finalizeProviderLogin("openrouter");
     expect(mocks.finalizeProviderLogin).toHaveBeenCalledWith("openrouter");
+    expect(useRuntimeStore.getState().serverUrl).toBe(mocks.restartUrl);
+    expect(useRuntimeStore.getState().status).toBe("ready");
+  });
+
+  it("curated connector keychain mutations use the safe restart handoff", async () => {
+    mocks.restartUrl = "http://127.0.0.1:43134";
+    await useRuntimeStore.getState().saveScienceConnectorApiKey("fred", "fred-secret");
+    expect(mocks.saveScienceConnectorApiKey).toHaveBeenCalledWith("fred", "fred-secret");
+    expect(mocks.mutationSawClosedClient).toBe(true);
+    expect(useRuntimeStore.getState().serverUrl).toBe(mocks.restartUrl);
+
+    mocks.restartUrl = "http://127.0.0.1:43135";
+    await useRuntimeStore.getState().removeScienceConnector("fred");
+    expect(mocks.removeScienceConnector).toHaveBeenCalledWith("fred");
     expect(useRuntimeStore.getState().serverUrl).toBe(mocks.restartUrl);
     expect(useRuntimeStore.getState().status).toBe("ready");
   });

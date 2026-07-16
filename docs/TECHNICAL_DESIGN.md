@@ -164,14 +164,45 @@ git-ignored and fetched by `scripts/dev/fetch-opencode.sh`). The Rust side
 
 The runtime manager idempotently deploys Spark agents and skills into the
 app-private profile and merges Spark defaults without replacing existing provider
-or user fields. Settings sends simple API keys through native Rust commands that
-store them in the OS credential manager and persist only an environment reference;
-OpenCode owns OAuth login, after which Spark finalizes any simple API record. The
-legacy `configure_opencode` bridge uses the same native custody path. Neither path
-touches the user's global OpenCode config. OAuth records remain in an owner-only
-app-private auth file. Provider keys are injected into the sidecar environment,
-so this design currently protects storage at rest but does not isolate a key from
-an explicitly approved local tool running inside that process tree.
+or user fields. Settings sends simple provider API keys through native Rust
+commands that store them in the OS credential manager and persist only environment
+references. Those keys are supplied to the OpenCode sidecar at launch. Settings
+sends allowlisted Materials Project/FRED keys to separate credential-manager
+items. Migration and private-broker infrastructure are implemented, but
+credential-bearing execution is disabled by default and fails closed. Migration
+canonicalizes Spark-owned entries to a disabled, secretless command consisting
+only of Apple platform-signed `/usr/bin/nc -U <private-socket>`. This removes the
+legacy DYLD-sensitive Spark launcher from the OpenCode process tree. The staged
+broker in the already-running Tauri process authenticates relay UID, PID,
+executable, and parent against the currently owned OpenCode PID, start time, and
+generation, then validates the strict app config and canonical target. The
+credential-release/spawn branch is not enabled in production, and Settings marks
+MP/FRED security-gated; these connectors are not available to the runtime while
+the gate is closed. The nc/private-UDS/PID-generation design is defense in depth,
+not a delivered assertion that a key cannot cross a boundary or that a downloaded
+target is confined. OpenCode owns OAuth login, after which Spark finalizes any
+simple API record. The legacy
+`configure_opencode` bridge uses the same native custody path. Neither path touches
+the user's global OpenCode config. OAuth records remain in an owner-only
+app-private auth file, and the persistent Jupyter token remains in an owner-only
+app-private metadata file. Provider keys can still be inherited by an explicitly
+approved local tool in the sidecar process tree; broader execution isolation and
+hard confinement remain open.
+
+Credential-bearing connector release has one P0 and two P1 gates:
+
+- **P0 — execution authority and target integrity:** make downloaded targets
+  immutable and signed/verified, or run them in an isolation boundary that a
+  same-UID OpenCode extension cannot mutate or replace; require native approval
+  for every broker call and gate or disable OpenCode config-directory dependency
+  installation, which currently occurs before tool approval.
+- **P1 — supply-chain installation:** replace the current exact top-level pins
+  with a fully hashed transitive lock and staged atomic installation. Clearing the
+  caller environment, disabling uv configuration, and fixing official PyPI remain
+  useful subordinate controls.
+- **P1 — packaged validation:** pass packaged macOS E2E covering migration,
+  fail-closed denial, relay lineage and revocation, target verification, atomic
+  install, and restart.
 
 ## 6. Skills & MCP
 
@@ -380,15 +411,28 @@ approvals remain separate domain objects.
 Verified-workflow gateway credentials are stored in macOS Keychain and handed to
 science-core through a bounded Compose secret. For General Research, simple
 provider API keys are migrated to the OS credential manager; OpenCode config holds
-only an environment reference and the sidecar receives the key at launch. This is
-at-rest protection, not process isolation: an approved Shell or local MCP process
-can inherit the sidecar environment. Structured provider API records fail closed
-instead of losing metadata. OAuth records, scientific-connector keys, and the
-persistent Jupyter token still use owner-only app-private files and remain open
-custody work. Spark does not intentionally write secrets to workspace provenance,
+only environment references, and the sidecar receives those keys at launch.
+Spark-managed Materials Project/FRED keys use separate credential-manager items
+and disabled, secretless native MCP config. Migration and the private broker are
+implemented, and the legacy DYLD-sensitive Spark launcher is removed. The staged
+command is Apple platform-signed `/usr/bin/nc -U <private-socket>`; the Tauri
+broker binds relay identity to the currently owned OpenCode PID/start time/
+generation and validates the strict config and canonical target.
+Credential-bearing execution remains fail-closed and security-gated, so no
+production claim is made that the key-delivery path is available, uncrossable, or
+hard-confined.
+Approved local tools can still inherit provider or other sidecar runtime secrets.
+Structured provider API records fail closed instead of losing metadata. OAuth
+records and the persistent Jupyter token still use owner-only app-private files
+and remain open custody work; custom/BYO MCP credential custody is outside this
+guarantee. Spark does not intentionally write secrets to workspace provenance,
 git, crash reports, or exports, but execution-time redaction is not yet a hard
-boundary. Public and LAN model endpoints require HTTPS, while plain HTTP is
-limited to literal loopback destinations.
+boundary. Before credential-bearing connectors can be enabled, the P0
+target-integrity/native-approval/config-dependency gate and both P1 gates—a fully
+hashed transitive lock with staged atomic install, and packaged macOS E2E—must
+pass.
+Public and LAN model endpoints require HTTPS, while plain HTTP is limited to
+literal loopback destinations.
 
 ## 12. Packaging & release
 

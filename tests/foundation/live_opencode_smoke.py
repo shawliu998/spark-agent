@@ -3,9 +3,9 @@
 The smoke starts the pinned OpenCode sidecar in fully temporary app-private XDG
 directories plus a deterministic loopback OpenAI-compatible test double. The
 Pinned runtime executes a real selected-agent loop: skill, apply_patch behind
-its real `edit` approval, bash approval, history, artifacts, and persistence across a process
-restart. It never contacts an external model provider or inherits user
-credentials.
+its real `edit` approval, bash approval, task-child delegation with its own edit
+approval, history, artifacts, and parent-child persistence across a process
+restart. It never contacts an external model provider or inherits user credentials.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +37,8 @@ FIXTURE = Path(__file__).with_name("create_artifacts.py")
 PINNED_VERSION = "1.17.13"
 PASSWORD = "foundation-local-smoke"
 MODEL_ID = "gpt-5-foundation"
+DELEGATION_MARKER = "FOUNDATION_DELEGATION_E2E"
+DELEGATION_RESULT = "FOUNDATION_CHILD_RESULT: bounded review complete"
 
 EXPECTED_AGENTS = {
     "research",
@@ -289,6 +291,7 @@ class MockModel:
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.requests: list[dict[str, Any]] = []
         self.selected_tools: list[str] = []
+        self.delegation_tools: list[str] = []
         self.errors: list[str] = []
 
     @property
@@ -340,6 +343,84 @@ class MockModel:
                     {"role": "assistant", "content": "Foundation research analysis"},
                 )
                 return
+            transcript = json.dumps(messages, ensure_ascii=True)
+            if DELEGATION_MARKER in transcript:
+                if "General research task agent" in transcript:
+                    if tool_results == 0:
+                        response = self.tool_call(
+                            "apply_patch",
+                            {
+                                "patchText": (
+                                    "*** Begin Patch\n"
+                                    "*** Add File: outputs/delegated-review.md\n"
+                                    "+# Delegated review\n"
+                                    "+\n"
+                                    "+The task subagent completed the bounded evidence review.\n"
+                                    "*** End Patch"
+                                ),
+                            },
+                            tool_names,
+                            self.delegation_tools,
+                        )
+                    elif tool_results == 1:
+                        response = self.tool_call(
+                            "apply_patch",
+                            {
+                                "patchText": (
+                                    "*** Begin Patch\n"
+                                    "*** Update File: outputs/delegated-review.md\n"
+                                    "@@\n"
+                                    " The task subagent completed the bounded evidence review.\n"
+                                    "+A second edit proved that Allow once did not persist.\n"
+                                    "*** End Patch"
+                                ),
+                            },
+                            tool_names,
+                            self.delegation_tools,
+                        )
+                    else:
+                        response = {
+                            "role": "assistant",
+                            "content": (
+                                f"{DELEGATION_RESULT}; recorded in "
+                                "outputs/delegated-review.md after two separately "
+                                "approved edits."
+                            ),
+                        }
+                elif tool_results == 0:
+                    response = self.tool_call(
+                        "task",
+                        {
+                            "description": "Review delegated evidence",
+                            "prompt": (
+                                f"{DELEGATION_MARKER}: create "
+                                "outputs/delegated-review.md with the bounded review result, "
+                                "then stop."
+                            ),
+                            "subagent_type": "task",
+                        },
+                        tool_names,
+                        self.delegation_tools,
+                    )
+                else:
+                    tool_messages = [
+                        message
+                        for message in messages
+                        if isinstance(message, dict) and message.get("role") == "tool"
+                    ]
+                    if DELEGATION_RESULT not in json.dumps(tool_messages, ensure_ascii=True):
+                        raise AssertionError(
+                            "parent received no completed child result from the task tool"
+                        )
+                    response = {
+                        "role": "assistant",
+                        "content": (
+                            "The task subagent returned a verified review artifact at "
+                            "outputs/delegated-review.md."
+                        ),
+                    }
+                self.respond(handler, payload, response)
+                return
             if tool_results == 0:
                 response = self.tool_call("skill", {"name": "matplotlib"}, tool_names)
             elif tool_results == 1:
@@ -386,19 +467,21 @@ class MockModel:
         name: str,
         arguments: dict[str, Any],
         available: set[str],
+        trace: list[str] | None = None,
     ) -> dict[str, Any]:
         if name not in available:
             raise AssertionError(
                 f"selected Research Agent did not expose {name!r}; "
                 f"available={sorted(available)} raw_tools={self.requests[-1].get('tools')!r}"
             )
-        self.selected_tools.append(name)
+        selected = self.selected_tools if trace is None else trace
+        selected.append(name)
         return {
             "role": "assistant",
             "content": None,
             "tool_calls": [
                 {
-                    "id": f"foundation-{len(self.selected_tools)}",
+                    "id": f"foundation-{len(self.selected_tools) + len(self.delegation_tools)}",
                     "type": "function",
                     "function": {
                         "name": name,
@@ -645,9 +728,26 @@ def observe_and_approve_once(
     expected_permission: str,
     expected_resource: str,
     event_capture: PermissionEventCapture | None = None,
+    before_reply: Callable[[], None] | None = None,
+    must_not_exist_before_reply: bool = False,
+    forbidden_content_before_reply: str | None = None,
 ) -> str:
     """Wait for the real runtime permission, validate it, and grant it once."""
     query = directory_query(workspace)
+
+    def assert_execution_is_blocked() -> None:
+        target = workspace / expected_resource
+        if must_not_exist_before_reply and target.exists():
+            fail(f"{expected_permission} executed before approval: {expected_resource}")
+        if (
+            forbidden_content_before_reply is not None
+            and target.is_file()
+            and forbidden_content_before_reply in target.read_text(encoding="utf-8")
+        ):
+            fail(f"{expected_permission} repeated before a new approval: {expected_resource}")
+        if expected_permission == "bash" and (workspace / "outputs/summary.csv").exists():
+            fail("bash executed before the required manual approval was observed")
+
     if event_capture is not None:
         requests = [event_capture.wait()]
         deadline = time.monotonic()
@@ -668,6 +768,12 @@ def observe_and_approve_once(
             if len(requests) != 1:
                 fail(f"expected one pending permission, got {requests!r}")
             request = requests[0]
+            request_session = str(request.get("sessionID") or request.get("sessionId") or "")
+            if request_session != session_id:
+                fail(
+                    f"permission belonged to {request_session!r}, expected session {session_id!r}: "
+                    f"{request!r}"
+                )
             action = str(request.get("permission") or request.get("action") or "")
             if action != expected_permission:
                 fail(f"expected an {expected_permission} permission, got {request!r}")
@@ -679,21 +785,58 @@ def observe_and_approve_once(
             request_id = str(request.get("id") or "")
             if not request_id:
                 fail(f"bash permission did not include an id: {request!r}")
+            assert_execution_is_blocked()
+            if before_reply is not None:
+                before_reply()
             api.request(
                 "POST",
                 f"/permission/{urllib.parse.quote(request_id, safe='')}/reply?{query}",
                 {"reply": "once"},
             )
             return request_id
-        if expected_permission == "edit" and (workspace / "scripts/foundation_analysis.py").exists():
-            fail("apply_patch executed before the required edit approval was observed")
-        if expected_permission == "bash" and (workspace / "outputs/summary.csv").exists():
-            fail("bash executed before the required manual approval was observed")
+        assert_execution_is_blocked()
         if model.errors:
             fail(f"deterministic model failed before permission: {model.errors}")
         time.sleep(0.1)
     fail(
         f"Research Agent did not request {expected_permission} permission before timeout\n"
+        f"model errors={model.errors}\nsidecar logs={sidecar.logs()}"
+    )
+
+
+def wait_for_child_session(
+    api: Api,
+    workspace: Path,
+    parent_id: str,
+    sidecar: Sidecar,
+    model: MockModel,
+) -> dict[str, Any]:
+    """Return the one real task child created for a parent session."""
+    deadline = time.monotonic() + 30
+    path = (
+        f"/session/{urllib.parse.quote(parent_id, safe='')}/children?"
+        f"{directory_query(workspace)}"
+    )
+    while time.monotonic() < deadline:
+        children = api.request("GET", path, timeout=2)
+        if not isinstance(children, list):
+            fail(f"unexpected child-session response: {children!r}")
+        if children:
+            if len(children) != 1 or not isinstance(children[0], dict):
+                fail(f"expected exactly one delegated child session, got {children!r}")
+            child = children[0]
+            if str(child.get("parentID")) != parent_id:
+                fail(f"delegated child lost its parent link: {child!r}")
+            if str(child.get("agent")) != "task":
+                fail(f"delegation selected the wrong subagent: {child!r}")
+            if not child.get("id"):
+                fail(f"delegated child has no id: {child!r}")
+            return child
+        if model.errors:
+            fail(f"deterministic model failed before delegation: {model.errors}")
+        time.sleep(0.1)
+    fail(
+        "Research Agent did not create a task child before timeout\n"
         f"model errors={model.errors}\nsidecar logs={sidecar.logs()}"
     )
 
@@ -862,6 +1005,7 @@ def run() -> None:
                 "edit",
                 "scripts/foundation_analysis.py",
                 edit_permission_event,
+                must_not_exist_before_reply=True,
             )
             bash_permission_id = observe_and_approve_once(
                 api,
@@ -928,6 +1072,159 @@ def run() -> None:
             if not {"skill", "apply_patch", "bash"}.issubset(history_tools):
                 fail(f"session history did not persist the agent tool loop: {history_tools}")
 
+            delegated = api.request(
+                "POST",
+                f"/session?{directory_query(workspace)}",
+                {},
+            )
+            if not isinstance(delegated, dict) or not delegated.get("id"):
+                fail(f"unexpected delegation session response: {delegated!r}")
+            delegation_session_id = str(delegated["id"])
+            delegated_permission_event = PermissionEventCapture(api, workspace)
+            delegated_permission_event.start()
+            api.request(
+                "POST",
+                (
+                    f"/session/{urllib.parse.quote(delegation_session_id, safe='')}"
+                    "/prompt_async"
+                ),
+                {
+                    "agent": "research",
+                    "model": {
+                        "providerID": "foundation",
+                        "modelID": MODEL_ID,
+                    },
+                    "parts": [
+                        {
+                            "type": "text",
+                            "text": (
+                                f"{DELEGATION_MARKER}: delegate one bounded review to "
+                                "the task subagent and return its artifact."
+                            ),
+                        }
+                    ],
+                },
+                timeout=20,
+            )
+            child = wait_for_child_session(
+                api,
+                workspace,
+                delegation_session_id,
+                first,
+                model,
+            )
+            child_id = str(child["id"])
+            repeated_permission_event = PermissionEventCapture(api, workspace)
+            delegated_permission_id = observe_and_approve_once(
+                api,
+                workspace,
+                child_id,
+                first,
+                model,
+                "edit",
+                "outputs/delegated-review.md",
+                delegated_permission_event,
+                before_reply=repeated_permission_event.start,
+                must_not_exist_before_reply=True,
+            )
+            repeated_permission_id = observe_and_approve_once(
+                api,
+                workspace,
+                child_id,
+                first,
+                model,
+                "edit",
+                "outputs/delegated-review.md",
+                repeated_permission_event,
+                forbidden_content_before_reply="A second edit proved",
+            )
+            if repeated_permission_id == delegated_permission_id:
+                fail("Allow once reused the first permission request for a repeated edit")
+            delegated_artifact = workspace / "outputs" / "delegated-review.md"
+            deadline = time.monotonic() + 30
+            delegation_messages: Any = None
+            child_messages: Any = None
+            while time.monotonic() < deadline:
+                delegation_messages = api.request(
+                    "GET",
+                    (
+                        f"/session/{urllib.parse.quote(delegation_session_id, safe='')}"
+                        "/message"
+                    ),
+                    timeout=2,
+                )
+                child_messages = api.request(
+                    "GET",
+                    f"/session/{urllib.parse.quote(child_id, safe='')}/message",
+                    timeout=2,
+                )
+                parent_text = json.dumps(delegation_messages, ensure_ascii=True)
+                child_text = json.dumps(child_messages, ensure_ascii=True)
+                if (
+                    delegated_artifact.is_file()
+                    and "returned a verified review artifact" in parent_text
+                    and DELEGATION_RESULT in child_text
+                ):
+                    break
+                if model.errors:
+                    fail(f"deterministic delegation model failed: {model.errors}")
+                time.sleep(0.1)
+            else:
+                fail(
+                    "delegated task did not return to its parent before timeout\n"
+                    f"parent={delegation_messages!r}\nchild={child_messages!r}\n"
+                    f"model errors={model.errors}\nsidecar logs={first.logs()}"
+                )
+            if delegated_artifact.read_text(encoding="utf-8").splitlines() != [
+                "# Delegated review",
+                "",
+                "The task subagent completed the bounded evidence review.",
+                "A second edit proved that Allow once did not persist.",
+            ]:
+                fail("delegated artifact content is not deterministic")
+            if model.delegation_tools != ["task", "apply_patch", "apply_patch"]:
+                fail(f"unexpected delegation tool sequence: {model.delegation_tools}")
+            parent_task_parts = [
+                part
+                for message in delegation_messages
+                if isinstance(message, dict)
+                for part in message.get("parts", [])
+                if isinstance(part, dict) and part.get("type") == "tool" and part.get("tool") == "task"
+            ] if isinstance(delegation_messages, list) else []
+            if len(parent_task_parts) != 1:
+                fail(f"parent did not persist one task call: {parent_task_parts!r}")
+            task_state = parent_task_parts[0].get("state", {})
+            if task_state.get("status") != "completed":
+                fail(f"parent task did not complete: {parent_task_parts[0]!r}")
+            if DELEGATION_RESULT not in str(task_state.get("output", "")):
+                fail(f"parent task did not persist the child's result: {parent_task_parts[0]!r}")
+            task_metadata = task_state.get("metadata", {})
+            if str(task_metadata.get("sessionId")) != child_id:
+                fail(f"parent task did not persist its child id: {parent_task_parts[0]!r}")
+            child_apply_patches = sum(
+                1
+                for message in child_messages
+                if isinstance(message, dict)
+                for part in message.get("parts", [])
+                if isinstance(part, dict)
+                and part.get("type") == "tool"
+                and part.get("tool") == "apply_patch"
+            ) if isinstance(child_messages, list) else 0
+            if child_apply_patches != 2:
+                fail(f"child history did not persist two edits: {child_apply_patches}")
+            pending_after_delegation = api.request(
+                "GET",
+                f"/permission?{directory_query(workspace)}",
+            )
+            if not isinstance(pending_after_delegation, list):
+                fail(f"unexpected delegated permission response: {pending_after_delegation!r}")
+            if any(
+                isinstance(item, dict)
+                and str(item.get("id")) in {delegated_permission_id, repeated_permission_id}
+                for item in pending_after_delegation
+            ):
+                fail("the child subagent's one-time edit approval remained pending")
+
             first.stop()
             second = Sidecar(binary, runtime, workspace)
             restarted = second.start()
@@ -945,7 +1242,29 @@ def run() -> None:
             )
             if not persisted_messages:
                 fail("session message history disappeared after restart")
+            persisted_by_id = {
+                str(item.get("id")): item
+                for item in sessions
+                if isinstance(item, dict) and item.get("id")
+            }
+            if delegation_session_id not in persisted_by_id or child_id not in persisted_by_id:
+                fail("delegated parent or child session disappeared after restart")
+            if str(persisted_by_id[child_id].get("parentID")) != delegation_session_id:
+                fail("delegated parent-child lineage disappeared after restart")
+            restarted_children = restarted.request(
+                "GET",
+                (
+                    f"/session/{urllib.parse.quote(delegation_session_id, safe='')}"
+                    f"/children?{directory_query(workspace)}"
+                ),
+            )
+            if not isinstance(restarted_children, list) or [
+                str(item.get("id")) for item in restarted_children if isinstance(item, dict)
+            ] != [child_id]:
+                fail(f"delegated child lookup failed after restart: {restarted_children!r}")
             assert_artifacts(workspace)
+            if not delegated_artifact.is_file():
+                fail("delegated artifact disappeared after restart")
         finally:
             first.close()
             if second is not None:
@@ -955,7 +1274,8 @@ def run() -> None:
     print(
         "Foundation live smoke passed: the pinned runtime resisted a project-global allow, "
         "rejected unsafe custom-agent rules, required one-time edit/apply_patch and bash "
-        "approvals, preserved CSV/PNG artifacts, and restored the session after restart."
+        "approvals, required a new child edit request after Allow once, returned the real "
+        "task result, preserved artifacts, and restored parent-child lineage after restart."
     )
     print(
         "No external provider credentials or network model endpoint were used; the model was a "

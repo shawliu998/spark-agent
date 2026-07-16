@@ -13,10 +13,22 @@ evidence binding, and deterministic review.
 
 > Status: source-run Foundation build for macOS. The General Research vertical
 > slice and existing Verified literature/dataset workflows run today. Simple
-> provider API keys are migrated to the OS credential manager; structured/OAuth
-> credentials, connector/Jupyter secrets, execution-time secret isolation,
-> packaged-app restart E2E, installers, and broader connector parity remain in
-> progress.
+> provider API keys and Spark-managed Materials Project/FRED connector keys are
+> protected at rest by the OS credential manager. MP/FRED migration and broker
+> infrastructure are implemented, and the legacy DYLD-sensitive Spark launcher
+> has been removed. Managed config now points only to Apple platform-signed
+> `/usr/bin/nc -U` and a private Unix-domain socket; the staged Tauri broker binds
+> relay identity to the owned OpenCode PID/start-time/generation and validates the
+> strict config and canonical target. Credential-bearing execution is nevertheless
+> disabled by default and fails closed, so MP/FRED remain security-gated rather
+> than available to the runtime. Release requires one P0 gate—immutable,
+> signed/verified downloaded targets or isolated execution, plus native per-call
+> approval and closure of the OpenCode config-dependency bypass—and two P1 gates:
+> a fully hashed transitive lock with staged atomic install, and packaged macOS
+> E2E. The broker is staged defense in depth, not a delivered key-delivery or
+> hard-confinement guarantee. Structured provider records, OAuth, the app-managed
+> Jupyter token, broader execution-time secret isolation, packaged-app restart
+> E2E, installers, and broader connector parity remain in progress.
 
 ## What works today
 
@@ -37,9 +49,11 @@ evidence binding, and deterministic review.
   scientific writing, and Matplotlib.
 - Extend the runtime with project or user OpenCode agents, skills, MCP servers,
   commands, and model providers.
-- Enable optional curated scientific MCP connectors, including multi-source
-  paper search (arXiv, PubMed, Crossref, and Semantic Scholar), BioMCP,
-  Materials Project, and FRED; unified connector-result parity remains in progress.
+- Enable optional credential-free curated scientific MCP connectors, including
+  multi-source paper search (arXiv, PubMed, Crossref, and Semantic Scholar),
+  BioMCP, space weather, Open-Meteo, and USGS water. Materials Project and FRED
+  are visible but security-gated; unified connector-result parity remains in
+  progress.
 
 Optional Verified Workflows preserve the existing stricter capabilities:
 

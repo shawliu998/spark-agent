@@ -85,6 +85,8 @@
     "enterKeyFirstTitle": "Entrez d'abord la clé API",
     "settingUp": "Configuration en cours…",
     "enable": "Activer",
+    "securityGated": "Bloqué par sécurité",
+    "securityGatedTitle": "Désactivé jusqu'à l'application d'une approbation native par appel et de cibles de connecteur immuables et entièrement verrouillées",
     "freeKeySuffix": "(clé gratuite)",
     "getFreeKey": "Obtenir une clé gratuite",
     "jupyterLabel": "Jupyter",
@@ -152,7 +154,7 @@
       "workspaceFiles": "Vos fichiers d'espace de travail et données brutes",
       "codeExecution": "Exécution du code — le noyau Python et Jupyter s'exécutent localement ; les jeux de données sont traités ici, jamais téléversés en masse.",
       "sessionHistory": "L'historique des sessions et les enregistrements de provenance, dans le dossier de données privé de l'application.",
-      "providerKeys": "Clés API de fournisseur — protégées au repos par le gestionnaire d'identifiants du système. Les enregistrements OAuth, clés de connecteur et le jeton Jupyter utilisent encore des fichiers privés de l'application, lisibles uniquement par votre compte. Les outils locaux approuvés peuvent hériter des secrets d'exécution ; l'isolation reste en cours."
+      "providerKeys": "Les clés API simples des fournisseurs et les clés des connecteurs Materials Project/FRED gérés par Spark sont protégées au repos par le gestionnaire d'identifiants du système. La migration MP/FRED et l'infrastructure du courtier privé sont implémentées, et l'ancien lanceur Spark sensible à DYLD a été supprimé. Leurs entrées gérées sont désactivées par défaut : l'exécution avec identifiants échoue en mode fermé et les Réglages les indiquent comme bloquées par sécurité. Le chemin préparé utilise /usr/bin/nc -U, signé par Apple pour la plateforme, vers un socket de domaine Unix privé ; le courtier Tauri lie l'UID, le PID, l'exécutable et le processus parent du relais au PID, à l'heure de démarrage et à la génération du processus OpenCode actuellement détenu par Spark, puis valide la configuration stricte de l'application et la cible canonique. Il s'agit d'une défense en profondeur préparée, pas d'une garantie livrée que le chemin de clé est infranchissable ou que la cible est strictement confinée. Portes de publication : P0 — cibles téléchargées immuables et signées/vérifiées ou isolation contre les modifications par la même UID, approbation native par appel et fermeture du contournement d'approbation des dépendances de configuration ; P1 — verrou transitif entièrement haché avec installation atomique par étapes ; P1 — E2E macOS empaqueté. Les enregistrements OAuth et le jeton Jupyter géré par l'application utilisent encore des fichiers privés lisibles uniquement par votre compte ; les identifiants des MCP personnalisés/BYO sortent de cette limite. Les outils locaux approuvés peuvent encore hériter des secrets du fournisseur ou d'autres secrets d'exécution ; l'isolation générale reste en cours."
     },
     "remote": {
       "heading": "Envoyé à votre fournisseur de modèle",
