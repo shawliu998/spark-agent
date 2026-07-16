@@ -364,10 +364,13 @@ def deterministic_fallback_decision(
     pdf_ids = source_ids_by_kind["pdf"]
     dataset_ids = source_ids_by_kind["dataset"]
     if pdf_ids and dataset_ids:
-        return _resolved_fallback_decision(
-            "mixed-research",
+        return _clarification_decision(
             pdf_ids + dataset_ids,
-            "The selected sources contain both literature and dataset inputs.",
+            (
+                "The selected sources contain both literature and dataset inputs, but "
+                "mixed research execution is not available. Choose one supported path."
+            ),
+            "select-supported-single-workflow",
         )
     if pdf_ids:
         return _resolved_fallback_decision(

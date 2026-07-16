@@ -15,6 +15,7 @@ interface WorkflowCreateIntentBase {
 export interface AutonomousWorkflowCreateIntent extends WorkflowCreateIntentBase {
   mode: "autonomous";
   sourceIds: string[];
+  remoteDataApproved: boolean;
 }
 
 export interface AdvancedWorkflowCreateIntent extends WorkflowCreateIntentBase {
@@ -117,6 +118,7 @@ export function sameCreateIntent(
   }
   if (intent.mode === "autonomous" && candidate.mode === "autonomous") {
     return (
+      intent.remoteDataApproved === candidate.remoteDataApproved &&
       intent.sourceIds.length === candidate.sourceIds.length &&
       intent.sourceIds.every((sourceId, index) => sourceId === candidate.sourceIds[index])
     );

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Any, cast
 
@@ -8,20 +9,24 @@ from sqlalchemy.orm import Session
 
 from ..analysis import canonical_analysis_payload, validate_python_code
 from ..fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
     AnalysisPolicyId,
+    AnalysisPolicyTemplate,
     FixedAnalysisPolicyError,
-    FixedAnalysisTemplate,
     fixed_analysis_template_for_repair_attempt,
 )
 from ..models import (
     AnalysisIntentRecord,
+    AnalysisSpecRecord,
     ApprovalRecord,
     ArtifactRecord,
     PlanRecord,
     ProjectRecord,
     RunRecord,
     SourceRecord,
+    StructuredAnalysisResultRecord,
     TaskRecord,
     WorkflowRecord,
 )
@@ -34,6 +39,7 @@ from .errors import (
     ANALYSIS_V1_SCHEMA,
     ANALYSIS_V2_SCHEMA,
     ANALYSIS_V3_SCHEMA,
+    ANALYSIS_V4_SCHEMA,
     WORKFLOW_ANALYSIS_APPROVAL_REASON,
     AnalysisServiceError,
 )
@@ -277,6 +283,32 @@ def assert_intent_binding(
             else None
         )
         assert_repair_lineage(session, intent, previous)
+        if intent.analysis_spec_id is not None:
+            analysis_spec = session.get(AnalysisSpecRecord, intent.analysis_spec_id)
+            plan_spec_id = plan.spec_json.get("analysisSpecId")
+            plan_spec_sha256 = plan.spec_json.get("analysisSpecSha256")
+            if (
+                analysis_spec is None
+                or analysis_spec.workflow_id != workflow.id
+                or analysis_spec.status
+                not in ({"approved", "superseded"} if historical_superseded else {"approved"})
+                or plan_spec_id != analysis_spec.id
+                or plan_spec_sha256 != analysis_spec.spec_sha256
+                or intent.spec_sha256 != analysis_spec.spec_sha256
+                or intent.dataset_profile_sha256
+                != analysis_spec.dataset_profile_sha256
+                or analysis_spec.dataset_source_id != dataset.id
+                or analysis_spec.dataset_content_hash != dataset.content_hash
+                or intent.compiler_version != COMPILED_ANALYSIS_TEMPLATE
+                or intent.runtime_policy_id != COMPILED_ANALYSIS_POLICY_ID
+                or intent.code_sha256
+                != hashlib.sha256(intent.code.encode("utf-8")).hexdigest()
+            ):
+                raise AnalysisServiceError(
+                    409,
+                    "Compiled analysis no longer matches its approved AnalysisSpec",
+                    code="analysis-spec-binding-invalid",
+                )
     run_link_matches = run is not None and (
         run.analysis_intent_id == intent.id
         or (
@@ -534,6 +566,28 @@ def assert_completed_run_binding(
         and _common_artifact_binding_is_valid(run, intent, artifacts)
         and _full_runtime_evidence_is_valid(run, artifacts)
     )
+    if valid and intent.analysis_spec_id is not None:
+        structured_results = list(
+            session.scalars(
+                select(StructuredAnalysisResultRecord).where(
+                    StructuredAnalysisResultRecord.run_id == run.id
+                )
+            )
+        )
+        result_artifacts = [
+            artifact
+            for artifact in artifacts
+            if Path(artifact.path).name == "results.json"
+        ]
+        valid = (
+            len(structured_results) == 1
+            and len(result_artifacts) == 1
+            and structured_results[0].analysis_spec_id == intent.analysis_spec_id
+            and structured_results[0].analysis_intent_id == intent.id
+            and structured_results[0].run_id == run.id
+            and result_artifacts[0].metadata_json.get("structuredResultSha256")
+            == structured_results[0].result_sha256
+        )
     if not valid:
         raise AnalysisServiceError(
             409,
@@ -680,7 +734,13 @@ def assert_approval_record(
             "The approved workflow analysis predates execution policy binding",
             code="analysis-policy-binding-upgrade-required",
         )
-    expected_schema = ANALYSIS_V3_SCHEMA if intent.workflow_id is not None else ANALYSIS_V1_SCHEMA
+    expected_schema = (
+        ANALYSIS_V4_SCHEMA
+        if intent.workflow_id is not None and intent.analysis_spec_id is not None
+        else ANALYSIS_V3_SCHEMA
+        if intent.workflow_id is not None
+        else ANALYSIS_V1_SCHEMA
+    )
     task = session.get(TaskRecord, intent.task_id)
     if task is None:
         raise AnalysisServiceError(
@@ -694,14 +754,21 @@ def assert_approval_record(
         if intent.workflow_id is not None
         else ANALYSIS_APPROVAL_REASON
     )
-    expected_resources = (
-        [
+    if intent.workflow_id is None:
+        expected_resources = [intent.dataset_source_id, "runs/<run-id>"]
+    else:
+        expected_resources = [
             f"source:{intent.dataset_source_id}:sha256:{intent.dataset_content_hash}",
-            "runs/<run-id>",
         ]
-        if intent.workflow_id is not None
-        else [intent.dataset_source_id, "runs/<run-id>"]
-    )
+        if intent.analysis_spec_id is not None:
+            expected_resources.extend(
+                [
+                    f"analysis-spec:{intent.analysis_spec_id}:sha256:{intent.spec_sha256}",
+                    f"analysis-code:sha256:{intent.code_sha256}",
+                    f"runtime-policy:{intent.runtime_policy_id}",
+                ]
+            )
+        expected_resources.append("runs/<run-id>")
     expected_intent_hash = intent.payload_sha256
     if intent.workflow_id is None:
         _canonical, expected_intent_hash = canonical_analysis_payload(
@@ -831,22 +898,50 @@ def recompute_approval_hash(
             )
         approval_error_summary = previous.error_summary
     approval = approval_for_intent(session, intent)
-    if approval is None or approval.payload_schema_version != ANALYSIS_V3_SCHEMA:
+    if approval is None or approval.payload_schema_version not in {
+        ANALYSIS_V3_SCHEMA,
+        ANALYSIS_V4_SCHEMA,
+    }:
         raise AnalysisServiceError(
             409,
             "Workflow analysis approval has no execution policy binding",
             code="analysis-policy-binding-upgrade-required",
         )
-    try:
-        policy_template = fixed_analysis_template_for_repair_attempt(
-            intent.repair_attempt
+    if approval.payload_schema_version == ANALYSIS_V4_SCHEMA:
+        compiled_fields = (
+            intent.analysis_spec_id,
+            intent.spec_sha256,
+            intent.dataset_profile_sha256,
+            intent.compiler_version,
+            intent.code_sha256,
+            intent.runtime_policy_id,
         )
-    except FixedAnalysisPolicyError as error:
-        raise AnalysisServiceError(
-            409,
-            "Workflow analysis policy binding is invalid",
-            code="analysis-approval-binding-invalid",
-        ) from error
+        if (
+            any(value is None for value in compiled_fields)
+            or intent.runtime_policy_id != COMPILED_ANALYSIS_POLICY_ID
+            or intent.compiler_version != COMPILED_ANALYSIS_TEMPLATE
+        ):
+            raise AnalysisServiceError(
+                409,
+                "Workflow analysis compiled provenance is invalid",
+                code="analysis-approval-binding-invalid",
+            )
+        schema_version = ANALYSIS_V4_SCHEMA
+        policy_profile_id = COMPILED_ANALYSIS_POLICY_ID
+        policy_template: AnalysisPolicyTemplate = COMPILED_ANALYSIS_TEMPLATE
+    else:
+        try:
+            policy_template = fixed_analysis_template_for_repair_attempt(
+                intent.repair_attempt
+            )
+        except FixedAnalysisPolicyError as error:
+            raise AnalysisServiceError(
+                409,
+                "Workflow analysis policy binding is invalid",
+                code="analysis-approval-binding-invalid",
+            ) from error
+        schema_version = ANALYSIS_V3_SCHEMA
+        policy_profile_id = FIXED_ANALYSIS_POLICY_ID
     _canonical, digest = canonical_workflow_analysis_payload(
         project_id=intent.project_id,
         workflow_id=intent.workflow_id,
@@ -865,9 +960,15 @@ def recompute_approval_hash(
         previous_intent_id=intent.previous_intent_id,
         repair_attempt=intent.repair_attempt,
         expected_workflow_revision=expected_workflow_revision,
-        schema_version=ANALYSIS_V3_SCHEMA,
-        policy_profile_id=FIXED_ANALYSIS_POLICY_ID,
+        schema_version=schema_version,
+        policy_profile_id=policy_profile_id,
         policy_template=policy_template,
+        analysis_spec_id=intent.analysis_spec_id,
+        analysis_spec_sha256=intent.spec_sha256,
+        dataset_profile_sha256=intent.dataset_profile_sha256,
+        compiler_version=intent.compiler_version,
+        code_sha256=intent.code_sha256,
+        runtime_policy_id=cast(AnalysisPolicyId | None, intent.runtime_policy_id),
     )
     return digest
 
@@ -876,7 +977,8 @@ def validate_code(
     code: str,
     *,
     policy_profile_id: AnalysisPolicyId | None = None,
-    policy_template: FixedAnalysisTemplate | None = None,
+    policy_template: AnalysisPolicyTemplate | None = None,
+    approved_code_sha256: str | None = None,
 ) -> None:
     try:
         if policy_profile_id is None:
@@ -886,6 +988,7 @@ def validate_code(
                 code,
                 policy_profile_id=policy_profile_id,
                 policy_template=policy_template,
+                approved_code_sha256=approved_code_sha256,
             )
     except ValueError as error:
         raise AnalysisServiceError(422, str(error), code="analysis-code-invalid") from error

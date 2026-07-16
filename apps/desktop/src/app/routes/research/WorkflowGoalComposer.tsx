@@ -24,6 +24,7 @@ const DATASET_WORKFLOW: ResearchWorkflowType = "dataset-analysis";
 type ComposerMode = "autonomous" | "advanced";
 const AUTONOMOUS_MODE: ComposerMode = "autonomous";
 const ADVANCED_MODE: ComposerMode = "advanced";
+const LOCAL_GENERATION_MODE: ResearchGenerationMode = "local-deterministic";
 
 interface WorkflowGoalComposerProps {
   canStart: boolean;
@@ -77,14 +78,30 @@ export function WorkflowGoalComposer({
       ),
     [sources],
   );
+  const readySources = useMemo(
+    () => [...readyPdfs, ...readyDatasets],
+    [readyDatasets, readyPdfs],
+  );
   const selectedDataset =
     readyDatasets.find((source) => source.id === datasetSourceId) ?? null;
-  const remoteAssisted =
+  const selectedSources = useMemo(
+    () =>
+      readySources.filter((source) => selectedSourceIds.includes(source.id)),
+    [readySources, selectedSourceIds],
+  );
+  const autoRemoteAssisted =
+    composerMode === "autonomous" &&
+    generationMode === "remote-model-assisted";
+  const literatureRemoteAssisted =
     composerMode === "advanced" &&
     workflowType === "literature-synthesis" &&
     generationMode === "remote-model-assisted";
+  const remoteAssisted = autoRemoteAssisted || literatureRemoteAssisted;
   const remoteDestinationApprovalKey = remoteDestination
     ? `${remoteDestination.endpointIdentity}:${remoteDestination.model}`
+    : null;
+  const autoRemoteSourceApprovalKey = autoRemoteAssisted
+    ? [...selectedSourceIds].sort().join("\n")
     : null;
 
   useEffect(() => {
@@ -95,18 +112,10 @@ export function WorkflowGoalComposer({
     );
   }, [readyDatasets]);
 
-  const readySources = useMemo(
-    () => [...readyPdfs, ...readyDatasets],
-    [readyDatasets, readyPdfs],
-  );
-
   useEffect(() => {
     setSelectedSourceIds((current) => {
       const readyIds = new Set(readySources.map((source) => source.id));
-      const retained = current.filter((sourceId) => readyIds.has(sourceId));
-      return current.length === 0
-        ? readySources.map((source) => source.id)
-        : retained;
+      return current.filter((sourceId) => readyIds.has(sourceId));
     });
   }, [readySources]);
 
@@ -114,6 +123,10 @@ export function WorkflowGoalComposer({
     setRemoteDataApproved(false);
     if (!remoteDestinationApprovalKey) setGenerationMode("local-deterministic");
   }, [remoteDestinationApprovalKey]);
+
+  useEffect(() => {
+    if (autoRemoteAssisted) setRemoteDataApproved(false);
+  }, [autoRemoteAssisted, autoRemoteSourceApprovalKey]);
 
   useEffect(() => {
     if (workflowType === "dataset-analysis") {
@@ -143,6 +156,7 @@ export function WorkflowGoalComposer({
       await onCreate(next, {
         mode: "autonomous",
         sourceIds: selectedSourceIds,
+        remoteDataApproved: autoRemoteAssisted && remoteDataApproved,
       });
       return;
     }
@@ -195,9 +209,13 @@ export function WorkflowGoalComposer({
             })}
             description={t("research.workflow.modeAutoHint", {
               defaultValue:
-                "Spark inspects your goal and selected sources, then chooses the safe workflow.",
+                "Choose local or explicitly approved model-assisted routing for the selected sources.",
             })}
-            onClick={() => setComposerMode(AUTONOMOUS_MODE)}
+            onClick={() => {
+              setComposerMode(AUTONOMOUS_MODE);
+              setGenerationMode(LOCAL_GENERATION_MODE);
+              setRemoteDataApproved(false);
+            }}
           />
           <WorkflowTypeButton
             selected={composerMode === "advanced"}
@@ -209,7 +227,11 @@ export function WorkflowGoalComposer({
               defaultValue:
                 "Choose the existing fixed literature or dataset workflow explicitly.",
             })}
-            onClick={() => setComposerMode(ADVANCED_MODE)}
+            onClick={() => {
+              setComposerMode(ADVANCED_MODE);
+              setGenerationMode(LOCAL_GENERATION_MODE);
+              setRemoteDataApproved(false);
+            }}
           />
         </div>
       </div>
@@ -355,6 +377,17 @@ export function WorkflowGoalComposer({
         </div>
       )}
 
+      {composerMode === "autonomous" && (
+        <AutoRoutingMode
+          generationMode={generationMode}
+          remoteDataApproved={remoteDataApproved}
+          remoteDestination={remoteDestination}
+          selectedSources={selectedSources}
+          onGenerationModeChange={setGenerationMode}
+          onRemoteApprovalChange={setRemoteDataApproved}
+        />
+      )}
+
       {composerMode === "advanced" && workflowType === "dataset-analysis" && (
         <div className="mt-3 rounded-input border border-border bg-bg p-3">
           <div className="flex items-end gap-2">
@@ -498,7 +531,7 @@ export function WorkflowGoalComposer({
               ? composerMode === "autonomous"
                 ? t("research.workflow.autoComposerHint", {
                     defaultValue:
-                      "Auto routes from the goal and selected source IDs. Ambiguity creates a durable clarification request.",
+                      "Auto routes from the goal and explicitly selected sources. Ambiguity creates a durable clarification request.",
                   })
                 : workflowType === "dataset-analysis"
                 ? t("research.workflow.datasetComposerHint", {
@@ -512,7 +545,7 @@ export function WorkflowGoalComposer({
               : composerMode === "autonomous"
                 ? t("research.workflow.needsAutoSource", {
                     defaultValue:
-                      "No source is selected. Spark will ask for the missing input before planning.",
+                      "Select at least one ready PDF or CSV source before starting.",
                   })
                 : workflowType === "dataset-analysis"
                 ? t("research.workflow.needsDataset", {
@@ -577,6 +610,184 @@ function WorkflowTypeButton({
         {description}
       </span>
     </button>
+  );
+}
+
+function AutoRoutingMode({
+  generationMode,
+  remoteDataApproved,
+  remoteDestination,
+  selectedSources,
+  onGenerationModeChange,
+  onRemoteApprovalChange,
+}: {
+  generationMode: ResearchGenerationMode;
+  remoteDataApproved: boolean;
+  remoteDestination: ScienceCoreModelDestination | null;
+  selectedSources: ResearchSource[];
+  onGenerationModeChange: (mode: ResearchGenerationMode) => void;
+  onRemoteApprovalChange: (approved: boolean) => void;
+}) {
+  const { t } = useTranslation("pages");
+  const remoteAssisted = generationMode === "remote-model-assisted";
+  const hasSelectedDataset = selectedSources.some(
+    (source) => source.sourceKind === "dataset",
+  );
+  return (
+    <div className="mt-3">
+      <p className="text-[10px] font-medium uppercase tracking-wider text-muted">
+        {t("research.workflow.routerMode.label", {
+          defaultValue: "Auto router",
+        })}
+      </p>
+      <div
+        className="mt-1.5 grid gap-2 sm:grid-cols-2"
+        role="group"
+        aria-label={t("research.workflow.routerMode.label", {
+          defaultValue: "Auto router",
+        })}
+      >
+        <button
+          type="button"
+          aria-pressed={!remoteAssisted}
+          onClick={() => {
+            onGenerationModeChange("local-deterministic");
+            onRemoteApprovalChange(false);
+          }}
+          className={cn(
+            "rounded-input border px-3 py-2 text-left",
+            !remoteAssisted
+              ? "border-accent/40 bg-accent/5"
+              : "border-border bg-bg hover:bg-surface-2",
+          )}
+        >
+          <span className="block text-xs font-medium text-text">
+            {t("research.workflow.routerMode.local", {
+              defaultValue: "Auto · Local routing",
+            })}
+          </span>
+          <span className="mt-0.5 block text-[10px] text-muted">
+            {t("research.workflow.routerMode.localHint", {
+              defaultValue:
+                "Deterministic local rules route the goal without contacting a model provider.",
+            })}
+          </span>
+        </button>
+        <button
+          type="button"
+          aria-pressed={remoteAssisted}
+          disabled={!remoteDestination}
+          onClick={() => {
+            if (remoteDestination) {
+              onGenerationModeChange("remote-model-assisted");
+              onRemoteApprovalChange(false);
+            }
+          }}
+          className={cn(
+            "rounded-input border px-3 py-2 text-left",
+            remoteAssisted
+              ? "border-warn/40 bg-warn/5"
+              : "border-border bg-bg hover:bg-surface-2 disabled:opacity-40",
+          )}
+        >
+          <span className="block text-xs font-medium text-text">
+            {t("research.workflow.routerMode.remote", {
+              defaultValue: "Auto · Model-assisted routing",
+            })}
+          </span>
+          <span className="mt-0.5 block text-[10px] text-muted">
+            {t("research.workflow.routerMode.remoteHint", {
+              defaultValue: hasSelectedDataset
+                ? "The configured model helps route and select an analysis method only after explicit metadata and bounded Dataset Profile approval."
+                : "The configured model helps route only after explicit metadata approval.",
+            })}
+          </span>
+        </button>
+      </div>
+
+      {remoteAssisted && remoteDestination && (
+        <div className="mt-3 rounded-input border border-warn/30 bg-warn/5 px-3 py-2.5">
+          <dl className="grid gap-2 border-b border-warn/20 pb-2 text-[10px] text-muted sm:grid-cols-3">
+            <div>
+              <dt className="font-medium text-text">
+                {t("research.provider", { defaultValue: "Provider" })}
+              </dt>
+              <dd className="break-all font-mono">
+                {remoteDestination.provider}
+              </dd>
+            </div>
+            <div>
+              <dt className="font-medium text-text">
+                {t("research.endpointHost", { defaultValue: "Endpoint host" })}
+              </dt>
+              <dd className="break-all font-mono">
+                {remoteDestination.endpointHost}
+              </dd>
+            </div>
+            <div>
+              <dt className="font-medium text-text">
+                {t("research.workflow.model", { defaultValue: "Model" })}
+              </dt>
+              <dd className="break-all font-mono">{remoteDestination.model}</dd>
+            </div>
+          </dl>
+          <p className="mt-2 text-[10px] font-medium text-text">
+            {t("research.workflow.routerMode.sentHeading", {
+              defaultValue: "Sent to the model",
+            })}
+          </p>
+          <p className="mt-1 text-[10px] leading-relaxed text-muted">
+            {t("research.workflow.routerMode.sentBoundary", {
+              defaultValue: hasSelectedDataset
+                ? "The research goal; each selected source's ID, type, and ingestion status; and, after routing, a locally generated bounded Dataset Profile for each selected CSV. Profiles include column names, inferred types, missing and unique counts, and bounded low-cardinality summaries for method selection."
+                : "The research goal and each selected source's ID, type, and ingestion status.",
+            })}
+          </p>
+          {selectedSources.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {selectedSources.map((source) => (
+                <li
+                  key={source.id}
+                  className="break-all font-mono text-[9px] text-muted"
+                >
+                  {source.id} · {source.sourceKind} · {source.ingestionStatus}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-2 text-[10px] font-medium text-text">
+            {t("research.workflow.routerMode.notSentHeading", {
+              defaultValue: "Not sent",
+            })}
+          </p>
+          <p className="mt-1 text-[10px] leading-relaxed text-muted">
+            {t("research.workflow.routerMode.notSentBoundary", {
+              defaultValue:
+                "PDF text or passages, CSV rows, full cell-level content, and full document contents are not sent.",
+            })}
+          </p>
+          <label className="mt-3 flex cursor-pointer items-start gap-2 border-t border-warn/20 pt-2 text-xs leading-relaxed text-text">
+            <input
+              type="checkbox"
+              checked={remoteDataApproved}
+              onChange={(event) =>
+                onRemoteApprovalChange(event.target.checked)
+              }
+              className="mt-0.5 shrink-0 accent-accent"
+            />
+            <span>
+              {t("research.workflow.routerMode.approval", {
+                defaultValue: hasSelectedDataset
+                  ? "I approve sending this goal, the listed source metadata, and the bounded Dataset Profile fields described above to {{model}} at {{host}} for routing and method selection."
+                  : "I approve sending this goal and the listed source metadata to {{model}} at {{host}} for this routing request.",
+                model: remoteDestination.model,
+                host: remoteDestination.endpointHost,
+              })}
+            </span>
+          </label>
+        </div>
+      )}
+    </div>
   );
 }
 

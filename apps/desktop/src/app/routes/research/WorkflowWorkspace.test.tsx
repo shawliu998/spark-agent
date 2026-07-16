@@ -47,6 +47,22 @@ const READY_PDF = {
   createdAt: "2026-07-14T08:00:00Z",
 };
 
+const READY_DATASET = {
+  id: "source-ready-dataset",
+  projectId: "project-1",
+  title: "Ready dataset",
+  sourceKind: "dataset" as const,
+  authors: [],
+  doi: null,
+  arxivId: null,
+  localPath: "sources/ready.csv",
+  publicationDate: null,
+  ingestionStatus: "ready" as const,
+  contentHash: "d".repeat(64),
+  pageCount: null,
+  createdAt: "2026-07-14T08:00:00Z",
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -173,6 +189,8 @@ function pendingAgentSnapshot(
     datasetProfile: null,
     analysisIntent: null,
     analysisRun: null,
+    analysisSpec: null,
+    structuredResult: null,
     reviewWarningAcceptance: null,
     intentDecision:
       status === "routing"
@@ -201,7 +219,7 @@ function pendingAgentSnapshot(
 }
 
 describe("WorkflowWorkspace", () => {
-  it("defaults to Auto and submits the goal with selected ready sources", () => {
+  it("defaults to local Auto without preselecting a ready source", () => {
     render(
       <WorkflowWorkspace
         {...handlers}
@@ -215,21 +233,144 @@ describe("WorkflowWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /^Auto\b/i })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
+    expect(
+      screen.getByRole("button", {
+        name: /^Auto Choose local or explicitly approved/i,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("Workflow type")).not.toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Use Ready paper" })).toBeChecked();
+    expect(
+      screen.getByRole("button", { name: /Auto · Local routing/i }),
+    ).toHaveAttribute("aria-pressed", "true");
+    const source = screen.getByRole("checkbox", { name: "Use Ready paper" });
+    expect(source).not.toBeChecked();
     fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
       target: { value: "Compare this paper with the available evidence" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Start research" }));
+    const start = screen.getByRole("button", { name: "Start research" });
+    expect(start).toBeDisabled();
+    fireEvent.click(source);
+    expect(start).toBeEnabled();
+    fireEvent.click(start);
 
     expect(handlers.onCreate).toHaveBeenCalledWith(
       "Compare this paper with the available evidence",
-      { mode: "autonomous", sourceIds: ["source-ready-pdf"] },
+      {
+        mode: "autonomous",
+        sourceIds: ["source-ready-pdf"],
+        remoteDataApproved: false,
+      },
     );
+  });
+
+  it("never preselects multiple Auto sources and only prunes invalid selections", () => {
+    const view = render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[READY_PDF, READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart
+      />,
+    );
+
+    const paper = screen.getByRole("checkbox", { name: "Use Ready paper" });
+    const dataset = screen.getByRole("checkbox", { name: "Use Ready dataset" });
+    expect(paper).not.toBeChecked();
+    expect(dataset).not.toBeChecked();
+    fireEvent.click(paper);
+    expect(paper).toBeChecked();
+
+    view.rerender(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart
+      />,
+    );
+    expect(screen.queryByRole("checkbox", { name: "Use Ready paper" })).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: "Use Ready dataset" }),
+    ).not.toBeChecked();
+  });
+
+  it("dynamically discloses bounded Dataset Profiles for model-assisted Auto method selection", () => {
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[READY_PDF, READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Use Ready paper" }));
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+      target: { value: "Route this research goal" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: /Auto · Model-assisted routing/i }),
+    );
+
+    expect(screen.getByText("openai-compatible")).toBeInTheDocument();
+    expect(screen.getByText("models.example.test")).toBeInTheDocument();
+    expect(screen.getByText("provider/model-1")).toBeInTheDocument();
+    expect(
+      screen.getByText(/research goal and each selected source's ID, type, and ingestion status/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/bounded Dataset Profile/i)).not.toBeInTheDocument();
+
+    const metadataOnlyApproval = screen.getByRole("checkbox", {
+      name: /I approve sending this goal and the listed source metadata/i,
+    });
+    fireEvent.click(metadataOnlyApproval);
+    expect(screen.getByRole("button", { name: "Start research" })).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Use Ready dataset" }),
+    );
+
+    expect(
+      screen.getByText(/locally generated bounded Dataset Profile/i),
+    ).toHaveTextContent(/column names, inferred types, missing and unique counts/i);
+    expect(
+      screen.getByText(/locally generated bounded Dataset Profile/i),
+    ).toHaveTextContent(/bounded low-cardinality summaries for method selection/i);
+    expect(
+      screen.getByText(/PDF text or passages, CSV rows, full cell-level content/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/source-ready-pdf · pdf · ready/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/source-ready-dataset · dataset · ready/i),
+    ).toBeInTheDocument();
+
+    const start = screen.getByRole("button", { name: "Start research" });
+    expect(start).toBeDisabled();
+    const profileApproval = screen.getByRole("checkbox", {
+      name: /I approve sending this goal, the listed source metadata, and the bounded Dataset Profile fields/i,
+    });
+    expect(profileApproval).not.toBeChecked();
+    fireEvent.click(profileApproval);
+    expect(start).toBeEnabled();
+    fireEvent.click(start);
+
+    expect(handlers.onCreate).toHaveBeenCalledWith("Route this research goal", {
+      mode: "autonomous",
+      sourceIds: ["source-ready-pdf", "source-ready-dataset"],
+      remoteDataApproved: true,
+    });
   });
 
   it("requires a ready source before starting Auto research", () => {
@@ -386,6 +527,8 @@ describe("WorkflowWorkspace", () => {
       datasetProfile: null,
       analysisIntent: null,
       analysisRun: null,
+      analysisSpec: null,
+      structuredResult: null,
       reviewWarningAcceptance: null,
       allowedActions: ["respond-interaction", "approve-plan", "cancel"],
     };

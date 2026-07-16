@@ -12,12 +12,16 @@ from sqlalchemy.orm import Session
 from ..analysis import canonical_analysis_payload
 from ..config import settings
 from ..fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
+    AnalysisPolicyId,
     FixedAnalysisPolicyError,
     fixed_analysis_template_for_repair_attempt,
 )
 from ..models import (
     AnalysisIntentRecord,
+    AnalysisSpecRecord,
     ApprovalRecord,
     EventRecord,
     PlanRecord,
@@ -34,6 +38,7 @@ from .errors import (
     ANALYSIS_RISK_LEVEL,
     ANALYSIS_V1_SCHEMA,
     ANALYSIS_V3_SCHEMA,
+    ANALYSIS_V4_SCHEMA,
     WORKFLOW_ANALYSIS_APPROVAL_REASON,
     AnalysisServiceError,
 )
@@ -56,6 +61,28 @@ class WorkflowIntentBundle:
     intent: AnalysisIntentRecord
     approval: ApprovalRecord
     expected_workflow_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class CompiledIntentProvenance:
+    analysis_spec_id: str
+    analysis_spec_sha256: str
+    dataset_profile_sha256: str
+    compiler_version: str
+    code_sha256: str
+    runtime_policy_id: AnalysisPolicyId
+
+    def __post_init__(self) -> None:
+        values = (
+            self.analysis_spec_id,
+            self.analysis_spec_sha256,
+            self.dataset_profile_sha256,
+            self.compiler_version,
+            self.code_sha256,
+            self.runtime_policy_id,
+        )
+        if any(not value.strip() for value in values):
+            raise ValueError("compiled intent provenance fields must be non-empty")
 
 
 def create_standalone_analysis_intent(
@@ -157,8 +184,9 @@ def create_workflow_analysis_intent(
     error_summary: dict[str, Any] | None = None,
     code_diff: str | None = None,
     intent_id: str | None = None,
+    compiled_provenance: CompiledIntentProvenance | None = None,
 ) -> WorkflowIntentBundle:
-    """Stage a workflow-bound v2 intent and exact approval record.
+    """Stage a workflow-bound immutable intent and exact approval record.
 
     Workflow event sequencing and workflow/task CAS transitions deliberately stay
     with the workflow handler so they can be committed atomically with its job.
@@ -194,6 +222,16 @@ def create_workflow_analysis_intent(
     assert_workflow_execution_inputs(task, outputs)
     repair_attempt = 0
     previous: AnalysisIntentRecord | None = None
+    if compiled_provenance is not None and (
+        previous_intent_id is not None
+        or error_summary is not None
+        or code_diff is not None
+    ):
+        raise AnalysisServiceError(
+            409,
+            "Compiled AnalysisSpec intents cannot use fixed-template repair lineage",
+            code="analysis-lineage-invalid",
+        )
     if previous_intent_id is not None:
         previous = session.get(AnalysisIntentRecord, previous_intent_id)
         if previous is None:
@@ -203,19 +241,55 @@ def create_workflow_analysis_intent(
                 code="analysis-lineage-invalid",
             )
         repair_attempt = (previous.repair_attempt or 0) + 1
-    try:
-        policy_template = fixed_analysis_template_for_repair_attempt(repair_attempt)
-    except FixedAnalysisPolicyError as error:
-        raise AnalysisServiceError(
-            409,
-            "Analysis repair lineage is invalid",
-            code="analysis-lineage-invalid",
-        ) from error
-    validate_code(
-        code,
-        policy_profile_id=FIXED_ANALYSIS_POLICY_ID,
-        policy_template=policy_template,
-    )
+    if compiled_provenance is None:
+        try:
+            policy_template = fixed_analysis_template_for_repair_attempt(repair_attempt)
+        except FixedAnalysisPolicyError as error:
+            raise AnalysisServiceError(
+                409,
+                "Analysis repair lineage is invalid",
+                code="analysis-lineage-invalid",
+            ) from error
+        policy_profile_id = FIXED_ANALYSIS_POLICY_ID
+        approval_schema_version = ANALYSIS_V3_SCHEMA
+        validate_code(
+            code,
+            policy_profile_id=policy_profile_id,
+            policy_template=policy_template,
+        )
+    else:
+        analysis_spec = session.get(
+            AnalysisSpecRecord,
+            compiled_provenance.analysis_spec_id,
+        )
+        if (
+            analysis_spec is None
+            or analysis_spec.workflow_id != workflow.id
+            or analysis_spec.status != "approved"
+            or analysis_spec.spec_sha256
+            != compiled_provenance.analysis_spec_sha256
+            or analysis_spec.dataset_source_id != dataset.id
+            or analysis_spec.dataset_content_hash != dataset.content_hash
+            or analysis_spec.dataset_profile_sha256
+            != compiled_provenance.dataset_profile_sha256
+            or compiled_provenance.compiler_version != COMPILED_ANALYSIS_TEMPLATE
+            or compiled_provenance.runtime_policy_id
+            != COMPILED_ANALYSIS_POLICY_ID
+        ):
+            raise AnalysisServiceError(
+                409,
+                "Compiled analysis provenance does not match the approved AnalysisSpec",
+                code="analysis-spec-binding-invalid",
+            )
+        policy_profile_id = COMPILED_ANALYSIS_POLICY_ID
+        policy_template = COMPILED_ANALYSIS_TEMPLATE
+        approval_schema_version = ANALYSIS_V4_SCHEMA
+        validate_code(
+            code,
+            policy_profile_id=policy_profile_id,
+            policy_template=policy_template,
+            approved_code_sha256=compiled_provenance.code_sha256,
+        )
     selected_intent_id = intent_id or str(uuid.uuid4())
     intent = AnalysisIntentRecord(
         id=selected_intent_id,
@@ -236,6 +310,36 @@ def create_workflow_analysis_intent(
         code_diff=code_diff,
         payload_sha256="0" * 64,
         status="waiting-approval",
+        analysis_spec_id=(
+            compiled_provenance.analysis_spec_id
+            if compiled_provenance is not None
+            else None
+        ),
+        spec_sha256=(
+            compiled_provenance.analysis_spec_sha256
+            if compiled_provenance is not None
+            else None
+        ),
+        dataset_profile_sha256=(
+            compiled_provenance.dataset_profile_sha256
+            if compiled_provenance is not None
+            else None
+        ),
+        compiler_version=(
+            compiled_provenance.compiler_version
+            if compiled_provenance is not None
+            else None
+        ),
+        code_sha256=(
+            compiled_provenance.code_sha256
+            if compiled_provenance is not None
+            else None
+        ),
+        runtime_policy_id=(
+            compiled_provenance.runtime_policy_id
+            if compiled_provenance is not None
+            else None
+        ),
     )
     assert_repair_lineage(session, intent, previous)
     _canonical, payload_sha256 = canonical_workflow_analysis_payload(
@@ -256,9 +360,15 @@ def create_workflow_analysis_intent(
         previous_intent_id=previous_intent_id,
         repair_attempt=repair_attempt,
         expected_workflow_revision=expected_workflow_revision,
-        schema_version=ANALYSIS_V3_SCHEMA,
-        policy_profile_id=FIXED_ANALYSIS_POLICY_ID,
+        schema_version=approval_schema_version,
+        policy_profile_id=policy_profile_id,
         policy_template=policy_template,
+        analysis_spec_id=intent.analysis_spec_id,
+        analysis_spec_sha256=intent.spec_sha256,
+        dataset_profile_sha256=intent.dataset_profile_sha256,
+        compiler_version=intent.compiler_version,
+        code_sha256=intent.code_sha256,
+        runtime_policy_id=cast(AnalysisPolicyId | None, intent.runtime_policy_id),
     )
     intent.payload_sha256 = payload_sha256
     session.add(intent)
@@ -270,13 +380,22 @@ def create_workflow_analysis_intent(
         plan_id=task.plan_id,
         subject_type="analysis-intent",
         subject_id=intent.id,
-        payload_schema_version=ANALYSIS_V3_SCHEMA,
+        payload_schema_version=approval_schema_version,
         intent_hash=payload_sha256,
         requested_action=ANALYSIS_ACTION,
         risk_level=ANALYSIS_RISK_LEVEL,
         reason=WORKFLOW_ANALYSIS_APPROVAL_REASON,
         affected_resources=[
             f"source:{dataset.id}:sha256:{dataset.content_hash}",
+            *(
+                [
+                    f"analysis-spec:{compiled_provenance.analysis_spec_id}:sha256:{compiled_provenance.analysis_spec_sha256}",
+                    f"analysis-code:sha256:{compiled_provenance.code_sha256}",
+                    f"runtime-policy:{compiled_provenance.runtime_policy_id}",
+                ]
+                if compiled_provenance is not None
+                else []
+            ),
             "runs/<run-id>",
         ],
     )

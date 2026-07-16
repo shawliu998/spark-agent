@@ -26,6 +26,7 @@ export type { WorkflowConnectionState } from "./useWorkflowEvents";
 export interface AutonomousResearchWorkflowCreateOptions {
   mode: "autonomous";
   sourceIds: string[];
+  remoteDataApproved: boolean;
 }
 
 export interface AdvancedResearchWorkflowCreateOptions {
@@ -421,6 +422,7 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
           goal: normalizedGoal,
           mode: "autonomous" as const,
           sourceIds,
+          remoteDataApproved: options.remoteDataApproved,
         } satisfies WorkflowCreateCandidate;
         const existingIntent = createIntentRef.current;
         const intent = sameCreateIntent(existingIntent, candidate)
@@ -432,7 +434,12 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
           (signal) =>
             scienceCore.createAgentRun(
               projectId,
-              { goal: normalizedGoal, sourceIds, mode: "autonomous" },
+              {
+                goal: normalizedGoal,
+                sourceIds,
+                mode: "autonomous",
+                remoteDataApproved: candidate.remoteDataApproved,
+              },
               { idempotencyKey: intent.idempotencyKey, signal },
             ),
           (next) => {

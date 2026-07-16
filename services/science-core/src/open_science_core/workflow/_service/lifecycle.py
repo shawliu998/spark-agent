@@ -24,6 +24,7 @@ from ...analysis_service import (
 from ...model_gateway import OpenAICompatibleModelGateway
 from ...models import (
     AnalysisIntentRecord,
+    AnalysisSpecRecord,
     ApprovalRecord,
     EventRecord,
     InteractionRequestRecord,
@@ -38,6 +39,7 @@ from ...models import (
 )
 from ..schemas import (
     AnalysisApprovalEventData,
+    AnalysisSpecEventData,
     CancelEventData,
     CreatedEventData,
     DatasetAnalysisReviewResult,
@@ -476,6 +478,27 @@ def approve_plan(
         .values(status="approved", approved_at=now)
         .execution_options(synchronize_session=False)
     )
+    approved_analysis_spec: AnalysisSpecRecord | None = None
+    analysis_spec_id = plan.spec_json.get("analysisSpecId")
+    analysis_spec_sha256 = plan.spec_json.get("analysisSpecSha256")
+    if analysis_spec_id is not None or analysis_spec_sha256 is not None:
+        analysis_spec = (
+            session.get(AnalysisSpecRecord, analysis_spec_id)
+            if isinstance(analysis_spec_id, str)
+            else None
+        )
+        if (
+            analysis_spec is None
+            or analysis_spec.workflow_id != workflow.id
+            or analysis_spec.spec_sha256 != analysis_spec_sha256
+            or analysis_spec.status != "pending-approval"
+        ):
+            raise WorkflowConflict(
+                "analysis-spec-approval-mismatch",
+                "The plan no longer matches its pending analysis specification.",
+            )
+        analysis_spec.status = "approved"
+        approved_analysis_spec = analysis_spec
     tasks = materialize_plan_tasks(session, workflow, plan)
     first_task = tasks[0]
     transition_task(session, first_task, "queued")
@@ -492,32 +515,56 @@ def approve_plan(
         "running",
         expected_revision=expected_revision,
     )
+    events: list[tuple[str, WorkflowEventData, str | None, str | None]] = [
+        (
+            "plan.approved",
+            PlanEventData(
+                plan_id=plan.id,
+                version=plan.version,
+                plan_sha256=plan.spec_sha256,
+            ),
+            None,
+            None,
+        )
+    ]
+    if approved_analysis_spec is not None:
+        events.append(
+            (
+                "analysis.spec-approved",
+                AnalysisSpecEventData(
+                    analysis_spec_id=approved_analysis_spec.id,
+                    revision=approved_analysis_spec.revision,
+                    spec_sha256=approved_analysis_spec.spec_sha256,
+                    dataset_profile_sha256=(
+                        approved_analysis_spec.dataset_profile_sha256
+                    ),
+                    selector_kind=cast(
+                        Literal["local-deterministic", "remote-model-assisted"],
+                        approved_analysis_spec.selector_kind,
+                    ),
+                    prompt_version=approved_analysis_spec.prompt_version,
+                ),
+                None,
+                None,
+            )
+        )
+    events.append(
+        (
+            "step.queued",
+            TaskEventData(
+                task_id=first_task.id,
+                step_key=first_task.step_key or "",
+                order_index=first_task.order_index or 0,
+                status="queued",
+            ),
+            first_task.id,
+            job.id,
+        )
+    )
     append_workflow_events(
         session,
         workflow,
-        [
-            (
-                "plan.approved",
-                PlanEventData(
-                    plan_id=plan.id,
-                    version=plan.version,
-                    plan_sha256=plan.spec_sha256,
-                ),
-                None,
-                None,
-            ),
-            (
-                "step.queued",
-                TaskEventData(
-                    task_id=first_task.id,
-                    step_key=first_task.step_key or "",
-                    order_index=first_task.order_index or 0,
-                    status="queued",
-                ),
-                first_task.id,
-                job.id,
-            ),
-        ],
+        events,
     )
     session.commit()
     session.refresh(workflow)
@@ -662,7 +709,11 @@ def decide_analysis_execution(
                         task_id=task.id,
                         payload_sha256=intent.payload_sha256,
                         approval_schema_version=cast(
-                            Literal["analysis-intent-v2", "analysis-intent-v3"],
+                            Literal[
+                                "analysis-intent-v2",
+                                "analysis-intent-v3",
+                                "analysis-intent-v4",
+                            ],
                             approval.payload_schema_version,
                         ),
                         expected_workflow_revision=expected_revision,
@@ -718,7 +769,11 @@ def decide_analysis_execution(
                         job_id=job.id,
                         payload_sha256=intent.payload_sha256,
                         approval_schema_version=cast(
-                            Literal["analysis-intent-v2", "analysis-intent-v3"],
+                            Literal[
+                                "analysis-intent-v2",
+                                "analysis-intent-v3",
+                                "analysis-intent-v4",
+                            ],
                             approval.payload_schema_version,
                         ),
                         expected_workflow_revision=expected_revision,
@@ -1314,6 +1369,8 @@ def _resume_workflow_once(
             "analysis-execution-rejected",
             "analysis-repair-not-safe",
             "analysis-repair-limit-exceeded",
+            "analysis-compiled-execution-failed",
+            "analysis-review-required",
         }
     )
     if (

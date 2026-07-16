@@ -2,10 +2,11 @@ import type { ChangeEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
 import type {
+  AgentResearchWorkflowSnapshot,
+  DatasetAnalysisWorkflowSnapshot,
   InteractionRequest,
   InteractionResponseValue,
   ResearchSource,
-  DatasetAnalysisWorkflowSnapshot,
   ResearchWorkflowSnapshot,
   ScienceCoreModelDestination,
   WorkflowEvidenceRelationship,
@@ -31,6 +32,12 @@ import {
 import { workflowNeedsAttention } from "./workflowModel";
 
 export { WorkflowReviewSummary } from "./WorkflowReviewSummary";
+
+function isDatasetDetailsSnapshot(
+  snapshot: ResearchWorkflowSnapshot,
+): snapshot is DatasetAnalysisWorkflowSnapshot | AgentResearchWorkflowSnapshot {
+  return snapshot.workflow.workflowType === "dataset-analysis";
+}
 
 export interface WorkflowWorkspaceProps {
   snapshot: ResearchWorkflowSnapshot | null;
@@ -259,9 +266,9 @@ export function WorkflowWorkspace({
         />
       )}
 
-      {workflow.workflowType === "dataset-analysis" && (
+      {isDatasetDetailsSnapshot(snapshot) && (
         <DatasetWorkflowDetails
-          snapshot={snapshot as DatasetAnalysisWorkflowSnapshot}
+          snapshot={snapshot}
           mutating={mutating}
           onDecision={onDecideAnalysis}
           onCancel={onCancel}

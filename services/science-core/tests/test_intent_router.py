@@ -300,6 +300,14 @@ def test_fallback_requires_ready_sources_and_exactly_one_dataset() -> None:
     assert two_datasets.intent == "clarification-required"
     assert two_datasets.missing_inputs == ["select-exactly-one-ready-dataset"]
 
+    mixed_sources = deterministic_fallback_decision(
+        "Research the selected sources.",
+        [source("paper-1", "pdf"), source("data-1", "dataset")],
+    )
+    assert mixed_sources.intent == "clarification-required"
+    assert mixed_sources.selected_source_ids == ["data-1", "paper-1"]
+    assert mixed_sources.missing_inputs == ["select-supported-single-workflow"]
+
 
 def test_fallback_honors_latest_compatible_single_choice_answer() -> None:
     sources = [source("paper-1", "pdf"), source("data-1", "dataset")]

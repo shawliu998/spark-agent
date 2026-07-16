@@ -3,10 +3,11 @@ from __future__ import annotations
 import ast
 import asyncio
 import hashlib
+import json
 import os
 import stat
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timezone
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -19,20 +20,39 @@ from ..._analysis_service.filesystem import open_workspace_file_without_symlinks
 from ...analysis import RuntimeServiceError
 from ...analysis_service import (
     AnalysisServiceError,
+    CompiledIntentProvenance,
     WorkflowIntentBundle,
     analysis_code_diff,
     analysis_run_out,
     create_workflow_analysis_intent,
     validate_workflow_analysis_intent,
 )
+from ...analysis_spec import (
+    AnalysisReviewIdentity,
+    AnalysisSpec,
+    AnalysisSpecValidationError,
+    AnalysisValidationContext,
+    CompiledAnalysis,
+    ExactCorrelationPreflight,
+    ExactTwoGroupPreflight,
+    FigureLineage,
+    analysis_spec_sha256,
+    compile_analysis_spec,
+    review_analysis_spec_outputs,
+    validate_analysis_spec,
+)
 from ...dataset_inspector import (
     DatasetInspectionError,
     dataset_profile_sha256,
+    exact_correlation_preflight_csv_dataset,
+    exact_two_group_preflight_csv_dataset,
     inspect_csv_dataset,
 )
 from ...fixed_analysis_policy import fixed_analysis_source
 from ...models import (
     AnalysisIntentRecord,
+    AnalysisSpecRecord,
+    ApprovalRecord,
     ArtifactRecord,
     EventRecord,
     JobRecord,
@@ -41,6 +61,7 @@ from ...models import (
     ReviewRecord,
     RunRecord,
     SourceRecord,
+    StructuredAnalysisResultRecord,
     TaskRecord,
     WorkflowRecord,
     utc_now,
@@ -53,7 +74,9 @@ from ..schemas import (
     AnalysisIntentCreatedEventData,
     AnalysisRunEventData,
     AnalysisRunProgressEventData,
+    AnalysisStructuredResultEventData,
     CollectArtifactsStepInput,
+    DatasetAnalysisPlanSpec,
     DatasetAnalysisReviewCheck,
     DatasetAnalysisReviewIssue,
     DatasetAnalysisReviewResult,
@@ -526,20 +549,20 @@ def _publish_analysis_started_if_claimed(
         )
         entries: list[tuple[str, Any, str | None, str | None]] = []
         if started is None:
-            entries.append(
-                (
-                    "analysis.run-started",
-                    AnalysisRunEventData(
-                        analysis_intent_id=intent.id,
-                        run_id=run.id,
-                        task_id=task.id,
-                        job_id=job.id,
-                        payload_sha256=intent.payload_sha256,
-                    ),
-                    task.id,
-                    job.id,
-                )
+            started_payload = AnalysisRunEventData(
+                analysis_intent_id=intent.id,
+                run_id=run.id,
+                task_id=task.id,
+                job_id=job.id,
+                payload_sha256=intent.payload_sha256,
             )
+            entries.append(
+                ("analysis.run-started", started_payload, task.id, job.id)
+            )
+            if intent.analysis_spec_id is not None:
+                entries.append(
+                    ("analysis.execution-started", started_payload, task.id, job.id)
+                )
         entries.extend(
             _missing_analysis_progress_entries(
                 session,
@@ -728,20 +751,20 @@ def _publish_analysis_failure_or_repair(
             )
         events: list[tuple[str, Any, str | None, str | None]] = []
         if started is None:
-            events.append(
-                (
-                    "analysis.run-started",
-                    AnalysisRunEventData(
-                        analysis_intent_id=intent.id,
-                        run_id=run.id,
-                        task_id=task.id,
-                        job_id=job.id,
-                        payload_sha256=intent.payload_sha256,
-                    ),
-                    task.id,
-                    job.id,
-                )
+            started_payload = AnalysisRunEventData(
+                analysis_intent_id=intent.id,
+                run_id=run.id,
+                task_id=task.id,
+                job_id=job.id,
+                payload_sha256=intent.payload_sha256,
             )
+            events.append(
+                ("analysis.run-started", started_payload, task.id, job.id)
+            )
+            if intent.analysis_spec_id is not None:
+                events.append(
+                    ("analysis.execution-started", started_payload, task.id, job.id)
+                )
         events.extend(
             _missing_analysis_progress_entries(
                 session,
@@ -807,7 +830,9 @@ def _publish_analysis_failure_or_repair(
             ]
         )
         repair_attempt = intent.repair_attempt or 0
-        repair_allowed = error_summary.get("code") in {
+        repair_allowed = intent.analysis_spec_id is None and error_summary.get(
+            "code"
+        ) in {
             "analysis-runtime-failed",
             "runtime-timeout",
         }
@@ -876,7 +901,11 @@ def _publish_analysis_failure_or_repair(
                             job_id=job.id,
                             payload_sha256=bundle.intent.payload_sha256,
                             approval_schema_version=cast(
-                                Literal["analysis-intent-v2", "analysis-intent-v3"],
+                                Literal[
+                                    "analysis-intent-v2",
+                                    "analysis-intent-v3",
+                                    "analysis-intent-v4",
+                                ],
                                 bundle.approval.payload_schema_version,
                             ),
                             expected_workflow_revision=bundle.expected_workflow_revision,
@@ -891,11 +920,18 @@ def _publish_analysis_failure_or_repair(
             return True
 
         blocking_code = (
+            "analysis-compiled-execution-failed"
+            if intent.analysis_spec_id is not None
+            else
             "analysis-repair-limit-exceeded"
             if repair_attempt >= MAX_ANALYSIS_REPAIR_ATTEMPTS
             else "analysis-repair-not-safe"
         )
         blocking_message = (
+            "The approved compiled analysis failed. Its immutable AnalysisSpec and code "
+            "cannot be repaired automatically; review the recorded run before retrying."
+            if intent.analysis_spec_id is not None
+            else
             "Analysis failed after two approved repair attempts. Review the recorded runs "
             "before retrying."
             if repair_attempt >= MAX_ANALYSIS_REPAIR_ATTEMPTS
@@ -990,6 +1026,16 @@ def _publish_analysis_result(
                 "analysis-run-start-event-missing",
                 "The completed analysis has no durable start event.",
             )
+        structured_result = session.scalar(
+            select(StructuredAnalysisResultRecord).where(
+                StructuredAnalysisResultRecord.run_id == run.id
+            )
+        )
+        if intent.analysis_spec_id is not None and structured_result is None:
+            raise WorkflowFailure(
+                "analysis-structured-result-missing",
+                "The completed compiled analysis has no structured result record.",
+            )
         task.outputs = {
             "analysisIntentId": intent.id,
             "analysisPayloadSha256": intent.payload_sha256,
@@ -1024,6 +1070,24 @@ def _publish_analysis_result(
                     ),
                     task.id,
                     job.id,
+                ),
+                *(
+                    [
+                        (
+                            "analysis.structured-result-created",
+                            AnalysisStructuredResultEventData(
+                                structured_result_id=structured_result.id,
+                                analysis_spec_id=structured_result.analysis_spec_id,
+                                analysis_intent_id=structured_result.analysis_intent_id,
+                                run_id=structured_result.run_id,
+                                result_sha256=structured_result.result_sha256,
+                            ),
+                            task.id,
+                            job.id,
+                        )
+                    ]
+                    if structured_result is not None
+                    else []
                 ),
                 *[
                     (
@@ -1127,7 +1191,17 @@ def handle_prepare_analysis(
             "analysis-task-input-invalid",
             "The approved analysis execution inputs are invalid.",
         ) from None
-    code = deterministic_analysis_code(profile)
+    compiled_bundle = _compiled_analysis_for_plan(
+        session,
+        workflow,
+        execution_task,
+        profile,
+    )
+    code = (
+        compiled_bundle[0].code
+        if compiled_bundle is not None
+        else deterministic_analysis_code(profile)
+    )
     try:
         bundle = create_workflow_analysis_intent(
             session,
@@ -1136,6 +1210,9 @@ def handle_prepare_analysis(
             code=code,
             expected_outputs=execution_inputs.expected_outputs,
             expected_workflow_revision=workflow.row_version,
+            compiled_provenance=(
+                compiled_bundle[1] if compiled_bundle is not None else None
+            ),
         )
     except AnalysisServiceError as error:
         raise WorkflowFailure(error.code, error.detail) from None
@@ -1144,9 +1221,181 @@ def handle_prepare_analysis(
             "analysisIntentId": bundle.intent.id,
             "analysisPayloadSha256": bundle.intent.payload_sha256,
             "datasetProfileSha256": dataset_profile_sha256(profile),
+            **(
+                {
+                    "analysisSpecId": compiled_bundle[1].analysis_spec_id,
+                    "analysisSpecSha256": compiled_bundle[1].analysis_spec_sha256,
+                    "compilerVersion": compiled_bundle[1].compiler_version,
+                    "codeSha256": compiled_bundle[1].code_sha256,
+                    "runtimePolicyId": compiled_bundle[1].runtime_policy_id,
+                }
+                if compiled_bundle is not None
+                else {}
+            ),
         },
         execution_task=execution_task,
         intent_bundle=bundle,
+    )
+
+
+def _compiled_analysis_for_plan(
+    session: Session,
+    workflow: WorkflowRecord,
+    execution_task: TaskRecord,
+    profile: DatasetProfile,
+) -> tuple[CompiledAnalysis, CompiledIntentProvenance] | None:
+    plan = (
+        session.get(PlanRecord, execution_task.plan_id)
+        if execution_task.plan_id is not None
+        else None
+    )
+    if plan is None or plan.workflow_id != workflow.id or plan.status != "approved":
+        raise WorkflowFailure(
+            "analysis-plan-binding-invalid",
+            "Analysis preparation requires the approved dataset plan.",
+        )
+    try:
+        plan_spec = DatasetAnalysisPlanSpec.model_validate(plan.spec_json)
+    except ValidationError:
+        raise WorkflowFailure(
+            "analysis-plan-binding-invalid",
+            "The approved dataset plan no longer matches its strict schema.",
+        ) from None
+    if plan_spec.analysis_spec_id is None:
+        return None
+    if plan_spec.analysis_spec_sha256 is None:
+        raise WorkflowFailure(
+            "analysis-spec-binding-invalid",
+            "The approved plan has incomplete AnalysisSpec identity.",
+        )
+    record = session.get(AnalysisSpecRecord, plan_spec.analysis_spec_id)
+    if (
+        record is None
+        or record.workflow_id != workflow.id
+        or record.status != "approved"
+        or record.spec_sha256 != plan_spec.analysis_spec_sha256
+        or record.dataset_source_id != workflow.dataset_source_id
+        or record.dataset_content_hash != workflow.dataset_content_hash
+        or record.dataset_profile_sha256 != dataset_profile_sha256(profile)
+    ):
+        raise WorkflowFailure(
+            "analysis-spec-binding-invalid",
+            "The approved AnalysisSpec no longer matches the workflow, plan, or profile.",
+        )
+    try:
+        # SQLAlchemy JSON values are Python containers. Validate through JSON so
+        # strict tuple fields keep their wire-format semantics after persistence.
+        spec = AnalysisSpec.model_validate_json(
+            json.dumps(record.spec_json, allow_nan=False, ensure_ascii=False)
+        )
+    except ValidationError:
+        raise WorkflowFailure(
+            "analysis-spec-binding-invalid",
+            "The approved AnalysisSpec no longer matches schema version 1.",
+        ) from None
+    if analysis_spec_sha256(spec) != record.spec_sha256:
+        raise WorkflowFailure(
+            "analysis-spec-binding-invalid",
+            "The approved AnalysisSpec content hash is invalid.",
+        )
+    project, dataset = _dataset_records(session, workflow, record.dataset_source_id)
+    context = AnalysisValidationContext(
+        project_id=workflow.project_id,
+        source_project_id=dataset.project_id,
+        source_kind=dataset.source_kind,
+        source_status=dataset.ingestion_status,
+        source_id=dataset.id,
+        source_content_hash=dataset.content_hash,
+        profile=profile,
+        profile_sha256=record.dataset_profile_sha256,
+    )
+    try:
+        preliminary = validate_analysis_spec(spec, context)
+        operation = preliminary.spec.operation
+        if operation.type == "two-group-comparison":
+            exact = exact_two_group_preflight_csv_dataset(
+                workspace_root=Path(project.project_path),
+                dataset_path=Path(dataset.local_path),
+                expected_content_hash=dataset.content_hash,
+                outcome_column=operation.outcome_column,
+                group_column=operation.group_column,
+                groups=operation.groups,
+            )
+            context = replace(
+                context,
+                two_group_preflight=ExactTwoGroupPreflight(
+                    outcome_column=exact.outcome_column,
+                    group_column=exact.group_column,
+                    valid_counts=exact.valid_counts,
+                    non_constant_groups=exact.non_constant_groups,
+                ),
+            )
+        elif operation.type == "correlation":
+            exact = exact_correlation_preflight_csv_dataset(
+                workspace_root=Path(project.project_path),
+                dataset_path=Path(dataset.local_path),
+                expected_content_hash=dataset.content_hash,
+                x_column=operation.x_column,
+                y_column=operation.y_column,
+            )
+            context = replace(
+                context,
+                correlation_preflight=ExactCorrelationPreflight(
+                    x_column=exact.x_column,
+                    y_column=exact.y_column,
+                    valid_pair_count=exact.valid_pair_count,
+                ),
+            )
+        validated = validate_analysis_spec(preliminary.spec, context)
+    except (AnalysisSpecValidationError, DatasetInspectionError) as error:
+        code = getattr(error, "code", "analysis-preflight-failed")
+        message = getattr(
+            error,
+            "message",
+            "The approved analysis columns could not be inspected safely.",
+        )
+        raise WorkflowFailure(code, message) from None
+    if analysis_spec_sha256(validated.spec) != record.spec_sha256:
+        raise WorkflowFailure(
+            "analysis-spec-normalization-changed",
+            "The approved AnalysisSpec no longer matches deterministic normalization.",
+        )
+    compiled = compile_analysis_spec(validated)
+    expected_semantic_outputs = (
+        (
+            "executed-notebook",
+            "summary-table",
+            "figures",
+            "analysis-log",
+            "environment-manifest",
+        )
+        if operation.plot != "none"
+        else (
+            "executed-notebook",
+            "summary-table",
+            "analysis-log",
+            "environment-manifest",
+        )
+    )
+    try:
+        execution_inputs = ExecuteAnalysisStepInput.model_validate(execution_task.inputs)
+    except ValidationError:
+        raise WorkflowFailure(
+            "analysis-task-input-invalid",
+            "The approved analysis execution inputs are invalid.",
+        ) from None
+    if execution_inputs.expected_outputs != expected_semantic_outputs:
+        raise WorkflowFailure(
+            "analysis-output-contract-invalid",
+            "The approved plan outputs do not match the compiled AnalysisSpec.",
+        )
+    return compiled, CompiledIntentProvenance(
+        analysis_spec_id=record.id,
+        analysis_spec_sha256=record.spec_sha256,
+        dataset_profile_sha256=record.dataset_profile_sha256,
+        compiler_version=compiled.compiler_version,
+        code_sha256=compiled.code_sha256,
+        runtime_policy_id=cast(Any, compiled.runtime_policy_id),
     )
 
 
@@ -1232,6 +1481,283 @@ def handle_collect_artifacts(
     }
 
 
+def _compiled_dataset_review_result(
+    *,
+    session: Session,
+    project: ProjectRecord,
+    dataset: SourceRecord,
+    intent: AnalysisIntentRecord,
+    run: RunRecord,
+) -> DatasetAnalysisReviewResult:
+    artifacts = list(
+        session.scalars(
+            select(ArtifactRecord)
+            .where(ArtifactRecord.run_id == run.id)
+            .order_by(ArtifactRecord.created_at, ArtifactRecord.id)
+        )
+    )
+    run_prefix = f"runs/{run.id}/"
+    by_name = {
+        artifact.path.removeprefix(run_prefix): artifact
+        for artifact in artifacts
+        if artifact.path.startswith(run_prefix)
+        and "/" not in artifact.path.removeprefix(run_prefix)
+    }
+    spec_artifact = by_name.get("analysis-spec.json")
+    result_artifact = by_name.get("results.json")
+    summary_artifact = by_name.get("summary.csv")
+    notebook_artifact = by_name.get("executed.ipynb")
+    figure_artifact = by_name.get("figure.png")
+    spec_bytes = _review_artifact_bytes(project, run, intent, spec_artifact)
+    result_bytes = _review_artifact_bytes(project, run, intent, result_artifact)
+    summary_bytes = _review_artifact_bytes(project, run, intent, summary_artifact)
+    notebook_bytes = _review_artifact_bytes(project, run, intent, notebook_artifact)
+
+    approval = session.scalar(
+        select(ApprovalRecord).where(
+            ApprovalRecord.task_id == intent.task_id,
+            ApprovalRecord.workflow_id == intent.workflow_id,
+            ApprovalRecord.subject_type == "analysis-intent",
+            ApprovalRecord.subject_id == intent.id,
+            ApprovalRecord.requested_action == "execute-python-data-analysis",
+        )
+    )
+    zero_hash = "0" * 64
+    approval_hash = (
+        approval.intent_hash
+        if approval is not None and approval.user_decision == "approved"
+        else zero_hash
+    )
+    approved_identity = AnalysisReviewIdentity(
+        dataset_content_hash=dataset.content_hash,
+        dataset_profile_sha256=intent.dataset_profile_sha256 or zero_hash,
+        analysis_spec_sha256=intent.spec_sha256 or zero_hash,
+        compiler_version=intent.compiler_version or "invalid",
+        code_sha256=intent.code_sha256 or zero_hash,
+        approval_hash=approval_hash,
+        runtime_policy_id=intent.runtime_policy_id or "invalid",
+    )
+    result_metadata = result_artifact.metadata_json if result_artifact is not None else {}
+    observed_identity = AnalysisReviewIdentity(
+        dataset_content_hash=dataset.content_hash,
+        dataset_profile_sha256=_review_metadata_hash(
+            result_metadata,
+            "datasetProfileSha256",
+        ),
+        analysis_spec_sha256=_review_metadata_hash(
+            result_metadata,
+            "analysisSpecSha256",
+        ),
+        compiler_version=_review_metadata_text(result_metadata, "compilerVersion"),
+        code_sha256=_review_metadata_hash(result_metadata, "approvedCodeSha256"),
+        approval_hash=_review_metadata_hash(result_metadata, "payloadSha256"),
+        runtime_policy_id=_review_metadata_text(result_metadata, "policyProfileId"),
+    )
+    structured_record = session.scalar(
+        select(StructuredAnalysisResultRecord).where(
+            StructuredAnalysisResultRecord.run_id == run.id
+        )
+    )
+    recorded_result_sha256 = (
+        structured_record.result_sha256
+        if structured_record is not None
+        and structured_record.analysis_intent_id == intent.id
+        and structured_record.analysis_spec_id == intent.analysis_spec_id
+        else zero_hash
+    )
+    expected_result_sha256 = (
+        recorded_result_sha256
+        if result_metadata.get("structuredResultSha256") == recorded_result_sha256
+        else zero_hash
+    )
+    parsed_spec: AnalysisSpec | None
+    try:
+        parsed_spec = AnalysisSpec.model_validate_json(spec_bytes)
+    except (ValidationError, ValueError):
+        parsed_spec = None
+    figure_lineage = _compiled_figure_lineage(
+        parsed_spec,
+        figure_artifact,
+        zero_hash=zero_hash,
+    )
+    reviewed = review_analysis_spec_outputs(
+        analysis_spec_json=spec_bytes,
+        results_json=result_bytes,
+        summary_csv=summary_bytes,
+        executed_notebook_json=notebook_bytes,
+        approved_code=intent.code,
+        approved_identity=approved_identity,
+        observed_identity=observed_identity,
+        expected_result_sha256=expected_result_sha256,
+        figure_lineage=figure_lineage,
+    )
+    artifact_issue_codes = {
+        "summary-matches-results",
+        "figure-lineage-matches",
+        "notebook-code-matches",
+    }
+    numeric_issue_codes = {
+        "sample-size-present",
+        "missing-count-present",
+        "p-value-valid",
+        "effect-size-present",
+        "confidence-interval-present",
+    }
+    artifact_issues = [
+        DatasetAnalysisReviewIssue(
+            code=check.code,
+            message=check.message,
+            artifact_id=check.artifact_id,
+        )
+        for check in reviewed.checks
+        if check.status == "failed"
+        and (check.category == "identity" or check.code in artifact_issue_codes)
+    ]
+    numeric_issues = [
+        DatasetAnalysisReviewIssue(
+            code=check.code,
+            message=check.message,
+            artifact_id=check.artifact_id,
+        )
+        for check in reviewed.checks
+        if check.status == "failed" and check.code in numeric_issue_codes
+    ]
+    other_failures = [
+        DatasetAnalysisReviewIssue(
+            code=check.code,
+            message=check.message,
+            artifact_id=check.artifact_id,
+        )
+        for check in reviewed.checks
+        if check.status == "failed"
+        and check.category != "identity"
+        and check.code not in artifact_issue_codes | numeric_issue_codes
+    ]
+    method_warnings = [
+        DatasetAnalysisReviewIssue(
+            code=check.code,
+            message=check.message,
+            artifact_id=check.artifact_id,
+        )
+        for check in reviewed.checks
+        if check.status == "warning"
+    ]
+    return DatasetAnalysisReviewResult(
+        schema_version="1",
+        verdict=reviewed.verdict,
+        checks=[
+            DatasetAnalysisReviewCheck(
+                code=check.code,
+                status=check.status,
+                message=check.message,
+                artifact_id=check.artifact_id,
+            )
+            for check in reviewed.checks
+        ],
+        artifact_issues=artifact_issues,
+        numeric_issues=[*numeric_issues, *other_failures],
+        method_warnings=method_warnings,
+        required_revisions=reviewed.required_revisions,
+        run_id=run.id,
+        analysis_intent_id=intent.id,
+        input_dataset_content_hash=dataset.content_hash,
+        conclusion=reviewed.conclusion,
+        analysis_spec_id=intent.analysis_spec_id,
+        structured_result_sha256=recorded_result_sha256,
+    )
+
+
+def _compiled_figure_lineage(
+    spec: AnalysisSpec | None,
+    artifact: ArtifactRecord | None,
+    *,
+    zero_hash: str,
+) -> FigureLineage | None:
+    if artifact is None or spec is None:
+        return None
+    operation = spec.operation
+    if operation.type == "descriptive":
+        columns = operation.columns
+    elif operation.type == "two-group-comparison":
+        columns = [operation.group_column, operation.outcome_column]
+    else:
+        columns = [operation.x_column, operation.y_column]
+    return FigureLineage(
+        artifact_id=artifact.id,
+        analysis_spec_sha256=_review_metadata_hash(
+            artifact.metadata_json,
+            "analysisSpecSha256",
+            fallback=zero_hash,
+        ),
+        code_sha256=_review_metadata_hash(
+            artifact.metadata_json,
+            "approvedCodeSha256",
+            fallback=zero_hash,
+        ),
+        columns=columns,
+    )
+
+
+def _review_metadata_hash(
+    metadata: dict[str, Any],
+    key: str,
+    *,
+    fallback: str = "0" * 64,
+) -> str:
+    value = metadata.get(key)
+    if (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    ):
+        return value
+    return fallback
+
+
+def _review_metadata_text(metadata: dict[str, Any], key: str) -> str:
+    value = metadata.get(key)
+    return value if isinstance(value, str) and value.strip() else "invalid"
+
+
+def _review_artifact_bytes(
+    project: ProjectRecord,
+    run: RunRecord,
+    intent: AnalysisIntentRecord,
+    artifact: ArtifactRecord | None,
+) -> bytes:
+    if artifact is None:
+        return b""
+    _verified_artifact_evidence(project, run, intent, artifact)
+    raw_size = artifact.metadata_json.get("sizeBytes")
+    if not isinstance(raw_size, int) or isinstance(raw_size, bool) or raw_size > 2 * 1024 * 1024:
+        return b"\0" * (2 * 1024 * 1024 + 1)
+    try:
+        descriptor = open_workspace_file_without_symlinks(
+            Path(project.project_path),
+            Path(project.project_path) / artifact.path,
+        )
+    except RuntimeServiceError:
+        return b""
+    try:
+        before = os.fstat(descriptor)
+        content = b""
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+            content += chunk
+        after = os.fstat(descriptor)
+        if (
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            or len(content) != raw_size
+            or digest.hexdigest() != artifact.content_hash
+        ):
+            return b""
+        return content
+    finally:
+        os.close(descriptor)
+
+
 def handle_dataset_review(
     session: Session,
     workflow: WorkflowRecord,
@@ -1309,6 +1835,78 @@ def handle_dataset_review(
             "analysis-review-lineage-invalid",
             "The deterministic review has no exact intent and run binding.",
         )
+    intent = session.get(AnalysisIntentRecord, intent_id)
+    run = session.get(RunRecord, run_id)
+    if (
+        intent is None
+        or run is None
+        or intent.workflow_id != workflow.id
+        or run.analysis_intent_id != intent.id
+    ):
+        raise WorkflowFailure(
+            "analysis-review-lineage-invalid",
+            "The deterministic review intent and run binding is invalid.",
+        )
+    if intent.analysis_spec_id is not None:
+        result = _compiled_dataset_review_result(
+            session=session,
+            project=project,
+            dataset=dataset,
+            intent=intent,
+            run=run,
+        )
+        verdict = result.verdict
+        review = ReviewRecord(
+            id=str(uuid.uuid4()),
+            workflow_id=workflow.id,
+            plan_id=plan.id,
+            task_id=tasks[3].id,
+            review_type="deterministic-analysis-v1",
+            input_sha256=job.input_sha256,
+            verdict=verdict,
+            result_json=result.model_dump(mode="json", by_alias=True),
+        )
+        session.add(review)
+        finish_job(session, job, "succeeded")
+        append_workflow_events(
+            session,
+            workflow,
+            [
+                (
+                    "review.completed",
+                    ReviewEventData(
+                        review_id=review.id,
+                        verdict=verdict,
+                        claim_count=None,
+                    ),
+                    tasks[3].id,
+                    job.id,
+                ),
+                (
+                    "analysis.review-completed",
+                    ReviewEventData(
+                        review_id=review.id,
+                        verdict=verdict,
+                        claim_count=None,
+                    ),
+                    tasks[3].id,
+                    job.id,
+                ),
+            ],
+        )
+        if verdict == "passed":
+            transition_workflow(session, workflow, "completed")
+        elif verdict != "passed-with-warnings":
+            transition_workflow(
+                session,
+                workflow,
+                "blocked",
+                reason_code="analysis-review-required",
+                blocking_message=(
+                    "Deterministic review found inconsistent compiled analysis evidence."
+                ),
+            )
+        return
     checks = [
         DatasetAnalysisReviewCheck(
             code="dataset-hash-matches",
@@ -1381,6 +1979,9 @@ def handle_dataset_review(
         run_id=run_id,
         analysis_intent_id=intent_id,
         input_dataset_content_hash=dataset.content_hash,
+        conclusion=None,
+        analysis_spec_id=None,
+        structured_result_sha256=None,
     )
     review = ReviewRecord(
         id=str(uuid.uuid4()),
@@ -1407,7 +2008,17 @@ def handle_dataset_review(
                 ),
                 tasks[3].id,
                 job.id,
-            )
+            ),
+            (
+                "analysis.review-completed",
+                ReviewEventData(
+                    review_id=review.id,
+                    verdict=verdict,
+                    claim_count=None,
+                ),
+                tasks[3].id,
+                job.id,
+            ),
         ],
     )
     if verdict == "passed":
@@ -1468,6 +2079,24 @@ def _verified_artifact_evidence(
             after.st_ctime_ns,
         )
         raw_size = artifact.metadata_json.get("sizeBytes")
+        compiled_provenance_matches = True
+        if intent.analysis_spec_id is not None:
+            compiled_provenance_matches = (
+                artifact.metadata_json.get("analysisSpecId")
+                == intent.analysis_spec_id
+                and artifact.metadata_json.get("analysisSpecSha256")
+                == intent.spec_sha256
+                and artifact.metadata_json.get("datasetProfileSha256")
+                == intent.dataset_profile_sha256
+                and artifact.metadata_json.get("compilerVersion")
+                == intent.compiler_version
+                and artifact.metadata_json.get("approvedCodeSha256")
+                == intent.code_sha256
+                and artifact.metadata_json.get("policyProfileId")
+                == intent.runtime_policy_id
+                and artifact.metadata_json.get("policyTemplate")
+                == intent.compiler_version
+            )
         if (
             identity_before != identity_after
             or size != before.st_size
@@ -1475,6 +2104,7 @@ def _verified_artifact_evidence(
             or raw_size != size
             or artifact.metadata_json.get("payloadSha256") != intent.payload_sha256
             or artifact.parent_artifacts != [intent.dataset_source_id]
+            or not compiled_provenance_matches
         ):
             raise WorkflowFailure(
                 "analysis-artifact-integrity-failed",

@@ -30,6 +30,11 @@ def test_execute_input_accepts_camel_case_and_serializes_only_api_aliases() -> N
     assert parsed.model_dump(mode="json", by_alias=True) == {
         **payload,
         "runId": "analysis-01",
+        "analysisSpecId": None,
+        "analysisSpecSha256": None,
+        "datasetProfileSha256": None,
+        "compilerVersion": None,
+        "approvedCodeSha256": None,
     }
 
 
@@ -121,3 +126,70 @@ def test_execute_input_requires_an_explicit_policy_profile() -> None:
 
     with pytest.raises(ValidationError, match="policyProfileId"):
         ExecuteIn.model_validate(payload)
+
+
+def test_execute_input_accepts_exact_compiled_policy_provenance() -> None:
+    payload = _valid_payload()
+    payload.update(
+        {
+            "policyProfileId": "dataset-analysis-spec-v1",
+            "policyTemplate": "analysis-spec-compiler-v1",
+            "analysisSpecId": "spec-1",
+            "analysisSpecSha256": "b" * 64,
+            "datasetProfileSha256": "c" * 64,
+            "compilerVersion": "analysis-spec-compiler-v1",
+            "approvedCodeSha256": "d" * 64,
+        }
+    )
+
+    parsed = ExecuteIn.model_validate(payload)
+
+    assert parsed.analysis_spec_id == "spec-1"
+    assert parsed.policy_profile_id == "dataset-analysis-spec-v1"
+    assert parsed.policy_template == "analysis-spec-compiler-v1"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "analysisSpecId",
+        "analysisSpecSha256",
+        "datasetProfileSha256",
+        "compilerVersion",
+        "approvedCodeSha256",
+    ],
+)
+def test_execute_input_rejects_partial_compiled_policy_provenance(field: str) -> None:
+    payload = _valid_payload()
+    payload.update(
+        {
+            "policyProfileId": "dataset-analysis-spec-v1",
+            "policyTemplate": "analysis-spec-compiler-v1",
+            "analysisSpecId": "spec-1",
+            "analysisSpecSha256": "b" * 64,
+            "datasetProfileSha256": "c" * 64,
+            "compilerVersion": "analysis-spec-compiler-v1",
+            "approvedCodeSha256": "d" * 64,
+        }
+    )
+    del payload[field]
+
+    with pytest.raises(ValidationError, match="exact provenance"):
+        ExecuteIn.model_validate(payload)
+
+
+def test_fixed_and_general_policies_reject_compiled_provenance() -> None:
+    for profile, template in (
+        ("approved-python-container-v1", None),
+        ("dataset-analysis-fixed-v1", "baseline"),
+    ):
+        payload = _valid_payload()
+        payload.update(
+            {
+                "policyProfileId": profile,
+                "policyTemplate": template,
+                "analysisSpecId": "spec-1",
+            }
+        )
+        with pytest.raises(ValidationError):
+            ExecuteIn.model_validate(payload)

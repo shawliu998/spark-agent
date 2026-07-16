@@ -39,9 +39,11 @@ from open_science_core.workflow.worker import WorkflowWorker
 
 LEGACY_TABLES = tuple(sorted(migration.LEGACY_COLUMNS))
 CONTROL_PLANE_TABLES = {
+    "analysis_specs",
     "intent_decisions",
     "interaction_requests",
     "model_invocations",
+    "structured_analysis_results",
     "user_responses",
     "workflow_jobs",
     "workflow_plans",
@@ -502,6 +504,133 @@ def _insert_analysis_approval(
     connection.commit()
 
 
+def _insert_goal_aware_analysis_fixture(
+    connection: sqlite3.Connection,
+    fixture_id: str,
+    *,
+    include_result: bool = True,
+) -> None:
+    _insert_analysis_fixture(connection, fixture_id)
+    created_at = "2026-07-16 00:00:00"
+    workflow_id = f"workflow-{fixture_id}"
+    source_id = f"source-{fixture_id}"
+    intent_id = f"intent-{fixture_id}"
+    run_id = f"run-{fixture_id}-goal-aware"
+    spec_id = f"spec-{fixture_id}"
+    connection.execute(
+        """
+        INSERT INTO workflows (
+            id, project_id, create_idempotency_key, create_payload_sha256,
+            creation_mode, selected_source_ids, workflow_type,
+            dataset_source_id, dataset_content_hash, goal, generation_mode,
+            status, row_version, event_sequence, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            workflow_id,
+            f"project-{fixture_id}",
+            f"goal-aware-{fixture_id}",
+            "c" * 64,
+            "fixed-workflow",
+            "[]",
+            "dataset-analysis",
+            source_id,
+            "a" * 64,
+            "Analyze the fixture dataset",
+            "local-deterministic",
+            "planning",
+            1,
+            0,
+            created_at,
+            created_at,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO analysis_specs (
+                id, workflow_id, revision, previous_spec_id, schema_version,
+                selector_kind, selector_reason, prompt_version, model_invocation_id,
+                dataset_source_id, dataset_content_hash, dataset_profile_sha256,
+                spec_json, spec_sha256, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            spec_id,
+            workflow_id,
+            1,
+            None,
+            "1",
+                "local-deterministic",
+                "Deterministic fixture method-selection reason.",
+                None,
+            None,
+            source_id,
+            "a" * 64,
+            "d" * 64,
+            '{"schemaVersion":"1"}',
+            "e" * 64,
+            "approved",
+            created_at,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE analysis_intents SET
+            analysis_spec_id = ?, spec_sha256 = ?, dataset_profile_sha256 = ?,
+            compiler_version = ?, code_sha256 = ?, runtime_policy_id = ?
+        WHERE id = ?
+        """,
+        (
+            spec_id,
+            "e" * 64,
+            "d" * 64,
+            "goal-aware-compiler-v1",
+            "f" * 64,
+            "science-runtime-safe-v1",
+            intent_id,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO runs (
+            id, task_id, analysis_intent_id, input_artifacts,
+            output_artifacts, token_usage, cost, status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            run_id,
+            f"task-{fixture_id}",
+            intent_id,
+            "[]",
+            "[]",
+            "{}",
+            0.0,
+            "completed",
+            created_at,
+        ),
+    )
+    if include_result:
+        connection.execute(
+            """
+            INSERT INTO structured_analysis_results (
+                id, analysis_spec_id, analysis_intent_id, run_id,
+                schema_version, result_json, result_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"result-{fixture_id}",
+                spec_id,
+                intent_id,
+                run_id,
+                "1",
+                '{"schemaVersion":"1"}',
+                "1" * 64,
+                created_at,
+            ),
+        )
+    connection.commit()
+
+
 class DatabaseMigrationTest(unittest.TestCase):
     def test_fresh_database_upgrades_to_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -527,6 +656,219 @@ class DatabaseMigrationTest(unittest.TestCase):
                 )
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_goal_aware_analysis_schema_enforces_provenance_constraints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "goal-aware-schema.sqlite3"
+            migration.ensure_database(database_path)
+
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                intent_columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(analysis_intents)")
+                }
+                self.assertTrue(
+                    {
+                        "analysis_spec_id",
+                        "spec_sha256",
+                        "dataset_profile_sha256",
+                        "compiler_version",
+                        "code_sha256",
+                        "runtime_policy_id",
+                    }
+                    <= intent_columns
+                )
+                spec_indexes = {
+                    str(row[1]): (int(row[2]), int(row[4]))
+                    for row in connection.execute("PRAGMA index_list(analysis_specs)")
+                }
+                self.assertEqual(spec_indexes["uq_analysis_spec_model_invocation"], (1, 1))
+                self.assertIn("ix_analysis_specs_workflow_status", spec_indexes)
+                model_invocation_indexes = {
+                    str(row[1]): int(row[2])
+                    for row in connection.execute("PRAGMA index_list(model_invocations)")
+                }
+                self.assertEqual(
+                    model_invocation_indexes[
+                        "uq_model_invocations_workflow_id_id_compat"
+                    ],
+                    1,
+                )
+                result_unique_columns = {
+                    tuple(
+                        str(column[2])
+                        for column in connection.execute(f'PRAGMA index_info("{row[1]}")')
+                    )
+                    for row in connection.execute(
+                        "PRAGMA index_list(structured_analysis_results)"
+                    )
+                    if int(row[2]) == 1
+                }
+                self.assertTrue(
+                    {
+                        ("analysis_spec_id",),
+                        ("analysis_intent_id",),
+                        ("run_id",),
+                    }
+                    <= result_unique_columns
+                )
+
+                _insert_goal_aware_analysis_fixture(connection, "schema")
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE analysis_intents SET code_sha256 = NULL "
+                        "WHERE id = 'intent-schema'"
+                    )
+                connection.rollback()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE analysis_specs SET spec_json = '[]' "
+                        "WHERE id = 'spec-schema'"
+                    )
+                connection.rollback()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE structured_analysis_results SET result_sha256 = ? "
+                        "WHERE id = 'result-schema'",
+                        ("not-a-sha256",),
+                    )
+                connection.rollback()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO structured_analysis_results (
+                            id, analysis_spec_id, analysis_intent_id, run_id,
+                            schema_version, result_json, result_sha256, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "duplicate-result-schema",
+                            "spec-schema",
+                            "intent-schema",
+                            "run-schema-goal-aware",
+                            "1",
+                            "{}",
+                            "2" * 64,
+                            "2026-07-16 00:01:00",
+                        ),
+                    )
+                connection.rollback()
+
+    def test_goal_aware_analysis_migration_round_trip_preserves_legacy_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "goal-aware-round-trip.sqlite3"
+            config = migration.alembic_config(database_path)
+            prior_revision = "0006_autonomous_agent_intake"
+            command.upgrade(config, prior_revision)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_analysis_fixture(connection, "goal-aware-legacy")
+            before_data = _data_snapshot(database_path)
+
+            command.upgrade(config, "head")
+            with sqlite3.connect(database_path) as connection:
+                provenance = connection.execute(
+                    "SELECT analysis_spec_id, spec_sha256, dataset_profile_sha256, "
+                    "compiler_version, code_sha256, runtime_policy_id "
+                    "FROM analysis_intents WHERE id = 'intent-goal-aware-legacy'"
+                ).fetchone()
+                self.assertEqual(provenance, (None, None, None, None, None, None))
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM analysis_specs").fetchone()[0],
+                    0,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM structured_analysis_results"
+                    ).fetchone()[0],
+                    0,
+                )
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+            command.downgrade(config, prior_revision)
+
+            self.assertEqual(_revision(database_path), prior_revision)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+            with sqlite3.connect(database_path) as connection:
+                intent_columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(analysis_intents)")
+                }
+                self.assertNotIn("analysis_spec_id", intent_columns)
+                self.assertNotIn("spec_sha256", intent_columns)
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_goal_aware_analysis_downgrade_refuses_new_provenance_without_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "goal-aware-downgrade.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            head = migration.single_head(config)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_goal_aware_analysis_fixture(connection, "downgrade")
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "goal-aware analysis spec provenance exists",
+            ):
+                command.downgrade(config, "0006_autonomous_agent_intake")
+
+            self.assertEqual(_revision(database_path), head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+    def test_goal_aware_analysis_downgrade_refuses_new_events_without_mutation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "goal-aware-event-downgrade.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            head = migration.single_head(config)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_analysis_fixture(connection, "event-downgrade")
+                connection.execute(
+                    """
+                    INSERT INTO events (
+                        id, project_id, workflow_id, task_id, job_id, sequence,
+                        event_type, payload, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "goal-aware-event-downgrade",
+                        "project-event-downgrade",
+                        None,
+                        None,
+                        None,
+                        None,
+                        "analysis.unsupported",
+                        "{}",
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.commit()
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "goal-aware analysis workflow events exist",
+            ):
+                command.downgrade(config, "0006_autonomous_agent_intake")
+
+            self.assertEqual(_revision(database_path), head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
 
     def test_autonomous_intake_schema_enforces_versions_hashes_and_idempotency(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

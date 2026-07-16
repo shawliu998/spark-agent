@@ -15,9 +15,12 @@ import httpx
 
 from .config import settings
 from .fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
     GENERAL_ANALYSIS_POLICY_ID,
     AnalysisPolicyId,
+    AnalysisPolicyTemplate,
     FixedAnalysisPolicyError,
     FixedAnalysisTemplate,
     validate_fixed_analysis_code,
@@ -40,8 +43,15 @@ _RESERVED_ARTIFACTS: dict[str, tuple[str, str]] = {
     "execution.log": ("log", "text/plain"),
 }
 _REQUIRED_RUNTIME_FILES = frozenset(_RESERVED_ARTIFACTS)
-_POLICY_ATTESTATION_FILES = frozenset(
-    {"input.ipynb", "executed.ipynb", "environment.json", "execution.log"}
+_CAPTURED_ATTESTATION_FILES = frozenset(
+    {
+        "input.ipynb",
+        "executed.ipynb",
+        "environment.json",
+        "execution.log",
+        "analysis-spec.json",
+        "results.json",
+    }
 )
 _MAX_POLICY_ATTESTATION_BYTES = 32 * 1024 * 1024
 _MAX_RUNTIME_RESPONSE_BYTES = 16 * 1024 * 1024
@@ -194,18 +204,42 @@ def validate_python_code(
     code: str,
     *,
     policy_profile_id: AnalysisPolicyId = GENERAL_ANALYSIS_POLICY_ID,
-    policy_template: FixedAnalysisTemplate | None = None,
+    policy_template: AnalysisPolicyTemplate | None = None,
+    approved_code_sha256: str | None = None,
 ) -> None:
     if policy_profile_id == FIXED_ANALYSIS_POLICY_ID:
-        if policy_template is None:
+        if policy_template not in {"baseline", "repair-1", "repair-2"}:
             raise ValueError("Fixed analysis policy requires a template")
+        if approved_code_sha256 is not None:
+            raise ValueError("Fixed analysis policy does not accept an approved code hash")
         try:
-            validate_fixed_analysis_code(code, template=policy_template)
+            validate_fixed_analysis_code(
+                code,
+                template=cast(FixedAnalysisTemplate, policy_template),
+            )
         except FixedAnalysisPolicyError as error:
             raise ValueError(f"Python code policy rejected {error}") from error
         return
-    if policy_profile_id != GENERAL_ANALYSIS_POLICY_ID or policy_template is not None:
+    if policy_profile_id == COMPILED_ANALYSIS_POLICY_ID:
+        if (
+            policy_template != COMPILED_ANALYSIS_TEMPLATE
+            or approved_code_sha256 is None
+            or hashlib.sha256(code.encode("utf-8")).hexdigest()
+            != approved_code_sha256
+        ):
+            raise ValueError("Compiled analysis code does not match its approval")
+        _validate_general_python_code(code)
+        return
+    if (
+        policy_profile_id != GENERAL_ANALYSIS_POLICY_ID
+        or policy_template is not None
+        or approved_code_sha256 is not None
+    ):
         raise ValueError("Python code policy profile is invalid")
+    _validate_general_python_code(code)
+
+
+def _validate_general_python_code(code: str) -> None:
     try:
         tree = ast.parse(code, mode="exec")
     except SyntaxError as error:
@@ -231,10 +265,26 @@ async def execute_in_runtime(
     code: str,
     payload_sha256: str,
     policy_profile_id: AnalysisPolicyId,
-    policy_template: FixedAnalysisTemplate | None,
+    policy_template: AnalysisPolicyTemplate | None,
+    analysis_spec_id: str | None = None,
+    analysis_spec_sha256: str | None = None,
+    dataset_profile_sha256: str | None = None,
+    compiler_version: str | None = None,
+    approved_code_sha256: str | None = None,
     timeout_seconds: int | None = None,
 ) -> RuntimeExecutionResult:
     effective_timeout_seconds = timeout_seconds or settings.execution_timeout_seconds
+    compiled_provenance = (
+        {
+            "analysisSpecId": analysis_spec_id,
+            "analysisSpecSha256": analysis_spec_sha256,
+            "datasetProfileSha256": dataset_profile_sha256,
+            "compilerVersion": compiler_version,
+            "approvedCodeSha256": approved_code_sha256,
+        }
+        if analysis_spec_id is not None
+        else {}
+    )
     timeout = httpx.Timeout(effective_timeout_seconds + 5, connect=5.0)
     transport = httpx.AsyncHTTPTransport(uds=str(settings.runtime_socket_path))
     try:
@@ -258,6 +308,7 @@ async def execute_in_runtime(
                     "payloadSha256": payload_sha256,
                     "policyProfileId": policy_profile_id,
                     "policyTemplate": policy_template,
+                    **compiled_provenance,
                 },
             ) as response:
                 if response.status_code != 200:
@@ -483,7 +534,8 @@ def collect_runtime_artifacts(
                     ),
                     capture_attestation=(
                         runtime_file.relative_path == Path(runtime_file.relative_path.name)
-                        and runtime_file.relative_path.name in _POLICY_ATTESTATION_FILES
+                        and runtime_file.relative_path.name
+                        in _CAPTURED_ATTESTATION_FILES
                     ),
                 )
                 total_size += size

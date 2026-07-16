@@ -95,6 +95,7 @@ RemoteDataCategory = Literal[
 ]
 AUTONOMOUS_REMOTE_DATA_CATEGORIES: tuple[RemoteDataCategory, ...] = (
     "user-goal",
+    "dataset-profile",
     "source-metadata",
     "user-answer",
 )
@@ -542,6 +543,11 @@ class DatasetAnalysisPlanSpec(StrictApiModel):
     goal: str = Field(min_length=2, max_length=8_000)
     dataset_source_id: str = Field(min_length=1, max_length=36)
     dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    analysis_spec_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     assumptions: list[NonEmptyPlanText]
     questions_for_user: list[NonEmptyPlanText]
     steps: tuple[
@@ -560,6 +566,8 @@ class DatasetAnalysisPlanSpec(StrictApiModel):
 
     @model_validator(mode="after")
     def validate_dataset_bindings(self) -> DatasetAnalysisPlanSpec:
+        if (self.analysis_spec_id is None) != (self.analysis_spec_sha256 is None):
+            raise ValueError("dataset plans must bind both analysis spec identity fields")
         dataset_inputs = (self.steps[0].inputs, self.steps[1].inputs, self.steps[2].inputs)
         if any(
             step_input.dataset_source_id != self.dataset_source_id
@@ -934,7 +942,9 @@ class AnalysisExecutionPendingApprovalOut(StrictApiModel):
     risk_level: Literal["high"]
     reason: str
     affected_resources: list[str]
-    approval_schema_version: Literal["analysis-intent-v2", "analysis-intent-v3"]
+    approval_schema_version: Literal[
+        "analysis-intent-v2", "analysis-intent-v3", "analysis-intent-v4"
+    ]
     expected_workflow_revision: int = Field(ge=1)
     analysis_intent_id: str = Field(min_length=1, max_length=36)
     plan_step_id: Literal["execute-analysis"]
@@ -942,8 +952,16 @@ class AnalysisExecutionPendingApprovalOut(StrictApiModel):
     dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_outputs: tuple[DatasetAnalysisExpectedOutput, ...] = Field(min_length=1)
     timeout_seconds: int = Field(ge=1, le=3_600)
-    code: str = Field(min_length=1, max_length=100_000)
+    code: str = Field(min_length=1, max_length=200_000)
     code_diff: str | None = Field(default=None, max_length=200_000)
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    spec_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    compiler_version: str | None = Field(default=None, min_length=1, max_length=100)
+    code_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime_policy_id: str | None = Field(default=None, min_length=1, max_length=100)
     created_at: datetime
     decided_at: datetime | None
 
@@ -955,6 +973,19 @@ class AnalysisExecutionPendingApprovalOut(StrictApiModel):
             raise ValueError(
                 "analysis approval must bind the canonical mandatory execution outputs"
             )
+        provenance = (
+            self.analysis_spec_id,
+            self.spec_sha256,
+            self.dataset_profile_sha256,
+            self.compiler_version,
+            self.code_sha256,
+            self.runtime_policy_id,
+        )
+        if self.approval_schema_version == "analysis-intent-v4":
+            if any(value is None for value in provenance):
+                raise ValueError("v4 analysis approval requires compiled provenance")
+        elif any(value is not None for value in provenance):
+            raise ValueError("legacy analysis approval cannot expose compiled provenance")
         return self
 
 
@@ -1066,9 +1097,26 @@ class DatasetAnalysisReviewResult(StrictApiModel):
     run_id: str = Field(min_length=1, max_length=36)
     analysis_intent_id: str = Field(min_length=1, max_length=36)
     input_dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    conclusion: str | None = Field(default=None, min_length=1, max_length=8_000)
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    structured_result_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="after")
     def validate_verdict_evidence(self) -> DatasetAnalysisReviewResult:
+        compiled_review_fields = (
+            self.conclusion,
+            self.analysis_spec_id,
+            self.structured_result_sha256,
+        )
+        if any(value is None for value in compiled_review_fields) and any(
+            value is not None for value in compiled_review_fields
+        ):
+            raise ValueError(
+                "compiled review conclusion and result identity must be stored together"
+            )
         has_warning = any(check.status == "warning" for check in self.checks) or bool(
             self.method_warnings
         )
@@ -1135,7 +1183,7 @@ class WorkflowAnalysisIntentOut(StrictApiModel):
     dataset_source_id: str = Field(min_length=1, max_length=36)
     dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     objective: str = Field(min_length=1, max_length=8_000)
-    code: str = Field(min_length=1, max_length=100_000)
+    code: str = Field(min_length=1, max_length=200_000)
     payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     risk_level: Literal["high"]
     affected_resources: list[str]
@@ -1156,11 +1204,33 @@ class WorkflowAnalysisIntentOut(StrictApiModel):
     repair_attempt: Literal[0, 1, 2]
     error_summary: AnalysisErrorSummaryOut | None
     code_diff: str | None = Field(default=None, max_length=200_000)
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    spec_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    compiler_version: str | None = Field(default=None, min_length=1, max_length=100)
+    code_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime_policy_id: str | None = Field(default=None, min_length=1, max_length=100)
     created_at: datetime
     updated_at: datetime
 
     @model_validator(mode="after")
     def validate_workflow_intent(self) -> WorkflowAnalysisIntentOut:
+        provenance = (
+            self.analysis_spec_id,
+            self.spec_sha256,
+            self.dataset_profile_sha256,
+            self.compiler_version,
+            self.code_sha256,
+            self.runtime_policy_id,
+        )
+        if any(value is None for value in provenance) and any(
+            value is not None for value in provenance
+        ):
+            raise ValueError("compiled intent provenance must be all present or all absent")
+        if self.analysis_spec_id is not None and self.repair_attempt != 0:
+            raise ValueError("compiled AnalysisSpec intents cannot use repair lineage")
         if self.expected_outputs not in _DATASET_ANALYSIS_EXECUTION_OUTPUT_SEQUENCES:
             raise ValueError("workflow intents require the canonical execution outputs")
         if self.repair_attempt == 0 and (
@@ -1187,6 +1257,29 @@ class WorkflowAnalysisIntentOut(StrictApiModel):
         if self.status == "waiting-approval" and self.decision is not None:
             raise ValueError("a waiting intent cannot already have a decision")
         return self
+
+
+class AnalysisSpecSnapshotOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    revision: int = Field(ge=1)
+    status: Literal["pending-approval", "approved", "superseded", "rejected"]
+    selector_kind: Literal["local-deterministic", "remote-model-assisted"]
+    selector_reason: str = Field(min_length=1, max_length=2_000)
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=100)
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    spec: dict[str, object]
+    created_at: datetime
+
+
+class StructuredAnalysisResultSnapshotOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    run_id: str = Field(min_length=1, max_length=36)
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result: dict[str, object]
+    created_at: datetime
 
 
 class WorkflowAnalysisArtifactOut(StrictApiModel):
@@ -1282,6 +1375,8 @@ class ResearchWorkflowSnapshot(StrictApiModel):
     dataset_profile: DatasetProfile | None = None
     analysis_intent: WorkflowAnalysisIntentOut | None = None
     analysis_run: WorkflowAnalysisRunOut | None = None
+    analysis_spec: AnalysisSpecSnapshotOut | None = None
+    structured_result: StructuredAnalysisResultSnapshotOut | None = None
     review_warning_acceptance: DatasetReviewWarningAcceptanceOut | None = None
     allowed_actions: list[AllowedAction]
     event_cursor: int = Field(ge=0)
@@ -1391,6 +1486,9 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                 if "figures" in self.analysis_intent.expected_outputs:
                     required_artifact_types.add("figure")
                     allowed_artifact_types.add("figure")
+                if self.analysis_intent.analysis_spec_id is not None:
+                    required_artifact_types.add("structured-data")
+                    allowed_artifact_types.add("structured-data")
                 if self.analysis_run.status == "completed" and (
                     not required_artifact_types.issubset(actual_artifact_types)
                     or not actual_artifact_types.issubset(allowed_artifact_types)
@@ -1404,6 +1502,52 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                 "rejected",
             }:
                 raise ValueError("an executing or terminal workflow intent requires its run")
+            if self.analysis_spec is not None:
+                if (
+                    self.plan is None
+                    or not isinstance(self.plan.spec, DatasetAnalysisPlanSpec)
+                    or self.plan.spec.analysis_spec_id != self.analysis_spec.id
+                    or self.plan.spec.analysis_spec_sha256
+                    != self.analysis_spec.spec_sha256
+                    or self.analysis_spec.spec.get("datasetSourceId")
+                    != self.workflow.dataset_source_id
+                    or self.analysis_spec.spec.get("datasetContentHash")
+                    != self.workflow.dataset_content_hash
+                    or self.analysis_spec.spec.get("datasetProfileHash")
+                    != self.analysis_spec.dataset_profile_sha256
+                ):
+                    raise ValueError(
+                        "the AnalysisSpec snapshot must bind the plan and dataset"
+                    )
+                if self.analysis_intent is not None and (
+                    self.analysis_intent.analysis_spec_id != self.analysis_spec.id
+                    or self.analysis_intent.spec_sha256
+                    != self.analysis_spec.spec_sha256
+                    or self.analysis_intent.dataset_profile_sha256
+                    != self.analysis_spec.dataset_profile_sha256
+                ):
+                    raise ValueError(
+                        "the compiled intent must bind the exact AnalysisSpec snapshot"
+                    )
+            elif (
+                self.analysis_intent is not None
+                and self.analysis_intent.analysis_spec_id is not None
+            ):
+                raise ValueError("a compiled intent requires its AnalysisSpec snapshot")
+            if self.structured_result is not None:
+                if (
+                    self.analysis_spec is None
+                    or self.analysis_intent is None
+                    or self.analysis_run is None
+                    or self.structured_result.analysis_spec_id != self.analysis_spec.id
+                    or self.structured_result.analysis_intent_id
+                    != self.analysis_intent.id
+                    or self.structured_result.run_id != self.analysis_run.id
+                    or self.analysis_run.status != "completed"
+                ):
+                    raise ValueError(
+                        "the structured result must bind the completed Spec, Intent, and Run"
+                    )
             if self.latest_review is not None:
                 if not isinstance(self.latest_review.result, DatasetAnalysisReviewResult):
                     raise ValueError("dataset workflows require deterministic analysis reviews")
@@ -1416,6 +1560,18 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                     != self.workflow.dataset_content_hash
                 ):
                     raise ValueError("the analysis review must bind the exact reviewed run")
+                review_spec_id = self.latest_review.result.analysis_spec_id
+                if review_spec_id is not None:
+                    if (
+                        self.analysis_spec is None
+                        or self.structured_result is None
+                        or review_spec_id != self.analysis_spec.id
+                        or self.latest_review.result.structured_result_sha256
+                        != self.structured_result.result_sha256
+                    ):
+                        raise ValueError(
+                            "the compiled review must bind the exact Spec and structured result"
+                        )
             if self.review_warning_acceptance is not None:
                 if (
                     self.latest_review is None
@@ -1640,7 +1796,9 @@ class AnalysisApprovalEventData(StrictApiModel):
     task_id: str = Field(min_length=1, max_length=36)
     job_id: str | None = Field(default=None, max_length=36)
     payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    approval_schema_version: Literal["analysis-intent-v2", "analysis-intent-v3"]
+    approval_schema_version: Literal[
+        "analysis-intent-v2", "analysis-intent-v3", "analysis-intent-v4"
+    ]
     expected_workflow_revision: int = Field(ge=1)
 
 
@@ -1702,6 +1860,56 @@ class IntentDecisionEventData(StrictApiModel):
     output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class AnalysisClarificationRequestedEventData(StrictApiModel):
+    interaction_id: str = Field(min_length=1, max_length=36)
+    clarification_type: str = Field(min_length=1, max_length=100)
+    selector_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selector_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AnalysisMethodSelectionStartedEventData(StrictApiModel):
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AnalysisSpecEventData(StrictApiModel):
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    revision: int = Field(ge=1)
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selector_kind: Literal["local-deterministic", "remote-model-assisted"]
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AnalysisCompiledEventData(StrictApiModel):
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_version: str = Field(min_length=1, max_length=100)
+    approved_code_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_policy_id: str = Field(min_length=1, max_length=100)
+
+
+class AnalysisStructuredResultEventData(StrictApiModel):
+    structured_result_id: str = Field(min_length=1, max_length=36)
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    run_id: str = Field(min_length=1, max_length=36)
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AnalysisUnsupportedEventData(StrictApiModel):
+    capability: str = Field(min_length=1, max_length=100)
+    explanation: str = Field(min_length=1, max_length=2_000)
+    supported_alternatives: list[
+        Literal["descriptive", "two-group-comparison", "correlation"]
+    ] = Field(max_length=3)
+    selector_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selector_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class _InteractionEventData(StrictApiModel):
     interaction_id: str = Field(min_length=1, max_length=36)
     request_type: Literal[
@@ -1746,6 +1954,12 @@ WorkflowEventData = (
     | DatasetReviewWarningsAcceptedEventData
     | AgentRunCreatedEventData
     | IntentDecisionEventData
+    | AnalysisClarificationRequestedEventData
+    | AnalysisMethodSelectionStartedEventData
+    | AnalysisSpecEventData
+    | AnalysisCompiledEventData
+    | AnalysisStructuredResultEventData
+    | AnalysisUnsupportedEventData
     | InteractionRequestedEventData
     | InteractionAnsweredEventData
 )
@@ -1753,6 +1967,17 @@ WorkflowEventData = (
 WorkflowEventType = Literal[
     "agent-run.created",
     "intent.decision-recorded",
+    "analysis.method-selection-started",
+    "analysis.clarification-requested",
+    "analysis.spec-created",
+    "analysis.spec-superseded",
+    "analysis.spec-approved",
+    "analysis.compiled",
+    "analysis.execution-approval-requested",
+    "analysis.execution-started",
+    "analysis.structured-result-created",
+    "analysis.review-completed",
+    "analysis.unsupported",
     "interaction.requested",
     "interaction.answered",
     "workflow.created",
@@ -1784,6 +2009,17 @@ WorkflowEventType = Literal[
 _WORKFLOW_EVENT_DATA_TYPES: dict[str, type[StrictApiModel]] = {
     "agent-run.created": AgentRunCreatedEventData,
     "intent.decision-recorded": IntentDecisionEventData,
+    "analysis.method-selection-started": AnalysisMethodSelectionStartedEventData,
+    "analysis.clarification-requested": AnalysisClarificationRequestedEventData,
+    "analysis.spec-created": AnalysisSpecEventData,
+    "analysis.spec-superseded": AnalysisSpecEventData,
+    "analysis.spec-approved": AnalysisSpecEventData,
+    "analysis.compiled": AnalysisCompiledEventData,
+    "analysis.execution-approval-requested": AnalysisApprovalEventData,
+    "analysis.execution-started": AnalysisRunEventData,
+    "analysis.structured-result-created": AnalysisStructuredResultEventData,
+    "analysis.review-completed": ReviewEventData,
+    "analysis.unsupported": AnalysisUnsupportedEventData,
     "interaction.requested": InteractionRequestedEventData,
     "interaction.answered": InteractionAnsweredEventData,
     "workflow.created": CreatedEventData,
@@ -1858,7 +2094,7 @@ class WorkflowEventOut(ApiModel):
         ):
             raise ValueError("event job_id must match its payload job_id")
         if isinstance(self.data, AnalysisRunEventData):
-            if self.type == "analysis.run-started" and (
+            if self.type in {"analysis.run-started", "analysis.execution-started"} and (
                 self.data.environment_hash is not None
                 or self.data.artifact_count is not None
                 or self.data.error_code is not None

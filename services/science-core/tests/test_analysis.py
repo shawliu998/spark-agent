@@ -22,6 +22,8 @@ from open_science_core.analysis import (
 )
 from open_science_core.config import settings
 from open_science_core.fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
     FixedAnalysisPolicyError,
     FixedAnalysisTemplate,
@@ -253,6 +255,35 @@ def test_fixed_analysis_policy_rejects_template_or_index_shape_drift() -> None:
             baseline,
             policy_profile_id=FIXED_ANALYSIS_POLICY_ID,
             policy_template="baseline",
+        )
+
+
+def test_compiled_analysis_policy_binds_exact_code_and_generic_safety() -> None:
+    code = "import pandas as pd\nprint(pd.__version__)"
+    approved_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+    validate_python_code(
+        code,
+        policy_profile_id=COMPILED_ANALYSIS_POLICY_ID,
+        policy_template=COMPILED_ANALYSIS_TEMPLATE,
+        approved_code_sha256=approved_hash,
+    )
+
+    with pytest.raises(ValueError, match="does not match its approval"):
+        validate_python_code(
+            code + "\nprint('tampered')",
+            policy_profile_id=COMPILED_ANALYSIS_POLICY_ID,
+            policy_template=COMPILED_ANALYSIS_TEMPLATE,
+            approved_code_sha256=approved_hash,
+        )
+
+    blocked = "import subprocess"
+    with pytest.raises(ValueError, match="Python code policy rejected"):
+        validate_python_code(
+            blocked,
+            policy_profile_id=COMPILED_ANALYSIS_POLICY_ID,
+            policy_template=COMPILED_ANALYSIS_TEMPLATE,
+            approved_code_sha256=hashlib.sha256(blocked.encode("utf-8")).hexdigest(),
         )
 
 

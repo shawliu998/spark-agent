@@ -8,6 +8,7 @@ import {
   FileCode2,
   FileOutput,
   Hash,
+  Link2,
   Loader2,
   ShieldAlert,
   Square,
@@ -16,6 +17,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type {
+  AgentResearchWorkflowSnapshot,
   DatasetAnalysisWorkflowSnapshot,
   DatasetProfile,
   ResearchWorkflowAllowedAction,
@@ -23,6 +25,8 @@ import type {
   WorkflowAnalysisExecutionPendingApproval,
   WorkflowAnalysisIntent,
   WorkflowAnalysisRun,
+  WorkflowAnalysisSpec,
+  WorkflowStructuredAnalysisResult,
 } from "@spark/research-domain";
 import { cn } from "@/lib/cn";
 import { parseTableFile, type ParsedTable } from "@/lib/csv";
@@ -31,8 +35,12 @@ import { toast } from "@/lib/toast";
 import { WorkflowReviewSummary } from "./WorkflowReviewSummary";
 import { statusLabel } from "./workflowModel";
 
+type DatasetDetailsSnapshot =
+  | DatasetAnalysisWorkflowSnapshot
+  | AgentResearchWorkflowSnapshot;
+
 interface DatasetWorkflowDetailsProps {
-  snapshot: DatasetAnalysisWorkflowSnapshot;
+  snapshot: DatasetDetailsSnapshot;
   mutating: boolean;
   onDecision: (decision: "approved" | "rejected") => Promise<void>;
   onCancel: () => Promise<void>;
@@ -51,6 +59,9 @@ export function DatasetWorkflowDetails({
       {snapshot.datasetProfile && (
         <DatasetProfileCard profile={snapshot.datasetProfile} />
       )}
+      {snapshot.analysisSpec && (
+        <AnalysisMethodCard analysisSpec={snapshot.analysisSpec} />
+      )}
       {snapshot.analysisIntent && (
         <AnalysisExecutionApprovalCard
           snapshot={snapshot}
@@ -61,6 +72,9 @@ export function DatasetWorkflowDetails({
         />
       )}
       {snapshot.analysisRun && <AnalysisRunCard run={snapshot.analysisRun} />}
+      {snapshot.structuredResult && (
+        <StructuredResultCard structuredResult={snapshot.structuredResult} />
+      )}
       {snapshot.latestReview && (
         <DatasetReviewGate
           snapshot={snapshot}
@@ -68,6 +82,223 @@ export function DatasetWorkflowDetails({
           onAccept={onAcceptReviewWarnings}
         />
       )}
+    </div>
+  );
+}
+
+function AnalysisMethodCard({
+  analysisSpec,
+}: {
+  analysisSpec: WorkflowAnalysisSpec;
+}) {
+  const { t } = useTranslation("pages");
+  const { spec } = analysisSpec;
+  const operation = spec.operation;
+  const method =
+    operation.type === "descriptive" ? "descriptive" : operation.method;
+  const methodTitle =
+    analysisSpec.status === "pending-approval"
+      ? t("research.workflow.proposedAnalysisMethod", {
+          defaultValue: "Proposed analysis method",
+        })
+      : analysisSpec.status === "approved"
+        ? t("research.workflow.approvedAnalysisMethod", {
+            defaultValue: "Approved analysis method",
+          })
+        : analysisSpec.status === "superseded"
+          ? t("research.workflow.supersededAnalysisMethod", {
+              defaultValue: "Superseded analysis method",
+            })
+          : t("research.workflow.rejectedAnalysisMethod", {
+              defaultValue: "Rejected analysis method",
+            });
+
+  return (
+    <section className="overflow-hidden rounded-card border border-border bg-surface shadow-card">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <BarChart3 size={15} className="text-accent" />
+        <h3 className="text-sm font-medium text-text">
+          {methodTitle}
+        </h3>
+        <span className="ml-auto rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-muted ring-1 ring-border">
+          {analysisSpec.status}
+        </span>
+        <span className="rounded-full bg-surface-2 px-2 py-0.5 text-[10px] text-muted ring-1 ring-border">
+          {method}
+        </span>
+      </div>
+      <div className="space-y-3 p-4">
+        <p className="text-xs font-medium text-text">{spec.objective}</p>
+        <dl className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+          <MetadataCell
+            label={t("research.workflow.analysisOperation", {
+              defaultValue: "Operation",
+            })}
+            value={operation.type}
+          />
+          <MetadataCell
+            label={t("research.workflow.analysisMethodLabel", {
+              defaultValue: "Requested method",
+            })}
+            value={method}
+          />
+          <MetadataCell
+            label={t("research.workflow.confidenceLevel", {
+              defaultValue: "Confidence level",
+            })}
+            value={formatPercent(spec.confidenceLevel)}
+          />
+          <MetadataCell
+            label={t("research.workflow.missingValuePolicy", {
+              defaultValue: "Missing-value policy",
+            })}
+            value={spec.missingValuePolicy}
+          />
+          {operation.type === "descriptive" && (
+            <>
+              <MetadataCell
+                label={t("research.workflow.analysisColumns", {
+                  defaultValue: "Columns",
+                })}
+                value={operation.columns.join(", ")}
+                wide
+              />
+              <MetadataCell
+                label={t("research.workflow.descriptiveStatistics", {
+                  defaultValue: "Statistics",
+                })}
+                value={operation.statistics.join(", ")}
+                wide
+              />
+            </>
+          )}
+          {operation.type === "two-group-comparison" && (
+            <>
+              <MetadataCell
+                label={t("research.workflow.outcomeColumn", {
+                  defaultValue: "Outcome column",
+                })}
+                value={operation.outcomeColumn}
+              />
+              <MetadataCell
+                label={t("research.workflow.groupColumn", {
+                  defaultValue: "Group column",
+                })}
+                value={operation.groupColumn}
+              />
+              <MetadataCell
+                label={t("research.workflow.comparedGroups", {
+                  defaultValue: "Compared groups",
+                })}
+                value={operation.groups.join(" ↔ ")}
+              />
+              <MetadataCell
+                label={t("research.workflow.effectSize", {
+                  defaultValue: "Effect size",
+                })}
+                value={operation.effectSize}
+              />
+            </>
+          )}
+          {operation.type === "correlation" && (
+            <>
+              <MetadataCell
+                label={t("research.workflow.xColumn", {
+                  defaultValue: "X column",
+                })}
+                value={operation.xColumn}
+              />
+              <MetadataCell
+                label={t("research.workflow.yColumn", {
+                  defaultValue: "Y column",
+                })}
+                value={operation.yColumn}
+              />
+            </>
+          )}
+        </dl>
+
+        <div className="rounded-input border border-border-faint bg-bg p-3 text-[11px] text-muted">
+          <p>
+            {t("research.workflow.methodSelectedBy", {
+              defaultValue: "Selected by {{selector}} · revision {{revision}}",
+              selector: analysisSpec.selectorKind,
+              revision: analysisSpec.revision,
+            })}
+          </p>
+          {analysisSpec.selectorReason && (
+            <p className="mt-1 leading-relaxed text-text">
+              {analysisSpec.selectorReason}
+            </p>
+          )}
+        </div>
+
+        {(spec.assumptions.length > 0 || spec.limitations.length > 0) && (
+          <div className="grid gap-3 lg:grid-cols-2">
+            <MethodNotes
+              label={t("research.workflow.methodAssumptions", {
+                defaultValue: "Assumptions",
+              })}
+              items={spec.assumptions}
+            />
+            <MethodNotes
+              label={t("research.workflow.methodLimitations", {
+                defaultValue: "Limitations",
+              })}
+              items={spec.limitations}
+              warning
+            />
+          </div>
+        )}
+
+        <dl className="grid gap-2 text-[11px] sm:grid-cols-2">
+          <MetadataCell
+            label={t("research.workflow.analysisSpecHash", {
+              defaultValue: "AnalysisSpec SHA-256",
+            })}
+            value={analysisSpec.specSha256}
+            mono
+          />
+          <MetadataCell
+            label={t("research.workflow.datasetProfileHash", {
+              defaultValue: "Dataset profile SHA-256",
+            })}
+            value={analysisSpec.datasetProfileSha256}
+            mono
+          />
+        </dl>
+      </div>
+    </section>
+  );
+}
+
+function MethodNotes({
+  label,
+  items,
+  warning = false,
+}: {
+  label: string;
+  items: string[];
+  warning?: boolean;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <div
+      className={cn(
+        "rounded-input border p-3",
+        warning
+          ? "border-warn/25 bg-warn/5"
+          : "border-border-faint bg-bg",
+      )}
+    >
+      <p className="text-[10px] font-medium uppercase tracking-wider text-muted">
+        {label}
+      </p>
+      <ul className="mt-2 list-disc space-y-1 pl-4 text-[11px] leading-relaxed text-muted">
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -250,7 +481,7 @@ function AnalysisExecutionApprovalCard({
   onDecision,
   onCancel,
 }: {
-  snapshot: DatasetAnalysisWorkflowSnapshot;
+  snapshot: DatasetDetailsSnapshot;
   intent: WorkflowAnalysisIntent;
   mutating: boolean;
   onDecision: (decision: "approved" | "rejected") => Promise<void>;
@@ -337,6 +568,64 @@ function AnalysisExecutionApprovalCard({
             mono
             wide
           />
+          {intent.analysisSpecId && (
+            <MetadataCell
+              label={t("research.workflow.analysisSpecId", {
+                defaultValue: "AnalysisSpec ID",
+              })}
+              value={intent.analysisSpecId}
+              mono
+              wide
+            />
+          )}
+          {intent.specSha256 && (
+            <MetadataCell
+              label={t("research.workflow.analysisSpecHash", {
+                defaultValue: "AnalysisSpec SHA-256",
+              })}
+              value={intent.specSha256}
+              mono
+              wide
+            />
+          )}
+          {intent.datasetProfileSha256 && (
+            <MetadataCell
+              label={t("research.workflow.datasetProfileHash", {
+                defaultValue: "Dataset profile SHA-256",
+              })}
+              value={intent.datasetProfileSha256}
+              mono
+              wide
+            />
+          )}
+          {intent.compilerVersion && (
+            <MetadataCell
+              label={t("research.workflow.compilerVersion", {
+                defaultValue: "Compiler version",
+              })}
+              value={intent.compilerVersion}
+              mono
+            />
+          )}
+          {intent.codeSha256 && (
+            <MetadataCell
+              label={t("research.workflow.codeHash", {
+                defaultValue: "Code SHA-256",
+              })}
+              value={intent.codeSha256}
+              mono
+              wide
+            />
+          )}
+          {intent.runtimePolicyId && (
+            <MetadataCell
+              label={t("research.workflow.runtimePolicy", {
+                defaultValue: "Runtime policy",
+              })}
+              value={intent.runtimePolicyId}
+              mono
+            />
+          )}
           <MetadataCell
             label={t("research.workflow.datasetSourceId", {
               defaultValue: "Dataset source ID",
@@ -502,6 +791,11 @@ function AnalysisRunCard({ run }: { run: WorkflowAnalysisRun }) {
   const environments = run.artifacts.filter(
     (artifact) => artifact.artifactType === "environment",
   );
+  const reproducibilityArtifacts = run.artifacts.filter((artifact) =>
+    ["analysis-spec.json", "results.json", "summary.csv", "executed.ipynb"].includes(
+      fileName(artifact.path),
+    ),
+  );
 
   return (
     <section className="overflow-hidden rounded-card border border-border bg-surface shadow-card">
@@ -562,6 +856,22 @@ function AnalysisRunCard({ run }: { run: WorkflowAnalysisRun }) {
           })}
           value={run.log || run.logs}
         />
+
+        {reproducibilityArtifacts.length > 0 && (
+          <div className="rounded-input border border-accent/20 bg-accent/5 p-3">
+            <h4 className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted">
+              <Link2 size={14} className="text-accent" />
+              {t("research.workflow.reproducibilityArtifacts", {
+                defaultValue: "Reproducibility artifacts",
+              })}
+            </h4>
+            <ul className="mt-2 grid gap-2 xl:grid-cols-2">
+              {reproducibilityArtifacts.map((artifact) => (
+                <ArtifactDownloadRow key={artifact.id} artifact={artifact} />
+              ))}
+            </ul>
+          </div>
+        )}
 
         {environments.map((artifact) => (
           <TextArtifactPreview
@@ -630,12 +940,286 @@ function AnalysisRunCard({ run }: { run: WorkflowAnalysisRun }) {
   );
 }
 
+function StructuredResultCard({
+  structuredResult,
+}: {
+  structuredResult: WorkflowStructuredAnalysisResult;
+}) {
+  const { t } = useTranslation("pages");
+  const result = structuredResult.result;
+  const operation = result.result;
+
+  return (
+    <section className="overflow-hidden rounded-card border border-border bg-surface shadow-card">
+      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+        <CheckCircle2 size={15} className="text-ok" />
+        <h3 className="text-sm font-medium text-text">
+          {t("research.workflow.structuredResults", {
+            defaultValue: "Structured statistical results",
+          })}
+        </h3>
+        <span className="ml-auto rounded-full bg-ok/10 px-2 py-0.5 text-[10px] font-medium text-ok">
+          {result.resolvedMethod}
+        </span>
+      </div>
+      <div className="space-y-4 p-4">
+        <p className="text-xs font-medium text-text">{result.objective}</p>
+
+        <dl className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+          <MetadataCell
+            label={t("research.workflow.requestedMethod", {
+              defaultValue: "Requested method",
+            })}
+            value={result.requestedMethod}
+          />
+          <MetadataCell
+            label={t("research.workflow.resolvedMethod", {
+              defaultValue: "Resolved method",
+            })}
+            value={result.resolvedMethod}
+          />
+          {operation.type === "descriptive" ? (
+            <MetadataCell
+              label={t("research.workflow.totalRows", {
+                defaultValue: "Dataset rows",
+              })}
+              value={`${result.sampleSummary.totalRows}`}
+            />
+          ) : (
+            <>
+              <MetadataCell
+                label={t("research.workflow.analyzedRows", {
+                  defaultValue: "Analyzed rows",
+                })}
+                value={`${result.sampleSummary.analyzedRows} / ${result.sampleSummary.totalRows}`}
+              />
+              <MetadataCell
+                label={t("research.workflow.missingRows", {
+                  defaultValue: "Excluded or missing rows",
+                })}
+                value={`${result.sampleSummary.missingRows}`}
+              />
+            </>
+          )}
+        </dl>
+
+        <div className="rounded-input border border-border-faint bg-bg px-3 py-2.5 text-[11px] leading-relaxed text-muted">
+          <span className="font-medium text-text">
+            {t("research.workflow.methodSelectionReason", {
+              defaultValue: "Method selection",
+            })}
+            :{" "}
+          </span>
+          {result.methodSelectionReason}
+        </div>
+
+        {operation.type === "descriptive" && (
+          <div className="overflow-x-auto rounded-input border border-border">
+            <table className="min-w-full text-left text-[11px]">
+              <thead className="bg-surface-2 text-[9px] uppercase tracking-wider text-muted">
+                <tr>
+                  <th className="px-3 py-2">
+                    {t("research.workflow.profileColumn", {
+                      defaultValue: "Column",
+                    })}
+                  </th>
+                  <th className="px-3 py-2">
+                    {t("research.workflow.sampleSize", {
+                      defaultValue: "Sample / missing",
+                    })}
+                  </th>
+                  <th className="px-3 py-2">
+                    {t("research.workflow.descriptiveStatistics", {
+                      defaultValue: "Statistics",
+                    })}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border-faint bg-bg text-text">
+                {operation.columns.map((column) => (
+                  <tr key={column.column}>
+                    <td className="px-3 py-2 font-medium">{column.column}</td>
+                    <td className="px-3 py-2 text-muted">
+                      {column.sampleSize} / {column.missingCount}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[10px] text-muted">
+                      {Object.entries(column.statistics)
+                        .map(([key, value]) => `${key}=${formatResultValue(value)}`)
+                        .join(" · ")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {operation.type === "two-group-comparison" && (
+          <div className="space-y-3">
+            <dl className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+              <MetadataCell
+                label={t("research.workflow.comparison", {
+                  defaultValue: "Comparison",
+                })}
+                value={`${operation.outcomeColumn} · ${operation.groups.join(" ↔ ")}`}
+                wide
+              />
+              <MetadataCell
+                label={t("research.workflow.sampleSizes", {
+                  defaultValue: "Sample sizes",
+                })}
+                value={formatRecord(operation.sampleSizes)}
+                mono
+              />
+              <MetadataCell
+                label={t("research.workflow.testStatistic", {
+                  defaultValue: "Test statistic",
+                })}
+                value={formatNumber(operation.testStatistic)}
+              />
+              <MetadataCell
+                label={t("research.workflow.pValue", {
+                  defaultValue: "p-value",
+                })}
+                value={formatNumber(operation.pValue)}
+              />
+              <MetadataCell
+                label={t("research.workflow.effectSize", {
+                  defaultValue: "Effect size",
+                })}
+                value={`${operation.effectSizeName}: ${formatNumber(operation.effectSize)}`}
+              />
+              <MetadataCell
+                label={t("research.workflow.confidenceInterval", {
+                  defaultValue: "Confidence interval",
+                })}
+                value={formatInterval(operation.confidenceInterval)}
+              />
+            </dl>
+            <div className="overflow-x-auto rounded-input border border-border">
+              <table className="min-w-full text-left text-[11px]">
+                <thead className="bg-surface-2 text-[9px] uppercase tracking-wider text-muted">
+                  <tr>
+                    <th className="px-3 py-2">
+                      {t("research.workflow.group", { defaultValue: "Group" })}
+                    </th>
+                    <th className="px-3 py-2">
+                      {t("research.workflow.descriptiveStatistics", {
+                        defaultValue: "Statistics",
+                      })}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-faint bg-bg text-text">
+                  {operation.groups.map((group) => (
+                    <tr key={group}>
+                      <td className="px-3 py-2 font-medium">{group}</td>
+                      <td className="px-3 py-2 font-mono text-[10px] text-muted">
+                        {formatRecord(operation.descriptiveStatistics[group] ?? {})}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {operation.type === "correlation" && (
+          <dl className="grid gap-2 text-[11px] sm:grid-cols-2 lg:grid-cols-4">
+            <MetadataCell
+              label={t("research.workflow.variables", {
+                defaultValue: "Variables",
+              })}
+              value={`${operation.xColumn} ↔ ${operation.yColumn}`}
+              wide
+            />
+            <MetadataCell
+              label={t("research.workflow.pairedSamples", {
+                defaultValue: "Valid pairs",
+              })}
+              value={`${operation.sampleSize}`}
+            />
+            <MetadataCell
+              label={t("research.workflow.correlation", {
+                defaultValue: "Correlation",
+              })}
+              value={formatNumber(operation.correlation)}
+            />
+            <MetadataCell
+              label={t("research.workflow.pValue", {
+                defaultValue: "p-value",
+              })}
+              value={formatNumber(operation.pValue)}
+            />
+            <MetadataCell
+              label={t("research.workflow.confidenceInterval", {
+                defaultValue: "Confidence interval",
+              })}
+              value={
+                operation.confidenceInterval
+                  ? formatInterval(operation.confidenceInterval)
+                  : t("research.workflow.notCalculated", {
+                      defaultValue: "Not calculated",
+                    })
+              }
+            />
+          </dl>
+        )}
+
+        {(result.warnings.length > 0 || result.limitations.length > 0) && (
+          <div className="grid gap-3 lg:grid-cols-2">
+            <MethodNotes
+              label={t("research.workflow.resultWarnings", {
+                defaultValue: "Result warnings",
+              })}
+              items={result.warnings}
+              warning
+            />
+            <MethodNotes
+              label={t("research.workflow.methodLimitations", {
+                defaultValue: "Limitations",
+              })}
+              items={result.limitations}
+              warning
+            />
+          </div>
+        )}
+
+        <p className="rounded-input border border-warn/25 bg-warn/5 px-3 py-2.5 text-[11px] leading-relaxed text-muted">
+          {t("research.workflow.nonCausalBoundary", {
+            defaultValue:
+              "These results describe the observed sample. A group difference or correlation is not, by itself, evidence of causation.",
+          })}
+        </p>
+
+        <dl className="grid gap-2 text-[11px] sm:grid-cols-2">
+          <MetadataCell
+            label={t("research.workflow.structuredResultHash", {
+              defaultValue: "Structured result SHA-256",
+            })}
+            value={structuredResult.resultSha256}
+            mono
+          />
+          <MetadataCell
+            label={t("research.workflow.resultLineage", {
+              defaultValue: "Spec · Intent · Run",
+            })}
+            value={`${structuredResult.analysisSpecId} · ${structuredResult.analysisIntentId} · ${structuredResult.runId}`}
+            mono
+          />
+        </dl>
+      </div>
+    </section>
+  );
+}
+
 function DatasetReviewGate({
   snapshot,
   mutating,
   onAccept,
 }: {
-  snapshot: DatasetAnalysisWorkflowSnapshot;
+  snapshot: DatasetDetailsSnapshot;
   mutating: boolean;
   onAccept: () => Promise<void>;
 }) {
@@ -766,6 +1350,8 @@ function RunStatus({ status }: { status: WorkflowAnalysisRun["status"] }) {
         : "bg-warn/10 text-warn ring-warn/20";
   return (
     <span
+      role="status"
+      aria-live="polite"
       className={cn(
         "rounded-full px-2 py-0.5 text-[10px] font-medium ring-1",
         tone,
@@ -1039,8 +1625,12 @@ function fileName(path: string): string {
 }
 
 function isTableArtifact(artifact: WorkflowAnalysisArtifact): boolean {
-  if (artifact.artifactType === "structured-data") return true;
-  if (artifact.artifactType !== "dataset") return false;
+  if (
+    artifact.artifactType !== "structured-data" &&
+    artifact.artifactType !== "dataset"
+  ) {
+    return false;
+  }
   const path = artifact.path.toLowerCase();
   const mimeType = artifact.mimeType.toLowerCase();
   return (
@@ -1056,4 +1646,34 @@ function formatBytes(value: number): string {
   if (value < 1_024) return `${value} B`;
   if (value < 1_024 ** 2) return `${(value / 1_024).toFixed(1)} KiB`;
   return `${(value / 1_024 ** 2).toFixed(1)} MiB`;
+}
+
+function formatPercent(value: number): string {
+  return `${(value * 100).toLocaleString(undefined, {
+    maximumFractionDigits: 2,
+  })}%`;
+}
+
+function formatNumber(value: number): string {
+  if (value === 0) return "0";
+  const absolute = Math.abs(value);
+  if (absolute < 0.0001 || absolute >= 1_000_000) {
+    return value.toExponential(4);
+  }
+  return value.toLocaleString(undefined, { maximumSignificantDigits: 6 });
+}
+
+function formatResultValue(value: number | string | null): string {
+  if (value === null) return "—";
+  return typeof value === "number" ? formatNumber(value) : value;
+}
+
+function formatRecord(values: Record<string, number | null>): string {
+  return Object.entries(values)
+    .map(([key, value]) => `${key}=${formatResultValue(value)}`)
+    .join(" · ");
+}
+
+function formatInterval(value: [number, number]): string {
+  return `[${formatNumber(value[0])}, ${formatNumber(value[1])}]`;
 }

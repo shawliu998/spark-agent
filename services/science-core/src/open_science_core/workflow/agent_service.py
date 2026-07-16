@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from ..model_gateway import OpenAICompatibleModelGateway
 from ..models import (
+    AnalysisSpecRecord,
     ApprovalRecord,
     EventRecord,
     IntentDecisionRecord,
@@ -49,6 +50,7 @@ from .agent_schemas import (
 from .schemas import (
     AUTONOMOUS_REMOTE_DATA_CATEGORIES,
     AgentRunCreatedEventData,
+    AnalysisSpecEventData,
     CreatedEventData,
     GenerationMode,
     IntentDecisionEventData,
@@ -58,6 +60,7 @@ from .schemas import (
     StatusChangedEventData,
     WorkflowStatus,
 )
+from .scientific_interactions import is_scientific_interaction
 from .state import WorkflowFailure, workflow_transition_allowed
 
 
@@ -471,7 +474,7 @@ def handle_route_intent(
             workflow_type="dataset-analysis",
             decision_id=decision_record.id,
             dataset=dataset,
-            generation_mode="local-deterministic",
+            generation_mode=workflow.generation_mode,
         )
         append_workflow_events(
             session,
@@ -484,7 +487,7 @@ def handle_route_intent(
                         goal_sha256=hashlib.sha256(
                             workflow.goal.encode("utf-8")
                         ).hexdigest(),
-                        generation_mode="local-deterministic",
+                        generation_mode=cast(GenerationMode, workflow.generation_mode),
                     ),
                     None,
                     job.id,
@@ -1132,11 +1135,13 @@ def _create_intent_interaction(
             options.append(
                 {"value": "dataset-analysis", "label": "Dataset analysis"}
             )
-        if {"pdf", "dataset"}.issubset(available_kinds):
-            options.append({"value": "mixed-research", "label": "Mixed research"})
         if options:
             request_type = "single-choice"
-            question = "Which supported research path best matches your goal?"
+            question = (
+                "Which single supported research path should this run use first?"
+                if {"pdf", "dataset"}.issubset(available_kinds)
+                else "Which supported research path best matches your goal?"
+            )
             response_schema = {
                 "type": "string",
                 "enum": [option["value"] for option in options],
@@ -1273,6 +1278,12 @@ def respond_to_interaction(
             "Clarification responses cannot change a workflow after execution begins.",
         )
     response = _validated_interaction_response(interaction, payload.response)
+    scientific_interaction = is_scientific_interaction(interaction)
+    if scientific_interaction and workflow.workflow_type != "dataset-analysis":
+        raise WorkflowConflict(
+            "interaction-workflow-invalid",
+            "Scientific method clarification requires a resolved dataset workflow.",
+        )
     selected_source_ids = list(workflow.selected_source_ids)
     response_semantic = interaction.response_schema.get("semantic")
     if response_semantic == "source-ids":
@@ -1298,7 +1309,14 @@ def respond_to_interaction(
         )
         or 0
     ) + 1
-    if workflow.status in {"planning", "waiting-plan-approval"}:
+    if scientific_interaction:
+        _supersede_pending_plan(session, workflow)
+        _advance_scientific_planning_revision(
+            session,
+            workflow,
+            expected_revision=payload.expected_workflow_revision,
+        )
+    elif workflow.status in {"planning", "waiting-plan-approval"}:
         _supersede_pending_plan(session, workflow)
         _reset_agent_workflow_to_routing(
             session,
@@ -1348,14 +1366,26 @@ def respond_to_interaction(
             )
         ],
     )
-    enqueue_job(
-        session,
-        workflow,
-        kind="route-intent",
-        operation_key=f"workflow:{workflow.id}:intent-response:{response_record.id}",
-        request_idempotency_key=idempotency_key,
-        request_payload_sha256=request_payload_sha256,
-    )
+    if scientific_interaction:
+        enqueue_job(
+            session,
+            workflow,
+            kind="generate-plan",
+            operation_key=(
+                f"workflow:{workflow.id}:plan:{_next_plan_version(session, workflow)}"
+            ),
+            request_idempotency_key=idempotency_key,
+            request_payload_sha256=request_payload_sha256,
+        )
+    else:
+        enqueue_job(
+            session,
+            workflow,
+            kind="route-intent",
+            operation_key=f"workflow:{workflow.id}:intent-response:{response_record.id}",
+            request_idempotency_key=idempotency_key,
+            request_payload_sha256=request_payload_sha256,
+        )
     try:
         session.commit()
     except IntegrityError:
@@ -1495,6 +1525,39 @@ def _supersede_pending_plan(session: Session, workflow: WorkflowRecord) -> None:
         return
     plan.status = "superseded"
     plan.superseded_at = now
+    analysis_spec_id = plan.spec_json.get("analysisSpecId")
+    analysis_spec = (
+        session.get(AnalysisSpecRecord, analysis_spec_id)
+        if isinstance(analysis_spec_id, str)
+        else None
+    )
+    if (
+        analysis_spec is not None
+        and analysis_spec.workflow_id == workflow.id
+        and analysis_spec.status in {"pending-approval", "approved"}
+    ):
+        analysis_spec.status = "superseded"
+        append_workflow_events(
+            session,
+            workflow,
+            [
+                (
+                    "analysis.spec-superseded",
+                    AnalysisSpecEventData(
+                        analysis_spec_id=analysis_spec.id,
+                        revision=analysis_spec.revision,
+                        spec_sha256=analysis_spec.spec_sha256,
+                        dataset_profile_sha256=(
+                            analysis_spec.dataset_profile_sha256
+                        ),
+                        selector_kind=cast(Any, analysis_spec.selector_kind),
+                        prompt_version=analysis_spec.prompt_version,
+                    ),
+                    None,
+                    None,
+                )
+            ],
+        )
     session.execute(
         update(ApprovalRecord)
         .where(
@@ -1513,6 +1576,64 @@ def _supersede_pending_plan(session: Session, workflow: WorkflowRecord) -> None:
         )
         .values(status="cancelled", finished_at=now, updated_at=now)
     )
+
+
+def _advance_scientific_planning_revision(
+    session: Session,
+    workflow: WorkflowRecord,
+    *,
+    expected_revision: int,
+) -> None:
+    current = workflow.status
+    if current not in {"planning", "waiting-plan-approval"}:
+        raise WorkflowConflict(
+            "interaction-not-answerable",
+            "Scientific clarification can only change a workflow during planning.",
+        )
+    result = session.execute(
+        update(WorkflowRecord)
+        .where(
+            WorkflowRecord.id == workflow.id,
+            WorkflowRecord.row_version == expected_revision,
+            WorkflowRecord.status == current,
+        )
+        .values(
+            status="planning",
+            row_version=WorkflowRecord.row_version + 1,
+            updated_at=utc_now(),
+            blocking_code=None,
+            blocking_message=None,
+            last_error_code=None,
+            last_error_message=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if cast(CursorResult[object], result).rowcount != 1:
+        session.expire_all()
+        raise WorkflowConflict(
+            "workflow-revision-conflict",
+            "The workflow changed before the scientific response was applied.",
+            retryable=True,
+        )
+    session.flush()
+    session.refresh(workflow)
+    if current != "planning":
+        append_workflow_events(
+            session,
+            workflow,
+            [
+                (
+                    "workflow.status-changed",
+                    StatusChangedEventData(
+                        previous_status=cast(WorkflowStatus, current),
+                        status="planning",
+                        reason_code="scientific-answer-changed",
+                    ),
+                    None,
+                    None,
+                )
+            ],
+        )
 
 
 def _reset_agent_workflow_to_routing(
@@ -1688,15 +1809,19 @@ def agent_run_snapshot(
             "intent-decision-integrity-failed",
             "The unsupported workflow is not bound to an unsupported decision.",
         )
+    decision_invocation: ModelInvocationRecord | None = None
     if decision is not None and decision.model_invocation_id is not None:
-        invocation = session.get(ModelInvocationRecord, decision.model_invocation_id)
-        if invocation is None:
+        decision_invocation = session.get(
+            ModelInvocationRecord,
+            decision.model_invocation_id,
+        )
+        if decision_invocation is None:
             raise WorkflowConflict(
                 "intent-decision-integrity-failed",
                 "The current intent decision is missing its model invocation provenance.",
             )
         try:
-            _assert_intent_provenance_binding(workflow, invocation, decision)
+            _assert_intent_provenance_binding(workflow, decision_invocation, decision)
         except WorkflowFailure as error:
             raise WorkflowConflict(
                 "intent-decision-integrity-failed",
@@ -1747,12 +1872,15 @@ def agent_run_snapshot(
         "planning",
         "waiting-plan-approval",
     } and any(item.status == "answered" for item in interactions)
+    can_respond_interaction = any(
+        item.status == "pending" for item in interactions
+    ) or can_revise_answer
     allowed_actions: list[AgentAllowedAction]
     if base is not None:
         allowed_actions = [
             cast(AgentAllowedAction, action) for action in base.allowed_actions
         ]
-        if can_revise_answer:
+        if can_respond_interaction:
             allowed_actions.insert(0, "respond-interaction")
     elif workflow.status == "routing":
         allowed_actions = ["cancel"]
@@ -1760,7 +1888,9 @@ def agent_run_snapshot(
         allowed_actions = ["respond-interaction", "cancel"]
     elif workflow.status == "planning":
         allowed_actions = (
-            ["respond-interaction", "cancel"] if can_revise_answer else ["cancel"]
+            ["respond-interaction", "cancel"]
+            if can_respond_interaction
+            else ["cancel"]
         )
     elif workflow.status == "failed":
         allowed_actions = ["retry", "cancel"]
@@ -1799,7 +1929,16 @@ def agent_run_snapshot(
                 selected_source_ids=decision.selected_source_ids,
                 missing_inputs=decision.missing_inputs,
                 proposed_workflow_type=cast(Any, decision.proposed_workflow_type),
+                generator=decision.generator,
+                used_model=decision.used_model,
+                model=decision.model,
+                endpoint_identity=(
+                    decision_invocation.endpoint_identity
+                    if decision_invocation is not None
+                    else None
+                ),
                 prompt_version=decision.prompt_version,
+                parse_result=cast(Any, decision.parse_result),
                 input_sha256=decision.input_sha256,
                 output_sha256=decision.output_sha256,
                 created_at=decision.created_at,
@@ -1815,6 +1954,8 @@ def agent_run_snapshot(
         dataset_profile=base.dataset_profile if base is not None else None,
         analysis_intent=base.analysis_intent if base is not None else None,
         analysis_run=base.analysis_run if base is not None else None,
+        analysis_spec=base.analysis_spec if base is not None else None,
+        structured_result=base.structured_result if base is not None else None,
         review_warning_acceptance=(
             base.review_warning_acceptance if base is not None else None
         ),

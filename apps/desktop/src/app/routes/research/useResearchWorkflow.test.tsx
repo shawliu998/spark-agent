@@ -89,6 +89,8 @@ function pendingAgentSnapshot(): AgentResearchWorkflowSnapshot {
     datasetProfile: null,
     analysisIntent: null,
     analysisRun: null,
+    analysisSpec: null,
+    structuredResult: null,
     reviewWarningAcceptance: null,
     intentDecision: {
       id: "intent-decision-1",
@@ -223,6 +225,7 @@ describe("useResearchWorkflow", () => {
       await result.current.create("  Compare sources  ", {
         mode: "autonomous",
         sourceIds: ["paper-1", "dataset-1", "paper-1"],
+        remoteDataApproved: true,
       });
     });
 
@@ -232,6 +235,7 @@ describe("useResearchWorkflow", () => {
         goal: "Compare sources",
         sourceIds: ["dataset-1", "paper-1"],
         mode: "autonomous",
+        remoteDataApproved: true,
       },
       expect.objectContaining({
         idempotencyKey: expect.any(String),
@@ -252,6 +256,7 @@ describe("useResearchWorkflow", () => {
       await result.current.create("Investigate this question", {
         mode: "autonomous",
         sourceIds: [],
+        remoteDataApproved: false,
       });
     });
 

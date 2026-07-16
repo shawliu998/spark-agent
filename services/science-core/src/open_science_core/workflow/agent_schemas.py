@@ -7,10 +7,12 @@ from pydantic import ConfigDict, Field, StrictBool, field_validator, model_valid
 
 from ..schemas import ApiModel
 from .schemas import (
+    AnalysisSpecSnapshotOut,
     DatasetProfile,
     DatasetReviewWarningAcceptanceOut,
     PlanSnapshotOut,
     ReviewSnapshotOut,
+    StructuredAnalysisResultSnapshotOut,
     WorkflowAnalysisIntentOut,
     WorkflowAnalysisRunOut,
     WorkflowPendingApprovalOut,
@@ -63,6 +65,14 @@ AgentAllowedAction = Literal[
     "retry",
     "resume",
 ]
+IntentParseResult = Literal[
+    "valid",
+    "model-not-configured",
+    "model-request-failed",
+    "model-request-outcome-unknown",
+    "model-output-invalid",
+    "deterministic-capability-guard",
+]
 
 
 class StrictAgentModel(ApiModel):
@@ -94,10 +104,25 @@ class IntentDecisionOut(StrictAgentModel):
     selected_source_ids: list[str] = Field(max_length=100)
     missing_inputs: list[str] = Field(max_length=100)
     proposed_workflow_type: ResolvedAgentWorkflowType | None
+    generator: str = Field(min_length=1, max_length=100)
+    used_model: bool
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    endpoint_identity: str | None = Field(default=None, min_length=1, max_length=500)
     prompt_version: str = Field(min_length=1, max_length=100)
+    parse_result: IntentParseResult
     input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_router_provenance(self) -> IntentDecisionOut:
+        if self.used_model and (self.model is None or self.endpoint_identity is None):
+            raise ValueError("model-assisted decisions require model destination provenance")
+        if not self.used_model and (
+            self.model is not None or self.endpoint_identity is not None
+        ):
+            raise ValueError("local decisions cannot claim model destination provenance")
+        return self
 
 
 class UserResponseOut(StrictAgentModel):
@@ -188,6 +213,8 @@ class AgentRunSnapshot(StrictAgentModel):
     dataset_profile: DatasetProfile | None = None
     analysis_intent: WorkflowAnalysisIntentOut | None = None
     analysis_run: WorkflowAnalysisRunOut | None = None
+    analysis_spec: AnalysisSpecSnapshotOut | None = None
+    structured_result: StructuredAnalysisResultSnapshotOut | None = None
     review_warning_acceptance: DatasetReviewWarningAcceptanceOut | None = None
     allowed_actions: list[AgentAllowedAction]
     event_cursor: int = Field(ge=0)
@@ -244,6 +271,8 @@ class AgentRunSnapshot(StrictAgentModel):
                 self.dataset_profile,
                 self.analysis_intent,
                 self.analysis_run,
+                self.analysis_spec,
+                self.structured_result,
                 self.review_warning_acceptance,
             )
         ):

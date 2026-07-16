@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from typing import cast
 
 from .fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
     GENERAL_ANALYSIS_POLICY_ID,
     AnalysisPolicyId,
+    AnalysisPolicyTemplate,
     FixedAnalysisPolicyError,
     FixedAnalysisTemplate,
     validate_fixed_analysis_code,
@@ -38,7 +43,8 @@ def validate_python_code(
     code: str,
     *,
     policy_profile_id: AnalysisPolicyId = GENERAL_ANALYSIS_POLICY_ID,
-    policy_template: FixedAnalysisTemplate | None = None,
+    policy_template: AnalysisPolicyTemplate | None = None,
+    approved_code_sha256: str | None = None,
 ) -> None:
     """Reject the MVP's known shell and process escape forms before Jupyter sees code.
 
@@ -47,15 +53,39 @@ def validate_python_code(
     """
 
     if policy_profile_id == FIXED_ANALYSIS_POLICY_ID:
-        if policy_template is None:
+        if policy_template not in {"baseline", "repair-1", "repair-2"}:
             raise CodePolicyError("fixed analysis policy requires a template")
+        if approved_code_sha256 is not None:
+            raise CodePolicyError("fixed analysis policy does not accept an approved code hash")
         try:
-            validate_fixed_analysis_code(code, template=policy_template)
+            validate_fixed_analysis_code(
+                code,
+                template=cast(FixedAnalysisTemplate, policy_template),
+            )
         except FixedAnalysisPolicyError as error:
             raise CodePolicyError(str(error)) from error
         return
-    if policy_profile_id != GENERAL_ANALYSIS_POLICY_ID or policy_template is not None:
+    if policy_profile_id == COMPILED_ANALYSIS_POLICY_ID:
+        if (
+            policy_template != COMPILED_ANALYSIS_TEMPLATE
+            or approved_code_sha256 is None
+            or hashlib.sha256(code.encode("utf-8")).hexdigest()
+            != approved_code_sha256
+        ):
+            raise CodePolicyError("compiled analysis code does not match its approval")
+        _validate_general_code(code)
+        return
+    if (
+        policy_profile_id != GENERAL_ANALYSIS_POLICY_ID
+        or policy_template is not None
+        or approved_code_sha256 is not None
+    ):
         raise CodePolicyError("analysis policy profile is invalid")
+
+    _validate_general_code(code)
+
+
+def _validate_general_code(code: str) -> None:
 
     try:
         tree = ast.parse(code, mode="exec")

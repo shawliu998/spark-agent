@@ -277,7 +277,23 @@ def assert_plan_for_workflow(
                 "plan-dataset-mismatch",
                 "The approved plan no longer matches the workflow dataset identity.",
             )
-        expected_provenance = ("dataset-template-v1", None, "dataset-template-v1")
+        expected_provenance = (
+            (
+                "goal-aware-dataset-plan-v1",
+                (
+                    plan.model
+                    if workflow.generation_mode == "remote-model-assisted"
+                    and plan.model is not None
+                    and bool(plan.model.strip())
+                    else None
+                ),
+                plan.prompt_version,
+            )
+            if spec.analysis_spec_id is not None
+            and plan.prompt_version is not None
+            and bool(plan.prompt_version.strip())
+            else ("dataset-template-v1", None, "dataset-template-v1")
+        )
     else:
         expected_provenance = (
             ("template-v1", None, "template-v1")

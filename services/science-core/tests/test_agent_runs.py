@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from collections.abc import Generator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
@@ -15,6 +16,11 @@ from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.orm import Session, sessionmaker
 
+import open_science_core._analysis_service.execution as execution_module
+import open_science_core._analysis_service.filesystem as filesystem_module
+import open_science_core.analysis as analysis_module
+from open_science_core.analysis import RuntimeExecutionResult
+from open_science_core.analysis_service import execute_workflow_analysis_intent
 from open_science_core.api import agent_runs as agent_runs_api
 from open_science_core.api.agent_runs import (
     get_agent_session,
@@ -28,19 +34,28 @@ from open_science_core.api.workflows import (
 from open_science_core.api.workflows import (
     router as workflow_router,
 )
+from open_science_core.config import settings
 from open_science_core.db import Base
 from open_science_core.models import (
+    AnalysisIntentRecord,
+    AnalysisSpecRecord,
+    ApprovalRecord,
+    ArtifactRecord,
+    EventRecord,
     IntentDecisionRecord,
     InteractionRequestRecord,
     JobRecord,
     ModelInvocationRecord,
+    PlanRecord,
     ProjectRecord,
     SourcePageRecord,
     SourceRecord,
+    StructuredAnalysisResultRecord,
     UserResponseRecord,
     WorkflowRecord,
     utc_now,
 )
+from open_science_core.schemas import AnalysisRunOut
 from open_science_core.workflow import agent_service, handlers
 from open_science_core.workflow.intent_router import (
     INTENT_ROUTER_PROMPT_VERSION,
@@ -50,6 +65,7 @@ from open_science_core.workflow.intent_router import (
 )
 from open_science_core.workflow.state import WorkflowFailure
 from open_science_core.workflow.worker import WorkflowWorker
+from runtime_attestation import write_attested_runtime_result
 
 
 class _RequestClient(Protocol):
@@ -139,6 +155,74 @@ class _SequencedIntentGateway(_CountingIntentGateway):
             "selectedSourceIds": [self._selected_source_id],
             "missingInputs": [],
             "proposedWorkflowType": "literature-synthesis",
+        }
+
+
+class _MixedIntentGateway(_CountingIntentGateway):
+    def __init__(self, *, destination: str, source_ids: list[str]) -> None:
+        super().__init__(destination=destination)
+        self._source_ids = source_ids
+
+    async def complete_json(
+        self,
+        _system_prompt: str,
+        _user_prompt: str,
+        _model: str | None = None,
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        return {
+            "intent": "mixed-research",
+            "confidence": 0.99,
+            "reasoningSummary": "The goal explicitly combines literature and dataset inputs.",
+            "selectedSourceIds": self._source_ids,
+            "missingInputs": [],
+            "proposedWorkflowType": "mixed-research",
+        }
+
+
+class _DatasetMethodGateway(_CountingIntentGateway):
+    async def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        _model: str | None = None,
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        assert self._selected_source_id is not None
+        if "bounded scientific analysis method selector" not in system_prompt:
+            return {
+                "intent": "dataset-analysis",
+                "confidence": 0.99,
+                "reasoningSummary": "The selected CSV supports dataset analysis.",
+                "selectedSourceIds": [self._selected_source_id],
+                "missingInputs": [],
+                "proposedWorkflowType": "dataset-analysis",
+            }
+        payload = cast(dict[str, Any], json.loads(user_prompt))
+        untrusted = cast(dict[str, Any], payload["untrustedData"])
+        identity = cast(dict[str, str], untrusted["datasetIdentity"])
+        return {
+            "confidence": 0.99,
+            "decision": {
+                "schemaVersion": "1",
+                "objective": untrusted["goal"],
+                "datasetSourceId": identity["datasetSourceId"],
+                "datasetContentHash": identity["datasetContentHash"],
+                "datasetProfileHash": identity["datasetProfileHash"],
+                "operation": {
+                    "type": "descriptive",
+                    "columns": ["outcome"],
+                    "statistics": ["count", "missing", "mean", "std"],
+                    "plot": "histogram",
+                },
+                "missingValuePolicy": "drop-per-operation",
+                "confidenceLevel": 0.95,
+                "randomSeed": 7,
+                "assumptions": [],
+                "limitations": [
+                    "Descriptive summaries do not test inferential hypotheses."
+                ],
+            },
         }
 
 
@@ -291,14 +375,30 @@ def _add_dataset_source(
     *,
     source_id: str = "dataset-1",
     project_id: str = "project-1",
+    ambiguous_group_columns: bool = False,
 ) -> str:
     root = environment.project_roots[project_id]
     path = root / "data" / "raw" / f"{source_id}.csv"
     content = (
-        "group,outcome,source\n"
-        f"control,1,{source_id}\n"
-        f"treated,3,{source_id}\n"
-        f"control,2,{source_id}\n"
+        (
+            "group,cohort,outcome,source\n"
+            f"control,a,1,{source_id}\n"
+            f"treated,b,3,{source_id}\n"
+            f"control,a,2,{source_id}\n"
+            f"treated,b,4,{source_id}\n"
+            f"control,a,5,{source_id}\n"
+            f"treated,b,6,{source_id}\n"
+        )
+        if ambiguous_group_columns
+        else (
+            "group,outcome,source\n"
+            f"control,1,{source_id}\n"
+            f"treated,3,{source_id}\n"
+            f"control,2,{source_id}\n"
+            f"treated,4,{source_id}\n"
+            f"control,5,{source_id}\n"
+            f"treated,6,{source_id}\n"
+        )
     ).encode()
     path.write_bytes(content)
     path.chmod(0o444)
@@ -662,7 +762,7 @@ def test_answer_change_before_approval_supersedes_plan_and_creates_next_version(
     )
     started = _create_agent_run(
         agent_run_client,
-        goal="Analyze one selected project dataset.",
+        goal="Summarize one selected project dataset with descriptive statistics.",
         source_ids=[first_dataset, second_dataset],
         idempotency_key="agent-answer-change-create-0001",
     )
@@ -743,7 +843,7 @@ def test_answer_change_while_first_plan_job_is_queued_reserves_next_plan_version
     )
     started = _create_agent_run(
         agent_run_client,
-        goal="Analyze exactly one selected dataset.",
+        goal="Summarize exactly one selected dataset with descriptive statistics.",
         source_ids=[first_dataset, second_dataset],
         idempotency_key="agent-queued-plan-create-0001",
     )
@@ -816,7 +916,10 @@ def test_repeated_answer_change_while_replacement_plan_is_queued_skips_history(
     )
     started = _create_agent_run(
         agent_run_client,
-        goal="Analyze exactly one selected dataset and allow correction.",
+        goal=(
+            "Summarize exactly one selected dataset with descriptive statistics "
+            "and allow source correction."
+        ),
         source_ids=[first_dataset, second_dataset],
         idempotency_key="agent-repeated-plan-create-0001",
     )
@@ -953,31 +1056,587 @@ def test_single_source_kind_is_recognized_and_resolved(
         assert workflow.dataset_content_hash is None
 
 
-def test_pdf_and_dataset_are_recognized_as_mixed_but_execution_is_unsupported(
+def test_scientific_clarification_restarts_planning_and_binds_analysis_spec(
     agent_run_environment: AgentRunEnvironment,
     agent_run_client: TypedTestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset_id = _add_dataset_source(
+        agent_run_environment,
+        source_id="dataset-scientific-clarification",
+        ambiguous_group_columns=True,
+    )
+    started = _create_agent_run(
+        agent_run_client,
+        goal="Compare outcome between two independent populations.",
+        source_ids=[dataset_id],
+        idempotency_key="agent-scientific-create-0001",
+    )
+    workflow_id = started["workflow"]["id"]
+
+    assert _run_once(agent_run_environment.worker)
+    assert _run_once(agent_run_environment.worker)
+    waiting = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert waiting["workflow"]["status"] == "planning"
+    assert waiting["plan"] is None
+    assert waiting["allowedActions"] == ["respond-interaction", "cancel"]
+    interaction = waiting["interactions"][0]
+    assert interaction["stepId"] == "select-analysis-method"
+    assert interaction["requestType"] == "column-selection"
+    assert interaction["responseSchema"]["clarificationType"] == "group-column"
+    assert [option["value"] for option in interaction["options"]] == [
+        "group",
+        "cohort",
+    ]
+
+    restarted_worker = WorkflowWorker(
+        agent_run_environment.session_factory,
+        poll_interval_seconds=0.01,
+        lease_seconds=1.0,
+        heartbeat_seconds=0.1,
+    )
+    restarted_worker.recover()
+    reloaded = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert reloaded["interactions"][0]["id"] == interaction["id"]
+
+    response_payload = {
+        "response": "group",
+        "expectedWorkflowRevision": waiting["workflow"]["revision"],
+    }
+    answered = agent_run_client.post(
+        f"/v1/interactions/{interaction['id']}/respond",
+        headers={"Idempotency-Key": "agent-scientific-answer-0001"},
+        json=response_payload,
+    )
+    assert answered.status_code == 202, answered.text
+    answered_snapshot = answered.json()
+    assert answered_snapshot["workflow"]["status"] == "planning"
+    assert answered_snapshot["workflow"]["workflowType"] == "dataset-analysis"
+
+    replay = agent_run_client.post(
+        f"/v1/interactions/{interaction['id']}/respond",
+        headers={"Idempotency-Key": "agent-scientific-answer-0001"},
+        json=response_payload,
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["workflow"]["revision"] == answered_snapshot["workflow"]["revision"]
+
+    stale = agent_run_client.post(
+        f"/v1/interactions/{interaction['id']}/respond",
+        headers={"Idempotency-Key": "agent-scientific-answer-stale-0001"},
+        json=response_payload,
+    )
+    assert stale.status_code == 409, stale.text
+    assert stale.json()["detail"]["code"] == "workflow-revision-conflict"
+
+    assert _run_once(restarted_worker)
+    planned = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert planned["workflow"]["status"] == "waiting-plan-approval"
+    assert planned["plan"]["spec"]["analysisSpecId"] is not None
+    assert planned["plan"]["spec"]["analysisSpecSha256"] is not None
+
+    with agent_run_environment.session_factory() as session:
+        analysis_spec = session.scalar(
+            select(AnalysisSpecRecord).where(
+                AnalysisSpecRecord.workflow_id == workflow_id
+            )
+        )
+        plan = session.scalar(
+            select(PlanRecord).where(PlanRecord.workflow_id == workflow_id)
+        )
+        route_jobs = session.scalar(
+            select(func.count())
+            .select_from(JobRecord)
+            .where(
+                JobRecord.workflow_id == workflow_id,
+                JobRecord.kind == "route-intent",
+            )
+        )
+    assert analysis_spec is not None
+    assert analysis_spec.revision == 1
+    assert analysis_spec.selector_kind == "local-deterministic"
+    assert analysis_spec.dataset_profile_sha256 == analysis_spec.spec_json[
+        "datasetProfileHash"
+    ]
+    assert plan is not None
+    assert plan.spec_json["analysisSpecId"] == analysis_spec.id
+    assert plan.spec_json["analysisSpecSha256"] == analysis_spec.spec_sha256
+    assert route_jobs == 1
+
+    changed = agent_run_client.post(
+        f"/v1/interactions/{interaction['id']}/respond",
+        headers={"Idempotency-Key": "agent-scientific-answer-change-0001"},
+        json={
+            "response": "cohort",
+            "expectedWorkflowRevision": planned["workflow"]["revision"],
+        },
+    )
+    assert changed.status_code == 202, changed.text
+    assert changed.json()["workflow"]["status"] == "planning"
+    assert changed.json()["plan"] is None
+    assert changed.json()["analysisSpec"] is None
+    with agent_run_environment.session_factory() as session:
+        superseded_immediately = session.get(AnalysisSpecRecord, analysis_spec.id)
+        assert superseded_immediately is not None
+        assert superseded_immediately.status == "superseded"
+
+    assert _run_once(restarted_worker)
+    revised = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert revised["workflow"]["status"] == "waiting-plan-approval"
+    assert revised["workflow"]["planVersion"] == 3
+    with agent_run_environment.session_factory() as session:
+        specs = list(
+            session.scalars(
+                select(AnalysisSpecRecord)
+                .where(AnalysisSpecRecord.workflow_id == workflow_id)
+                .order_by(AnalysisSpecRecord.revision)
+            )
+        )
+    assert [record.revision for record in specs] == [1, 2]
+    assert [record.status for record in specs] == ["superseded", "pending-approval"]
+    assert specs[0].spec_sha256 != specs[1].spec_sha256
+    assert revised["plan"]["spec"]["analysisSpecId"] == specs[1].id
+
+    approval = revised["pendingApprovals"][0]
+    approved_plan = agent_run_client.post(
+        f"/v1/workflows/{workflow_id}/approve-plan",
+        json={
+            "approvalId": approval["id"],
+            "planId": revised["plan"]["id"],
+            "planVersion": revised["plan"]["version"],
+            "planSha256": revised["plan"]["planSha256"],
+            "expectedWorkflowRevision": revised["workflow"]["revision"],
+        },
+    )
+    assert approved_plan.status_code == 200, approved_plan.text
+    assert _run_once(restarted_worker)  # inspect-dataset
+    assert _run_once(restarted_worker)  # prepare-analysis
+    execution_waiting = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert execution_waiting["analysisIntent"] is not None, (
+        execution_waiting["workflow"]["status"],
+        execution_waiting["workflow"]["statusReason"],
+    )
+    assert execution_waiting["analysisIntent"]["status"] == "waiting-approval"
+    assert execution_waiting["analysisSpec"]["id"] == specs[1].id
+    assert execution_waiting["analysisSpec"]["specSha256"] == specs[1].spec_sha256
+    assert execution_waiting["analysisSpec"]["spec"]["operation"]["groupColumn"] == (
+        "cohort"
+    )
+    assert execution_waiting["structuredResult"] is None
+    intent_id = execution_waiting["analysisIntent"]["id"]
+    with agent_run_environment.session_factory() as session:
+        compiled_intent = session.get(AnalysisIntentRecord, intent_id)
+        execution_approval = session.scalar(
+            select(ApprovalRecord).where(ApprovalRecord.subject_id == intent_id)
+        )
+    assert compiled_intent is not None
+    assert compiled_intent.analysis_spec_id == specs[1].id
+    assert compiled_intent.spec_sha256 == specs[1].spec_sha256
+    assert compiled_intent.dataset_profile_sha256 == specs[1].dataset_profile_sha256
+    assert compiled_intent.compiler_version == "analysis-spec-compiler-v1"
+    assert compiled_intent.code_sha256 == hashlib.sha256(
+        compiled_intent.code.encode("utf-8")
+    ).hexdigest()
+    assert compiled_intent.runtime_policy_id == "dataset-analysis-spec-v1"
+    assert execution_waiting["analysisIntent"]["analysisSpecId"] == specs[1].id
+    assert execution_waiting["analysisIntent"]["specSha256"] == specs[1].spec_sha256
+    execution_pending = execution_waiting["pendingApprovals"][0]
+    assert execution_pending["approvalSchemaVersion"] == "analysis-intent-v4"
+    assert execution_pending["analysisSpecId"] == specs[1].id
+    assert execution_pending["codeSha256"] == compiled_intent.code_sha256
+    assert execution_pending["runtimePolicyId"] == "dataset-analysis-spec-v1"
+    assert execution_approval is not None
+    assert execution_approval.payload_schema_version == "analysis-intent-v4"
+
+    execution_decision = agent_run_client.post(
+        f"/v1/workflows/{workflow_id}/analysis-intents/{intent_id}/decision",
+        json={
+            "approvalId": execution_pending["id"],
+            "decision": "approved",
+            "payloadSha256": compiled_intent.payload_sha256,
+            "expectedWorkflowRevision": execution_waiting["workflow"]["revision"],
+        },
+    )
+    assert execution_decision.status_code == 200, execution_decision.text
+
+    test_root = agent_run_environment.project_roots["project-1"].parent
+    execution_settings = replace(
+        settings,
+        runtime_exchange_dir=test_root / "runtime-exchange",
+        runtime_socket_path=test_root / "runtime.sock",
+    )
+    monkeypatch.setattr(analysis_module, "settings", execution_settings)
+    monkeypatch.setattr(execution_module, "settings", execution_settings)
+    monkeypatch.setattr(filesystem_module, "settings", execution_settings)
+
+    execution_errors: list[Exception] = []
+    expected_intent_id = intent_id
+
+    async def analysis_executor(
+        intent_id: str,
+        *,
+        session_factory: sessionmaker[Session],
+        expected_workflow_id: str,
+        approval_workflow_revision: int,
+    ) -> AnalysisRunOut:
+        assert intent_id == expected_intent_id
+
+        async def runtime_executor(**payload: object) -> RuntimeExecutionResult:
+            assert payload["policy_profile_id"] == "dataset-analysis-spec-v1"
+            assert payload["policy_template"] == "analysis-spec-compiler-v1"
+            run_dir = payload["run_dir"]
+            dataset_path = payload["dataset_path"]
+            code = payload["code"]
+            assert isinstance(run_dir, Path)
+            assert isinstance(dataset_path, Path)
+            assert isinstance(code, str)
+            exec(  # noqa: S102 - executes only the approved canonical compiler output.
+                compile(code, "<compiled-analysis>", "exec"),
+                {"DATASET_PATH": dataset_path, "RUN_DIR": run_dir},
+            )
+            generated_names = {
+                "analysis-spec.json",
+                "results.json",
+                "summary.csv",
+                "figure.png",
+            }
+            generated_files = {
+                name: (run_dir / name).read_bytes()
+                for name in generated_names
+                if (run_dir / name).is_file()
+            }
+            for name in generated_files:
+                (run_dir / name).unlink()
+            return write_attested_runtime_result(
+                run_dir,
+                execution_settings.runtime_exchange_dir,
+                payload,
+                stdout="compiled analysis completed\n",
+                generated_files=generated_files,
+            )
+
+        try:
+            return await execute_workflow_analysis_intent(
+                intent_id,
+                session_factory=session_factory,
+                expected_workflow_id=expected_workflow_id,
+                approval_workflow_revision=approval_workflow_revision,
+                runtime_executor=runtime_executor,
+            )
+        except Exception as error:
+            execution_errors.append(error)
+            raise
+
+    execution_worker = WorkflowWorker(
+        agent_run_environment.session_factory,
+        poll_interval_seconds=0.01,
+        lease_seconds=1.0,
+        heartbeat_seconds=0.1,
+        analysis_executor=analysis_executor,
+    )
+    assert _run_once(execution_worker)  # execute compiled analysis
+    with agent_run_environment.session_factory() as session:
+        workflow = session.get(WorkflowRecord, workflow_id)
+        assert workflow is not None
+        agent_service.agent_run_snapshot(session, workflow)
+    execution_response = agent_run_client.get(f"/v1/agent-runs/{workflow_id}")
+    assert execution_response.status_code == 200, execution_response.text
+    execution_snapshot = execution_response.json()
+    assert execution_snapshot["analysisRun"]["status"] == "completed", (
+        execution_snapshot["workflow"]["status"],
+        execution_snapshot["workflow"]["statusReason"],
+        execution_snapshot["analysisRun"]["error"],
+        execution_snapshot["analysisIntent"]["errorSummary"],
+        [
+            (
+                type(error).__name__,
+                getattr(error, "code", None),
+                getattr(error, "detail", None),
+                repr(error.__cause__),
+            )
+            for error in execution_errors
+        ],
+    )
+    assert _run_once(execution_worker)  # collect artifacts
+    result_snapshot = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert result_snapshot["analysisRun"]["status"] == "completed"
+    assert result_snapshot["structuredResult"]["analysisSpecId"] == specs[1].id
+    assert result_snapshot["structuredResult"]["analysisIntentId"] == intent_id
+    structured = result_snapshot["structuredResult"]["result"]
+    assert structured["operationType"] == "two-group-comparison"
+    assert structured["result"]["groupColumn"] == "cohort"
+    assert structured["result"]["sampleSizes"] == {"a": 3, "b": 3}
+    assert 0 <= structured["result"]["pValue"] <= 1
+    with agent_run_environment.session_factory() as session:
+        stored_result = session.scalar(
+            select(StructuredAnalysisResultRecord).where(
+                StructuredAnalysisResultRecord.analysis_intent_id == intent_id
+            )
+        )
+        result_artifact = session.scalar(
+            select(ArtifactRecord).where(
+                ArtifactRecord.run_id == stored_result.run_id,
+                ArtifactRecord.path.like("%/results.json"),
+            )
+        ) if stored_result is not None else None
+    assert stored_result is not None
+    assert result_artifact is not None
+    assert (
+        result_artifact.metadata_json["structuredResultSha256"]
+        == stored_result.result_sha256
+    )
+    assert _run_once(execution_worker)  # deterministic compiled-result review
+    reviewed_snapshot = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert reviewed_snapshot["workflow"]["status"] == "reviewing"
+    review_snapshot = reviewed_snapshot["latestReview"]
+    assert review_snapshot["reviewType"] == "deterministic-analysis-v1"
+    assert review_snapshot["verdict"] == "passed-with-warnings"
+    review_result = review_snapshot["result"]
+    assert review_result["analysisSpecId"] == specs[1].id
+    assert review_result["structuredResultSha256"] == stored_result.result_sha256
+    conclusion = review_result["conclusion"]
+    assert "used 6 of 6 row(s)" in conclusion
+    assert "a: n=3, missing=0; b: n=3, missing=0" in conclusion
+    assert f"p={structured['result']['pValue']:.6g}" in conclusion
+    assert (
+        f"{structured['result']['effectSizeName']}="
+        f"{structured['result']['effectSize']:.6g}"
+    ) in conclusion
+    assert review_result["analysisIntentId"] == intent_id
+    assert reviewed_snapshot["structuredResult"]["resultSha256"] == (
+        review_result["structuredResultSha256"]
+    )
+    events_response = agent_run_client.get(
+        f"/v1/workflows/{workflow_id}/events?after=0&limit=100"
+    )
+    assert events_response.status_code == 200, events_response.text
+    event_types = {item["type"] for item in events_response.json()["events"]}
+    assert {
+        "analysis.method-selection-started",
+        "analysis.clarification-requested",
+        "analysis.spec-created",
+        "analysis.spec-superseded",
+        "analysis.spec-approved",
+        "analysis.compiled",
+        "analysis.execution-approval-requested",
+        "analysis.execution-started",
+        "analysis.structured-result-created",
+        "analysis.review-completed",
+    }.issubset(event_types)
+
+
+def test_remote_dataset_method_selection_persists_model_provenance(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset_id = _add_dataset_source(
+        agent_run_environment,
+        source_id="dataset-remote-method",
+    )
+    gateway = _DatasetMethodGateway(
+        destination="dataset-method-selector",
+        selected_source_id=dataset_id,
+    )
+    _install_remote_gateway(monkeypatch, gateway)
+    started = _create_agent_run(
+        agent_run_client,
+        goal="Summarize outcome with descriptive statistics.",
+        source_ids=[dataset_id],
+        idempotency_key="agent-remote-dataset-method-0001",
+        remote_data_approved=True,
+    )
+    workflow_id = started["workflow"]["id"]
+
+    assert _run_once(agent_run_environment.worker)
+    assert _run_once(agent_run_environment.worker)
+    snapshot = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert snapshot["workflow"]["status"] == "waiting-plan-approval"
+    assert snapshot["workflow"]["generationMode"] == "remote-model-assisted"
+    assert gateway.call_count == 2
+
+    with agent_run_environment.session_factory() as session:
+        analysis_spec = session.scalar(
+            select(AnalysisSpecRecord).where(
+                AnalysisSpecRecord.workflow_id == workflow_id
+            )
+        )
+        invocations = list(
+            session.scalars(
+                select(ModelInvocationRecord)
+                .where(ModelInvocationRecord.workflow_id == workflow_id)
+                .order_by(ModelInvocationRecord.created_at)
+            )
+        )
+    assert analysis_spec is not None
+    assert analysis_spec.selector_kind == "remote-model-assisted"
+    assert analysis_spec.model_invocation_id is not None
+    method_invocation = next(
+        record
+        for record in invocations
+        if record.operation_type == "analysis-method-selection"
+    )
+    assert analysis_spec.model_invocation_id == method_invocation.id
+    assert method_invocation.model == gateway.default_model
+    assert method_invocation.endpoint_identity == gateway.endpoint_identity
+    assert method_invocation.prompt_version == "analysis-method-selector-v1"
+    assert method_invocation.status == "succeeded"
+
+
+def test_unsupported_scientific_method_blocks_without_substitution(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+) -> None:
+    dataset_id = _add_dataset_source(
+        agent_run_environment,
+        source_id="dataset-unsupported-method",
+    )
+    started = _create_agent_run(
+        agent_run_client,
+        goal="Run a paired test comparing outcome before and after treatment.",
+        source_ids=[dataset_id],
+        idempotency_key="agent-unsupported-method-0001",
+    )
+    workflow_id = started["workflow"]["id"]
+
+    assert _run_once(agent_run_environment.worker)
+    assert _run_once(agent_run_environment.worker)
+    snapshot = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert snapshot["workflow"]["status"] == "blocked"
+    assert snapshot["workflow"]["statusReason"]["code"] == (
+        "analysis-unsupported:paired-test"
+    )
+    assert snapshot["plan"] is None
+    with agent_run_environment.session_factory() as session:
+        analysis_specs = session.scalar(
+            select(func.count())
+            .select_from(AnalysisSpecRecord)
+            .where(AnalysisSpecRecord.workflow_id == workflow_id)
+        )
+        unsupported_events = session.scalar(
+            select(func.count())
+            .select_from(EventRecord)
+            .where(
+                EventRecord.workflow_id == workflow_id,
+                EventRecord.event_type == "analysis.unsupported",
+            )
+        )
+    assert analysis_specs == 0
+    assert unsupported_events == 1
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_workflow_type"),
+    [
+        ("literature-synthesis", "literature-synthesis"),
+        ("dataset-analysis", "dataset-analysis"),
+    ],
+)
+def test_local_pdf_and_dataset_require_a_supported_single_workflow_choice(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+    answer: str,
+    expected_workflow_type: str,
 ) -> None:
     paper_id = _add_pdf_source(agent_run_environment)
     dataset_id = _add_dataset_source(agent_run_environment)
     started = _create_agent_run(
         agent_run_client,
-        goal="Compare the literature claims with the observed dataset outcomes.",
+        goal="Research the selected literature and dataset.",
         source_ids=[paper_id, dataset_id],
-        idempotency_key="agent-route-mixed-0001",
+        idempotency_key=f"agent-route-local-mixed-{answer}-0001",
+    )
+    workflow_id = started["workflow"]["id"]
+
+    assert _run_once(agent_run_environment.worker)
+    response = agent_run_client.get(f"/v1/agent-runs/{workflow_id}")
+
+    assert response.status_code == 200, response.text
+    waiting = response.json()
+    assert waiting["workflow"]["status"] == "waiting-clarification"
+    assert waiting["workflow"]["workflowType"] is None
+    assert waiting["intentDecision"]["intent"] == "clarification-required"
+    assert waiting["intentDecision"]["missingInputs"] == [
+        "select-supported-single-workflow"
+    ]
+    assert waiting["intentDecision"]["generator"] == "deterministic-intent-router-v1"
+    assert waiting["intentDecision"]["usedModel"] is False
+    assert waiting["intentDecision"]["model"] is None
+    assert waiting["intentDecision"]["endpointIdentity"] is None
+    assert waiting["intentDecision"]["parseResult"] == "model-not-configured"
+    interaction = waiting["interactions"][0]
+    assert interaction["question"] == (
+        "Which single supported research path should this run use first?"
+    )
+    assert [option["value"] for option in interaction["options"]] == [
+        "literature-synthesis",
+        "dataset-analysis",
+    ]
+
+    answered = agent_run_client.post(
+        f"/v1/interactions/{interaction['id']}/respond",
+        headers={"Idempotency-Key": f"agent-route-choice-{answer}-0001"},
+        json={
+            "response": answer,
+            "expectedWorkflowRevision": waiting["workflow"]["revision"],
+        },
+    )
+    assert answered.status_code == 202, answered.text
+    assert answered.json()["workflow"]["status"] == "routing"
+
+    assert _run_once(agent_run_environment.worker)
+    resolved = agent_run_client.get(f"/v1/agent-runs/{workflow_id}")
+    assert resolved.status_code == 200, resolved.text
+    resolved_snapshot = resolved.json()
+    assert resolved_snapshot["workflow"]["status"] == "planning"
+    assert resolved_snapshot["workflow"]["workflowType"] == expected_workflow_type
+    assert resolved_snapshot["intentDecision"]["intent"] == expected_workflow_type
+    assert resolved_snapshot["intentDecision"]["selectedSourceIds"] == (
+        [paper_id] if expected_workflow_type == "literature-synthesis" else [dataset_id]
+    )
+
+
+def test_model_mixed_decision_is_explicitly_unsupported(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paper_id = _add_pdf_source(agent_run_environment, source_id="paper-model-mixed")
+    dataset_id = _add_dataset_source(
+        agent_run_environment,
+        source_id="dataset-model-mixed",
+    )
+    gateway = _MixedIntentGateway(
+        destination="mixed-router",
+        source_ids=[paper_id, dataset_id],
+    )
+    _install_remote_gateway(monkeypatch, gateway)
+    started = _create_agent_run(
+        agent_run_client,
+        goal="Compare literature claims with the observed dataset outcomes.",
+        source_ids=[paper_id, dataset_id],
+        idempotency_key="agent-route-model-mixed-0001",
+        remote_data_approved=True,
     )
 
     assert _run_once(agent_run_environment.worker)
-    response = agent_run_client.get(f"/v1/agent-runs/{started['workflow']['id']}")
-
+    response = agent_run_client.get(
+        f"/v1/agent-runs/{started['workflow']['id']}"
+    )
     assert response.status_code == 200, response.text
     snapshot = response.json()
     assert snapshot["workflow"]["status"] == "unsupported"
-    assert snapshot["workflow"]["workflowType"] is None
     assert snapshot["intentDecision"]["intent"] == "mixed-research"
-    assert snapshot["intentDecision"]["proposedWorkflowType"] == "mixed-research"
-    assert snapshot["intentDecision"]["selectedSourceIds"] == sorted([paper_id, dataset_id])
-    assert snapshot["workflow"]["statusReason"]["code"] == ("mixed-workflow-not-yet-available")
-    assert snapshot["allowedActions"] == []
+    assert snapshot["workflow"]["statusReason"]["code"] == (
+        "mixed-workflow-not-yet-available"
+    )
+    assert snapshot["intentDecision"]["generator"] == (
+        "model-assisted-intent-router-v1"
+    )
+    assert snapshot["intentDecision"]["usedModel"] is True
+    assert snapshot["intentDecision"]["model"] == gateway.default_model
+    assert snapshot["intentDecision"]["endpointIdentity"] == gateway.endpoint_identity
+    assert snapshot["intentDecision"]["parseResult"] == "valid"
 
 
 def test_sem_goal_is_deterministically_unsupported(

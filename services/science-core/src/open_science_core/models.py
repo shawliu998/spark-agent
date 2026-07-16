@@ -332,6 +332,12 @@ class ModelInvocationRecord(Base):
         UniqueConstraint(
             "workflow_id", "id", name="uq_model_invocation_workflow_id"
         ),
+        Index(
+            "uq_model_invocations_workflow_id_id_compat",
+            "workflow_id",
+            "id",
+            unique=True,
+        ),
         UniqueConstraint(
             "request_idempotency_key",
             name="uq_model_invocation_idempotency_key",
@@ -736,6 +742,107 @@ class ReviewRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class AnalysisSpecRecord(Base):
+    __tablename__ = "analysis_specs"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id", "id", name="uq_analysis_spec_workflow_id"
+        ),
+        UniqueConstraint(
+            "workflow_id", "revision", name="uq_analysis_spec_workflow_revision"
+        ),
+        ForeignKeyConstraint(
+            ["workflow_id", "previous_spec_id"],
+            ["analysis_specs.workflow_id", "analysis_specs.id"],
+            name="fk_analysis_specs_previous_spec",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workflow_id", "model_invocation_id"],
+            ["model_invocations.workflow_id", "model_invocations.id"],
+            name="fk_analysis_specs_model_invocation",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("revision >= 1", name="ck_analysis_spec_revision"),
+        CheckConstraint(
+            "schema_version = '1'", name="ck_analysis_spec_schema_version"
+        ),
+        CheckConstraint(
+            "selector_kind IN ('local-deterministic','remote-model-assisted')",
+            name="ck_analysis_spec_selector_kind",
+        ),
+        CheckConstraint(
+            "length(trim(selector_reason)) BETWEEN 1 AND 2000",
+            name="ck_analysis_spec_selector_reason",
+        ),
+        CheckConstraint(
+            "(selector_kind = 'local-deterministic' "
+            "AND model_invocation_id IS NULL) OR "
+            "(selector_kind = 'remote-model-assisted' "
+            "AND model_invocation_id IS NOT NULL "
+            "AND prompt_version IS NOT NULL "
+            "AND length(trim(prompt_version)) > 0)",
+            name="ck_analysis_spec_selector_provenance",
+        ),
+        CheckConstraint(
+            "(revision = 1 AND previous_spec_id IS NULL) OR "
+            "(revision > 1 AND previous_spec_id IS NOT NULL)",
+            name="ck_analysis_spec_revision_lineage",
+        ),
+        CheckConstraint(
+            "status IN ('pending-approval','approved','superseded','rejected')",
+            name="ck_analysis_spec_status",
+        ),
+        CheckConstraint(
+            "length(dataset_content_hash) = 64 "
+            "AND dataset_content_hash NOT GLOB '*[^0-9a-f]*'",
+            name="ck_analysis_spec_dataset_content_hash",
+        ),
+        CheckConstraint(
+            "length(dataset_profile_sha256) = 64 "
+            "AND dataset_profile_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_analysis_spec_dataset_profile_sha256",
+        ),
+        CheckConstraint(
+            "json_valid(spec_json) AND json_type(spec_json) = 'object'",
+            name="ck_analysis_spec_json",
+        ),
+        CheckConstraint(
+            "length(spec_sha256) = 64 "
+            "AND spec_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_analysis_spec_sha256",
+        ),
+        Index(
+            "uq_analysis_spec_model_invocation",
+            "model_invocation_id",
+            unique=True,
+            sqlite_where=text("model_invocation_id IS NOT NULL"),
+        ),
+        Index("ix_analysis_specs_workflow_status", "workflow_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE")
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    previous_spec_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    schema_version: Mapped[str] = mapped_column(String(16), default="1")
+    selector_kind: Mapped[str] = mapped_column(String(32))
+    selector_reason: Mapped[str] = mapped_column(Text)
+    prompt_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    model_invocation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    dataset_source_id: Mapped[str] = mapped_column(
+        ForeignKey("sources.id", ondelete="RESTRICT"), index=True
+    )
+    dataset_content_hash: Mapped[str] = mapped_column(String(64))
+    dataset_profile_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    spec_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    spec_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending-approval")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class AnalysisIntentRecord(Base):
     __tablename__ = "analysis_intents"
     __table_args__ = (
@@ -756,6 +863,41 @@ class AnalysisIntentRecord(Base):
         CheckConstraint(
             "timeout_seconds IS NULL OR timeout_seconds BETWEEN 1 AND 3600",
             name="ck_analysis_intent_timeout_seconds",
+        ),
+        CheckConstraint(
+            "spec_sha256 IS NULL OR "
+            "(length(spec_sha256) = 64 "
+            "AND spec_sha256 NOT GLOB '*[^0-9a-f]*')",
+            name="ck_analysis_intent_spec_sha256",
+        ),
+        CheckConstraint(
+            "dataset_profile_sha256 IS NULL OR "
+            "(length(dataset_profile_sha256) = 64 "
+            "AND dataset_profile_sha256 NOT GLOB '*[^0-9a-f]*')",
+            name="ck_analysis_intent_dataset_profile_sha256",
+        ),
+        CheckConstraint(
+            "code_sha256 IS NULL OR "
+            "(length(code_sha256) = 64 "
+            "AND code_sha256 NOT GLOB '*[^0-9a-f]*')",
+            name="ck_analysis_intent_code_sha256",
+        ),
+        CheckConstraint(
+            "(analysis_spec_id IS NULL "
+            "AND spec_sha256 IS NULL "
+            "AND dataset_profile_sha256 IS NULL "
+            "AND compiler_version IS NULL "
+            "AND code_sha256 IS NULL "
+            "AND runtime_policy_id IS NULL) OR "
+            "(analysis_spec_id IS NOT NULL "
+            "AND spec_sha256 IS NOT NULL "
+            "AND dataset_profile_sha256 IS NOT NULL "
+            "AND compiler_version IS NOT NULL "
+            "AND length(trim(compiler_version)) > 0 "
+            "AND code_sha256 IS NOT NULL "
+            "AND runtime_policy_id IS NOT NULL "
+            "AND length(trim(runtime_policy_id)) > 0)",
+            name="ck_analysis_intent_compiled_provenance",
         ),
         CheckConstraint(
             "workflow_id IS NULL OR ("
@@ -806,12 +948,20 @@ class AnalysisIntentRecord(Base):
     previous_intent_id: Mapped[str | None] = mapped_column(
         ForeignKey("analysis_intents.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    analysis_spec_id: Mapped[str | None] = mapped_column(
+        ForeignKey("analysis_specs.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
+    spec_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     dataset_source_id: Mapped[str] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), index=True
     )
     dataset_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dataset_profile_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     objective: Mapped[str] = mapped_column(Text)
     code: Mapped[str] = mapped_column(Text)
+    compiler_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    code_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    runtime_policy_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     expected_outputs: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     timeout_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     risk_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -854,6 +1004,44 @@ class RunRecord(Base):
     status: Mapped[str] = mapped_column(String(64), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StructuredAnalysisResultRecord(Base):
+    __tablename__ = "structured_analysis_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_spec_id", name="uq_structured_result_analysis_spec"
+        ),
+        UniqueConstraint(
+            "analysis_intent_id", name="uq_structured_result_analysis_intent"
+        ),
+        UniqueConstraint("run_id", name="uq_structured_result_run"),
+        CheckConstraint(
+            "schema_version = '1'", name="ck_structured_result_schema_version"
+        ),
+        CheckConstraint(
+            "json_valid(result_json) AND json_type(result_json) = 'object'",
+            name="ck_structured_result_json",
+        ),
+        CheckConstraint(
+            "length(result_sha256) = 64 "
+            "AND result_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_structured_result_sha256",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    analysis_spec_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_specs.id", ondelete="RESTRICT")
+    )
+    analysis_intent_id: Mapped[str] = mapped_column(
+        ForeignKey("analysis_intents.id", ondelete="RESTRICT")
+    )
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id", ondelete="RESTRICT"))
+    schema_version: Mapped[str] = mapped_column(String(16), default="1")
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    result_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class ArtifactRecord(Base):

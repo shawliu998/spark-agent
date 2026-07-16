@@ -17,6 +17,10 @@ vi.mock("@/lib/scienceCore", () => ({ scienceCore: core }));
 const DATASET_HASH = "a".repeat(64);
 const PAYLOAD_HASH = "b".repeat(64);
 const REVIEW_HASH = "c".repeat(64);
+const SPEC_HASH = "1".repeat(64);
+const PROFILE_HASH = "2".repeat(64);
+const CODE_HASH = "3".repeat(64);
+const RESULT_HASH = "4".repeat(64);
 
 const READY_DATASET: ResearchSource = {
   id: "dataset-1",
@@ -296,13 +300,30 @@ describe("dataset workflow UI", () => {
     expect(screen.getAllByText("summary.csv").length).toBeGreaterThan(0);
     expect(screen.getAllByText("figure.png").length).toBeGreaterThan(0);
     expect(screen.getByText("method-scope-limited")).toBeInTheDocument();
+    expect(screen.getByText("Approved analysis method")).toBeInTheDocument();
+    expect(screen.getByText("Structured statistical results")).toBeInTheDocument();
+    expect(screen.getAllByText("welch-t-test").length).toBeGreaterThan(0);
+    expect(screen.getByText("p-value")).toBeInTheDocument();
+    expect(screen.getByText("hedges-g: 0.81")).toBeInTheDocument();
+    expect(screen.getByText("Reproducibility artifacts")).toBeInTheDocument();
+    expect(screen.getAllByText("analysis-spec.json").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("results.json").length).toBeGreaterThan(0);
+    expect(screen.getByText("analysis-spec-compiler-v1")).toBeInTheDocument();
+    expect(screen.getByText("dataset-analysis-spec-v1")).toBeInTheDocument();
+    expect(
+      screen.getByText("The observed group difference is statistically compatible with a non-zero effect."),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(RESULT_HASH).length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/not, by itself, evidence of causation/i),
+    ).toBeInTheDocument();
     expect(
       screen.queryByText(/workflow completed, but no research result/i),
     ).not.toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText("treated")).toBeInTheDocument();
-      expect(screen.getByText("2.5")).toBeInTheDocument();
+      expect(screen.getAllByText("treated").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("2.5").length).toBeGreaterThan(0);
       expect(screen.getByText('{"python":"3.12"}')).toBeInTheDocument();
       expect(
         screen.getByAltText("Analysis figure figure.png"),
@@ -313,6 +334,30 @@ describe("dataset workflow UI", () => {
       screen.getByRole("button", { name: "Accept warnings and complete" }),
     );
     expect(handlers.onAcceptReviewWarnings).toHaveBeenCalledTimes(1);
+  });
+
+  it("labels an unapproved AnalysisSpec as proposed", () => {
+    const snapshot = planApprovalSnapshot();
+    snapshot.analysisSpec = {
+      ...analysisSpecSnapshot(),
+      status: "pending-approval",
+    };
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={snapshot}
+        sources={[READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+        importingDataset={false}
+      />,
+    );
+
+    expect(screen.getByText("Proposed analysis method")).toBeInTheDocument();
+    expect(screen.queryByText("Approved analysis method")).not.toBeInTheDocument();
   });
 
   it("renders spreadsheet-formula CSV cells as inert preview text", async () => {
@@ -529,12 +574,20 @@ function reviewSnapshot(): DatasetAnalysisWorkflowSnapshot {
       expectedOutputs: executionOutputs(),
       timeoutSeconds: 600,
       repairAttempt: 0,
+      analysisSpecId: "spec-1",
+      specSha256: SPEC_HASH,
+      datasetProfileSha256: PROFILE_HASH,
+      compilerVersion: "analysis-spec-compiler-v1",
+      codeSha256: CODE_HASH,
+      runtimePolicyId: "dataset-analysis-spec-v1",
       errorSummary: null,
       codeDiff: null,
       createdAt: "2026-07-15T00:00:02Z",
       updatedAt: "2026-07-15T00:01:02Z",
     },
+    analysisSpec: analysisSpecSnapshot(),
     analysisRun: analysisRun(),
+    structuredResult: structuredResultSnapshot(),
     latestReview: {
       id: "review-1",
       reviewType: "deterministic-analysis-v1",
@@ -571,6 +624,10 @@ function reviewSnapshot(): DatasetAnalysisWorkflowSnapshot {
         runId: "run-1",
         analysisIntentId: "intent-completed",
         inputDatasetContentHash: DATASET_HASH,
+        conclusion:
+          "The observed group difference is statistically compatible with a non-zero effect.",
+        analysisSpecId: "spec-1",
+        structuredResultSha256: RESULT_HASH,
       },
     },
     reviewWarningAcceptance: null,
@@ -628,8 +685,10 @@ function datasetSnapshotBase() {
     result: null,
     latestReview: null,
     datasetProfile: null,
+    analysisSpec: null,
     analysisIntent: null,
     analysisRun: null,
+    structuredResult: null,
     reviewWarningAcceptance: null,
     allowedActions: ["cancel" as const],
     eventCursor: 3,
@@ -822,6 +881,84 @@ function executionOutputs() {
   ] as const;
 }
 
+function analysisSpecSnapshot() {
+  return {
+    id: "spec-1",
+    revision: 1,
+    status: "approved" as const,
+    selectorKind: "local-deterministic" as const,
+    selectorReason: "Two independent groups and a numeric outcome were confirmed.",
+    promptVersion: null,
+    specSha256: SPEC_HASH,
+    datasetProfileSha256: PROFILE_HASH,
+    spec: {
+      schemaVersion: "1" as const,
+      objective: "Compare outcomes between treated and control groups.",
+      datasetSourceId: "dataset-1",
+      datasetContentHash: DATASET_HASH,
+      datasetProfileHash: PROFILE_HASH,
+      missingValuePolicy: "drop-per-operation" as const,
+      confidenceLevel: 0.95,
+      randomSeed: 42,
+      assumptions: ["Rows represent independent observations."],
+      limitations: ["This observational comparison does not establish causation."],
+      operation: {
+        type: "two-group-comparison" as const,
+        outcomeColumn: "outcome",
+        groupColumn: "group",
+        groups: ["control", "treated"] as [string, string],
+        method: "welch-t-test" as const,
+        effectSize: "hedges-g" as const,
+        checkAssumptions: true,
+        plot: "boxplot" as const,
+      },
+    },
+    createdAt: "2026-07-15T00:00:01Z",
+  };
+}
+
+function structuredResultSnapshot() {
+  return {
+    id: "structured-result-1",
+    analysisSpecId: "spec-1",
+    analysisIntentId: "intent-completed",
+    runId: "run-1",
+    resultSha256: RESULT_HASH,
+    createdAt: "2026-07-15T00:01:02Z",
+    result: {
+      schemaVersion: "1" as const,
+      objective: "Compare outcomes between treated and control groups.",
+      datasetSourceId: "dataset-1",
+      datasetContentHash: DATASET_HASH,
+      datasetProfileHash: PROFILE_HASH,
+      operationType: "two-group-comparison" as const,
+      requestedMethod: "welch-t-test" as const,
+      resolvedMethod: "welch-t-test" as const,
+      methodSelectionReason: "Welch's test does not assume equal variances.",
+      sampleSummary: { totalRows: 8, analyzedRows: 6, missingRows: 2 },
+      warnings: ["Small samples reduce precision."],
+      limitations: ["Observed differences are not causal estimates."],
+      result: {
+        type: "two-group-comparison" as const,
+        groupColumn: "group",
+        outcomeColumn: "outcome",
+        groups: ["control", "treated"] as [string, string],
+        sampleSizes: { control: 3, treated: 3 },
+        missingCounts: { control: 1, treated: 1 },
+        descriptiveStatistics: {
+          control: { mean: 1.5, standardDeviation: 0.5 },
+          treated: { mean: 2.5, standardDeviation: 0.7 },
+        },
+        testStatistic: 2.13,
+        pValue: 0.041,
+        effectSizeName: "hedges-g" as const,
+        effectSize: 0.81,
+        confidenceInterval: [0.02, 1.6] as [number, number],
+      },
+    },
+  };
+}
+
 function analysisRun() {
   const artifacts = [
     artifact("artifact-notebook", "notebook-executed", "executed.ipynb", "application/x-ipynb+json"),
@@ -829,6 +966,8 @@ function analysisRun() {
     artifact("artifact-stdout", "stdout", "stdout.txt", "text/plain"),
     artifact("artifact-stderr", "stderr", "stderr.txt", "text/plain"),
     artifact("artifact-log", "log", "execution.log", "text/plain"),
+    artifact("artifact-spec", "structured-data", "analysis-spec.json", "application/json"),
+    artifact("artifact-results", "structured-data", "results.json", "application/json"),
     artifact("artifact-table", "dataset", "summary.csv", "text/csv"),
     artifact("artifact-figure", "figure", "figure.png", "image/png"),
   ];
@@ -879,6 +1018,7 @@ function artifact(
     | "stderr"
     | "log"
     | "dataset"
+    | "structured-data"
     | "figure",
   path: string,
   mimeType: string,

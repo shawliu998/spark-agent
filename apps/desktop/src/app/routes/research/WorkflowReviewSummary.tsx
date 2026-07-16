@@ -52,7 +52,11 @@ export function WorkflowReviewSummary({
                   })
               : review.reviewType}
           </p>
-          <p className="text-sm font-medium text-text">
+          <p
+            role="status"
+            aria-live="polite"
+            className="text-sm font-medium text-text"
+          >
             {t(`research.reviewVerdict.${review.verdict}`, {
               defaultValue: statusLabel(review.verdict),
             })}
@@ -114,6 +118,18 @@ export function WorkflowReviewSummary({
       </ul>
       {isDatasetReview && "artifactIssues" in review.result && (
         <div className="space-y-3">
+          {review.result.conclusion && (
+            <div className="rounded-input border border-border-faint bg-bg px-3 py-2.5">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted">
+                {t("research.workflow.reviewConclusion", {
+                  defaultValue: "Deterministic reviewer conclusion",
+                })}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-text">
+                {review.result.conclusion}
+              </p>
+            </div>
+          )}
           <DatasetIssueSection
             label={t("research.workflow.artifactIssues", {
               defaultValue: "Artifact issues",
@@ -164,6 +180,30 @@ export function WorkflowReviewSummary({
                 {review.result.inputDatasetContentHash}
               </dd>
             </div>
+            {review.result.analysisSpecId && (
+              <div>
+                <dt className="font-sans font-medium uppercase tracking-wider">
+                  {t("research.workflow.reviewedAnalysisSpec", {
+                    defaultValue: "Reviewed AnalysisSpec",
+                  })}
+                </dt>
+                <dd className="mt-0.5 break-all text-text">
+                  {review.result.analysisSpecId}
+                </dd>
+              </div>
+            )}
+            {review.result.structuredResultSha256 && (
+              <div>
+                <dt className="font-sans font-medium uppercase tracking-wider">
+                  {t("research.workflow.reviewedStructuredResult", {
+                    defaultValue: "Structured result SHA-256",
+                  })}
+                </dt>
+                <dd className="mt-0.5 break-all text-text">
+                  {review.result.structuredResultSha256}
+                </dd>
+              </div>
+            )}
           </dl>
         </div>
       )}

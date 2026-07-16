@@ -169,5 +169,21 @@ describe("workflow model", () => {
     expect(
       sameCreateIntent(intent, { ...intent, remoteDataApproved: false }),
     ).toBe(false);
+
+    const autonomousIntent = {
+      projectId: "project-1",
+      goal: "Route selected sources",
+      mode: "autonomous" as const,
+      sourceIds: ["paper-1"],
+      remoteDataApproved: true,
+      idempotencyKey: "intent-2",
+    };
+    expect(sameCreateIntent(autonomousIntent, { ...autonomousIntent })).toBe(true);
+    expect(
+      sameCreateIntent(autonomousIntent, {
+        ...autonomousIntent,
+        remoteDataApproved: false,
+      }),
+    ).toBe(false);
   });
 });

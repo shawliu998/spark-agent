@@ -3,22 +3,54 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from typing import Any
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, cast
 
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...analysis_spec.schemas import (
+    AnalysisSpec,
+    ClarificationProposal,
+    UnsupportedAnalysis,
+    analysis_spec_sha256,
+)
+from ...analysis_spec.selector import MethodSelectorResult, select_analysis_method
+from ...analysis_spec.validator import (
+    AnalysisSpecValidationError,
+    AnalysisValidationContext,
+    ExactCorrelationPreflight,
+    ExactTwoGroupPreflight,
+    ValidatedAnalysisSpec,
+    validate_analysis_spec,
+)
+from ...dataset_inspector import (
+    DatasetInspectionError,
+    DatasetInspectionResult,
+    exact_correlation_preflight_csv_dataset,
+    exact_two_group_preflight_csv_dataset,
+    inspect_csv_dataset,
+)
 from ...model_gateway import ModelGatewayError, OpenAICompatibleModelGateway
 from ...models import (
+    AnalysisSpecRecord,
     ApprovalRecord,
     EventRecord,
     JobRecord,
+    ModelInvocationRecord,
     PlanRecord,
+    ProjectRecord,
+    SourceRecord,
     WorkflowRecord,
+    utc_now,
 )
 from ..schemas import (
     AUTONOMOUS_REMOTE_DATA_CATEGORIES,
+    AnalysisMethodSelectionStartedEventData,
+    AnalysisSpecEventData,
+    AnalysisUnsupportedEventData,
     ApprovalEventData,
     CollectArtifactsPlanStep,
     CollectArtifactsStepInput,
@@ -41,6 +73,10 @@ from ..schemas import (
     SequentialStepSpec,
     SynthesizeExtractiveClaimsInput,
 )
+from ..scientific_interactions import (
+    answered_scientific_context,
+    create_scientific_interaction,
+)
 from ..service import (
     DATASET_PLAN_APPROVAL_REASON,
     LOCAL_PLAN_APPROVAL_REASON,
@@ -59,7 +95,10 @@ from .sources import ready_source_descriptors
 REMOTE_PLAN_PROMPT_VERSION = "remote-plan-v1"
 
 
-def dataset_template_plan(workflow: WorkflowRecord) -> DatasetAnalysisPlanSpec:
+def dataset_template_plan(
+    workflow: WorkflowRecord,
+    analysis_spec: AnalysisSpecRecord | None = None,
+) -> DatasetAnalysisPlanSpec:
     dataset_source_id = workflow.dataset_source_id
     dataset_content_hash = workflow.dataset_content_hash
     if dataset_source_id is None or dataset_content_hash is None:
@@ -67,19 +106,43 @@ def dataset_template_plan(workflow: WorkflowRecord) -> DatasetAnalysisPlanSpec:
             "dataset-binding-invalid",
             "The dataset workflow has no immutable dataset identity.",
         )
+    has_figure: bool = True
+    if analysis_spec is not None:
+        operation = analysis_spec.spec_json.get("operation")
+        has_figure = isinstance(operation, dict) and cast(
+            dict[str, object], operation
+        ).get("plot") != "none"
     expected_outputs = (
-        "executed-notebook",
-        "summary-table",
-        "figures",
-        "analysis-log",
-        "environment-manifest",
+        (
+            "executed-notebook",
+            "summary-table",
+            "figures",
+            "analysis-log",
+            "environment-manifest",
+        )
+        if has_figure
+        else (
+            "executed-notebook",
+            "summary-table",
+            "analysis-log",
+            "environment-manifest",
+        )
     )
     execution_artifacts = (
-        "executed-notebook",
-        "summary-table",
-        "figure",
-        "analysis-log",
-        "environment-manifest",
+        (
+            "executed-notebook",
+            "summary-table",
+            "figure",
+            "analysis-log",
+            "environment-manifest",
+        )
+        if has_figure
+        else (
+            "executed-notebook",
+            "summary-table",
+            "analysis-log",
+            "environment-manifest",
+        )
     )
     return DatasetAnalysisPlanSpec(
         schema_version="1",
@@ -87,6 +150,10 @@ def dataset_template_plan(workflow: WorkflowRecord) -> DatasetAnalysisPlanSpec:
         goal=workflow.goal,
         dataset_source_id=dataset_source_id,
         dataset_content_hash=dataset_content_hash,
+        analysis_spec_id=analysis_spec.id if analysis_spec is not None else None,
+        analysis_spec_sha256=(
+            analysis_spec.spec_sha256 if analysis_spec is not None else None
+        ),
         assumptions=["The source CSV contains one header row."],
         questions_for_user=[],
         steps=(
@@ -160,6 +227,354 @@ def dataset_template_plan(workflow: WorkflowRecord) -> DatasetAnalysisPlanSpec:
             ),
         ),
     )
+
+
+def _goal_aware_dataset_selection(
+    session: Session,
+    workflow: WorkflowRecord,
+    job: JobRecord,
+    gateway: OpenAICompatibleModelGateway,
+) -> tuple[
+    MethodSelectorResult,
+    DatasetInspectionResult,
+    ModelInvocationRecord | None,
+    ValidatedAnalysisSpec | None,
+]:
+    if workflow.dataset_source_id is None or workflow.dataset_content_hash is None:
+        raise WorkflowFailure(
+            "dataset-binding-invalid",
+            "The dataset workflow has no immutable dataset identity.",
+        )
+    project = session.get(ProjectRecord, workflow.project_id)
+    dataset = session.get(SourceRecord, workflow.dataset_source_id)
+    if (
+        project is None
+        or dataset is None
+        or dataset.project_id != workflow.project_id
+        or dataset.source_kind != "dataset"
+        or dataset.ingestion_status != "ready"
+        or dataset.content_hash != workflow.dataset_content_hash
+    ):
+        raise WorkflowFailure(
+            "dataset-binding-invalid",
+            "The selected ready dataset no longer matches the autonomous workflow.",
+        )
+    try:
+        inspection = inspect_csv_dataset(
+            workspace_root=Path(project.project_path),
+            dataset_path=Path(dataset.local_path),
+            source_id=dataset.id,
+            expected_content_hash=dataset.content_hash,
+            max_sample_rows=500,
+        )
+    except DatasetInspectionError:
+        raise WorkflowFailure(
+            "dataset-inspection-failed",
+            "The dataset could not be inspected safely for method selection.",
+        ) from None
+    selector_gateway: OpenAICompatibleModelGateway | None = None
+    if workflow.generation_mode == "remote-model-assisted":
+        assert_remote_gateway_matches_creation(session, workflow, gateway)
+        selector_gateway = gateway
+    append_workflow_events(
+        session,
+        workflow,
+        [
+            (
+                "analysis.method-selection-started",
+                AnalysisMethodSelectionStartedEventData(
+                    dataset_source_id=dataset.id,
+                    dataset_content_hash=dataset.content_hash,
+                    dataset_profile_sha256=inspection.profile_sha256,
+                ),
+                None,
+                job.id,
+            )
+        ],
+    )
+    try:
+        result = asyncio.run(
+            select_analysis_method(
+                workflow.goal,
+                inspection.profile,
+                dataset_source_id=dataset.id,
+                dataset_content_hash=dataset.content_hash,
+                dataset_profile_hash=inspection.profile_sha256,
+                answered_context=answered_scientific_context(session, workflow.id),
+                gateway=selector_gateway,
+                model=(gateway.default_model if selector_gateway is not None else None),
+            )
+        )
+    except RuntimeError as error:
+        if "asyncio.run" not in str(error):
+            raise
+        raise WorkflowFailure(
+            "method-selector-context-invalid",
+            "The deterministic method selector could not run in this worker context.",
+            retryable=True,
+        ) from None
+    invocation = _persist_method_selector_invocation(session, workflow, job, result)
+    validated = (
+        _validate_selected_analysis_spec(
+            workflow=workflow,
+            project=project,
+            dataset=dataset,
+            inspection=inspection,
+            spec=result.decision,
+        )
+        if isinstance(result.decision, AnalysisSpec)
+        else None
+    )
+    return result, inspection, invocation, validated
+
+
+def _validate_selected_analysis_spec(
+    *,
+    workflow: WorkflowRecord,
+    project: ProjectRecord,
+    dataset: SourceRecord,
+    inspection: DatasetInspectionResult,
+    spec: AnalysisSpec,
+) -> ValidatedAnalysisSpec:
+    context = AnalysisValidationContext(
+        project_id=workflow.project_id,
+        source_project_id=dataset.project_id,
+        source_kind=dataset.source_kind,
+        source_status=dataset.ingestion_status,
+        source_id=dataset.id,
+        source_content_hash=dataset.content_hash,
+        profile=inspection.profile,
+        profile_sha256=inspection.profile_sha256,
+    )
+    try:
+        preliminary = validate_analysis_spec(spec, context)
+        operation = preliminary.spec.operation
+        if operation.type == "two-group-comparison":
+            evidence = exact_two_group_preflight_csv_dataset(
+                workspace_root=Path(project.project_path),
+                dataset_path=Path(dataset.local_path),
+                expected_content_hash=dataset.content_hash,
+                outcome_column=operation.outcome_column,
+                group_column=operation.group_column,
+                groups=operation.groups,
+            )
+            context = replace(
+                context,
+                two_group_preflight=ExactTwoGroupPreflight(
+                    outcome_column=evidence.outcome_column,
+                    group_column=evidence.group_column,
+                    valid_counts=evidence.valid_counts,
+                    non_constant_groups=evidence.non_constant_groups,
+                ),
+            )
+        elif operation.type == "correlation":
+            evidence = exact_correlation_preflight_csv_dataset(
+                workspace_root=Path(project.project_path),
+                dataset_path=Path(dataset.local_path),
+                expected_content_hash=dataset.content_hash,
+                x_column=operation.x_column,
+                y_column=operation.y_column,
+            )
+            context = replace(
+                context,
+                correlation_preflight=ExactCorrelationPreflight(
+                    x_column=evidence.x_column,
+                    y_column=evidence.y_column,
+                    valid_pair_count=evidence.valid_pair_count,
+                ),
+            )
+        return validate_analysis_spec(preliminary.spec, context)
+    except AnalysisSpecValidationError as error:
+        raise WorkflowFailure(error.code, error.message) from None
+    except DatasetInspectionError:
+        raise WorkflowFailure(
+            "analysis-preflight-failed",
+            "The selected analysis columns could not be inspected safely.",
+        ) from None
+
+
+def _persist_method_selector_invocation(
+    session: Session,
+    workflow: WorkflowRecord,
+    job: JobRecord,
+    selection: MethodSelectorResult,
+) -> ModelInvocationRecord | None:
+    if not selection.used_model:
+        return None
+    if selection.model_used is None or selection.endpoint_identity is None:
+        raise WorkflowFailure(
+            "method-selector-provenance-invalid",
+            "The remote method selector returned incomplete destination provenance.",
+        )
+    operation_key = f"{job.operation_key}:select-analysis-method"
+    existing = session.scalar(
+        select(ModelInvocationRecord).where(
+            ModelInvocationRecord.workflow_id == workflow.id,
+            ModelInvocationRecord.operation_key == operation_key,
+            ModelInvocationRecord.attempt == job.attempt,
+        )
+    )
+    if existing is not None:
+        if existing.input_sha256 != selection.input_sha256:
+            raise WorkflowFailure(
+                "method-selector-provenance-conflict",
+                "The planning retry no longer matches its stored method selection input.",
+            )
+        return existing
+    request_key = "analysis-method:" + content_sha256(
+        {
+            "attempt": job.attempt,
+            "operationKey": operation_key,
+            "workflowId": workflow.id,
+        }
+    )
+    failed = selection.parse_result == "model-request-failed"
+    now = utc_now()
+    record = ModelInvocationRecord(
+        id=str(uuid.uuid4()),
+        workflow_id=workflow.id,
+        schema_version="1",
+        operation_type="analysis-method-selection",
+        operation_key=operation_key,
+        attempt=job.attempt,
+        generator="analysis-method-selector-v1",
+        model=selection.model_used,
+        endpoint_identity=selection.endpoint_identity,
+        prompt_version=selection.prompt_version,
+        input_sha256=selection.input_sha256,
+        output_sha256=(
+            None
+            if failed
+            else selection.model_output_sha256 or selection.output_sha256
+        ),
+        token_usage=selection.token_usage,
+        validation_errors=[{"code": code} for code in selection.validation_errors],
+        request_idempotency_key=request_key,
+        request_payload_sha256=selection.input_sha256,
+        status="failed" if failed else "succeeded",
+        error_code="model-request-failed" if failed else None,
+        error_message=(
+            "The remote method selector request failed and local selection was used."
+            if failed
+            else None
+        ),
+        created_at=now,
+        finished_at=now,
+    )
+    session.add(record)
+    session.flush()
+    return record
+
+
+def _supersede_analysis_specs(
+    session: Session,
+    workflow: WorkflowRecord,
+    *,
+    job_id: str,
+) -> None:
+    active = list(
+        session.scalars(
+            select(AnalysisSpecRecord)
+            .where(
+                AnalysisSpecRecord.workflow_id == workflow.id,
+                AnalysisSpecRecord.status.in_(["pending-approval", "approved"]),
+            )
+            .order_by(AnalysisSpecRecord.revision)
+        )
+    )
+    if not active:
+        return
+    for record in active:
+        record.status = "superseded"
+    append_workflow_events(
+        session,
+        workflow,
+        [
+            (
+                "analysis.spec-superseded",
+                AnalysisSpecEventData(
+                    analysis_spec_id=record.id,
+                    revision=record.revision,
+                    spec_sha256=record.spec_sha256,
+                    dataset_profile_sha256=record.dataset_profile_sha256,
+                    selector_kind=cast(Any, record.selector_kind),
+                    prompt_version=record.prompt_version,
+                ),
+                None,
+                job_id,
+            )
+            for record in active
+        ],
+    )
+
+
+def _persist_analysis_spec(
+    session: Session,
+    workflow: WorkflowRecord,
+    selection: MethodSelectorResult,
+    spec: AnalysisSpec,
+    *,
+    selector_reason: str,
+    dataset_profile_sha256: str,
+    model_invocation: ModelInvocationRecord | None,
+    job_id: str,
+) -> AnalysisSpecRecord:
+    spec_hash = analysis_spec_sha256(spec)
+    latest = session.scalar(
+        select(AnalysisSpecRecord)
+        .where(AnalysisSpecRecord.workflow_id == workflow.id)
+        .order_by(AnalysisSpecRecord.revision.desc())
+    )
+    _supersede_analysis_specs(session, workflow, job_id=job_id)
+    record = AnalysisSpecRecord(
+        id=str(uuid.uuid4()),
+        workflow_id=workflow.id,
+        revision=1 if latest is None else latest.revision + 1,
+        previous_spec_id=latest.id if latest is not None else None,
+        schema_version=spec.schema_version,
+        selector_kind=(
+            "remote-model-assisted"
+            if model_invocation is not None
+            and selection.parse_result in {"valid", "valid-after-repair"}
+            else "local-deterministic"
+        ),
+        selector_reason=selector_reason,
+        prompt_version=selection.prompt_version,
+        model_invocation_id=(
+            model_invocation.id
+            if model_invocation is not None
+            and selection.parse_result in {"valid", "valid-after-repair"}
+            else None
+        ),
+        dataset_source_id=spec.dataset_source_id,
+        dataset_content_hash=spec.dataset_content_hash,
+        dataset_profile_sha256=dataset_profile_sha256,
+        spec_json=spec.model_dump(mode="json", by_alias=True),
+        spec_sha256=spec_hash,
+        status="pending-approval",
+    )
+    session.add(record)
+    session.flush()
+    append_workflow_events(
+        session,
+        workflow,
+        [
+            (
+                "analysis.spec-created",
+                AnalysisSpecEventData(
+                    analysis_spec_id=record.id,
+                    revision=record.revision,
+                    spec_sha256=record.spec_sha256,
+                    dataset_profile_sha256=record.dataset_profile_sha256,
+                    selector_kind=cast(Any, record.selector_kind),
+                    prompt_version=record.prompt_version,
+                ),
+                None,
+                job_id,
+            )
+        ],
+    )
+    return record
 
 
 def template_plan(goal: str) -> PlanSpec:
@@ -369,15 +784,83 @@ def handle_generate_plan(
             "The reserved autonomous plan version is not newer than plan history.",
         )
     if workflow.workflow_type == "dataset-analysis":
-        if workflow.generation_mode != "local-deterministic":
-            raise WorkflowFailure(
-                "dataset-remote-planning-unsupported",
-                "Remote-assisted dataset planning is not available in this handler version.",
+        analysis_spec_record: AnalysisSpecRecord | None = None
+        method_invocation: ModelInvocationRecord | None = None
+        if workflow.creation_mode == "autonomous":
+            selection, inspection, method_invocation, validated = (
+                _goal_aware_dataset_selection(session, workflow, job, gateway)
             )
-        spec = dataset_template_plan(workflow)
-        generator = "dataset-template-v1"
-        selected_model = None
-        prompt_version = "dataset-template-v1"
+            if isinstance(selection.decision, ClarificationProposal):
+                _supersede_analysis_specs(session, workflow, job_id=job.id)
+                create_scientific_interaction(
+                    session,
+                    workflow,
+                    selection.decision,
+                    selector_input_sha256=selection.input_sha256,
+                    selector_output_sha256=selection.output_sha256,
+                )
+                finish_job(session, job, "succeeded")
+                return
+            if isinstance(selection.decision, UnsupportedAnalysis):
+                _supersede_analysis_specs(session, workflow, job_id=job.id)
+                finish_job(session, job, "succeeded")
+                transition_workflow(
+                    session,
+                    workflow,
+                    "blocked",
+                    reason_code=f"analysis-unsupported:{selection.decision.capability}",
+                    blocking_message=selection.decision.explanation,
+                )
+                append_workflow_events(
+                    session,
+                    workflow,
+                    [
+                        (
+                            "analysis.unsupported",
+                            AnalysisUnsupportedEventData(
+                                capability=selection.decision.capability,
+                                explanation=selection.decision.explanation,
+                                supported_alternatives=(
+                                    selection.decision.supported_alternatives
+                                ),
+                                selector_input_sha256=selection.input_sha256,
+                                selector_output_sha256=selection.output_sha256,
+                            ),
+                            None,
+                            job.id,
+                        )
+                    ],
+                )
+                return
+            if validated is None:
+                raise WorkflowFailure(
+                    "analysis-spec-validation-missing",
+                    "The selected analysis method has no validated AnalysisSpec.",
+                )
+            analysis_spec_record = _persist_analysis_spec(
+                session,
+                workflow,
+                selection,
+                validated.spec,
+                selector_reason=validated.method_selection_reason,
+                dataset_profile_sha256=inspection.profile_sha256,
+                model_invocation=method_invocation,
+                job_id=job.id,
+            )
+        spec = dataset_template_plan(workflow, analysis_spec_record)
+        generator = (
+            "goal-aware-dataset-plan-v1"
+            if analysis_spec_record is not None
+            else "dataset-template-v1"
+        )
+        selected_model = (
+            method_invocation.model if method_invocation is not None else None
+        )
+        prompt_version = (
+            analysis_spec_record.prompt_version
+            if analysis_spec_record is not None
+            else "dataset-template-v1"
+        )
     elif workflow.generation_mode == "remote-model-assisted":
         assert_remote_gateway_matches_creation(session, workflow, gateway)
         frozen_sources = ready_source_descriptors(session, workflow)

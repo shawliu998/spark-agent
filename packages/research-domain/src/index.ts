@@ -675,6 +675,8 @@ interface DatasetAnalysisPlanSpecBase {
   goal: string;
   datasetSourceId: string;
   datasetContentHash: string;
+  analysisSpecId: string | null;
+  analysisSpecSha256: string | null;
   assumptions: string[];
   questionsForUser: string[];
 }
@@ -888,14 +890,13 @@ export interface DatasetWorkflowPlanPendingApproval
   datasetContentHash: string;
 }
 
-export interface WorkflowAnalysisExecutionPendingApproval
+interface WorkflowAnalysisExecutionPendingApprovalBase
   extends WorkflowPendingApprovalBase {
   taskId: string;
   kind: "analysis-execution";
   subjectType: "analysis-intent";
   action: "execute-python-data-analysis";
   riskLevel: "high";
-  approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
   expectedWorkflowRevision: number;
   analysisIntentId: string;
   planStepId: "execute-analysis";
@@ -906,6 +907,26 @@ export interface WorkflowAnalysisExecutionPendingApproval
   code: string;
   codeDiff: string | null;
 }
+
+export type WorkflowAnalysisExecutionPendingApproval =
+  | (WorkflowAnalysisExecutionPendingApprovalBase & {
+      approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
+      analysisSpecId: null;
+      specSha256: null;
+      datasetProfileSha256: null;
+      compilerVersion: null;
+      codeSha256: null;
+      runtimePolicyId: null;
+    })
+  | (WorkflowAnalysisExecutionPendingApprovalBase & {
+      approvalSchemaVersion: "analysis-intent-v4";
+      analysisSpecId: string;
+      specSha256: string;
+      datasetProfileSha256: string;
+      compilerVersion: string;
+      codeSha256: string;
+      runtimePolicyId: string;
+    });
 
 export type WorkflowPendingApproval =
   | WorkflowPlanPendingApproval
@@ -1080,8 +1101,12 @@ interface ActiveDatasetAnalysisWorkflowSnapshot
   result: null;
   latestReview: DatasetAnalysisReview | null;
   datasetProfile: DatasetProfile | null;
+  /** Optional only while reading snapshots emitted before AnalysisSpec v1. */
+  analysisSpec?: WorkflowAnalysisSpec | null;
   analysisIntent: WorkflowAnalysisIntent | null;
   analysisRun: WorkflowAnalysisRun | null;
+  /** Optional only while reading snapshots emitted before structured results v1. */
+  structuredResult?: WorkflowStructuredAnalysisResult | null;
   reviewWarningAcceptance: DatasetReviewWarningAcceptance | null;
 }
 
@@ -1106,11 +1131,13 @@ interface CompletedDatasetAnalysisWorkflowSnapshotBase {
   pendingApprovals: [];
   result: null;
   datasetProfile: DatasetProfile;
+  analysisSpec?: WorkflowAnalysisSpec | null;
   analysisIntent: WorkflowAnalysisIntent & {
     status: "completed";
     decision: "approved";
   };
   analysisRun: CompletedWorkflowAnalysisRun;
+  structuredResult?: WorkflowStructuredAnalysisResult | null;
   allowedActions: [];
   eventCursor: number;
 }
@@ -1146,6 +1173,8 @@ export interface AgentResearchWorkflowSnapshot
   datasetProfile: DatasetProfile | null;
   analysisIntent: WorkflowAnalysisIntent | null;
   analysisRun: WorkflowAnalysisRun | null;
+  analysisSpec: WorkflowAnalysisSpec | null;
+  structuredResult: WorkflowStructuredAnalysisResult | null;
   reviewWarningAcceptance: DatasetReviewWarningAcceptance | null;
 }
 
@@ -1159,6 +1188,8 @@ export type PendingAgentResearchWorkflowSnapshot = Omit<
   | "datasetProfile"
   | "analysisIntent"
   | "analysisRun"
+  | "analysisSpec"
+  | "structuredResult"
   | "reviewWarningAcceptance"
 > & {
   workflow: PendingAgentResearchWorkflow;
@@ -1169,6 +1200,8 @@ export type PendingAgentResearchWorkflowSnapshot = Omit<
   datasetProfile: null;
   analysisIntent: null;
   analysisRun: null;
+  analysisSpec: null;
+  structuredResult: null;
   reviewWarningAcceptance: null;
 };
 
@@ -1282,7 +1315,10 @@ export interface AnalysisApprovalEventData {
   taskId: string;
   jobId: string | null;
   payloadSha256: string;
-  approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
+  approvalSchemaVersion:
+    | "analysis-intent-v2"
+    | "analysis-intent-v3"
+    | "analysis-intent-v4";
   expectedWorkflowRevision: number;
 }
 
@@ -1358,6 +1394,56 @@ export interface IntentDecisionEventData {
   outputSha256: string;
 }
 
+export interface AnalysisMethodSelectionStartedEventData {
+  datasetSourceId: string;
+  datasetContentHash: string;
+  datasetProfileSha256: string;
+}
+
+export interface AnalysisClarificationRequestedEventData {
+  interactionId: string;
+  clarificationType: string;
+  selectorInputSha256: string;
+  selectorOutputSha256: string;
+}
+
+export interface AnalysisSpecEventData {
+  analysisSpecId: string;
+  revision: number;
+  specSha256: string;
+  datasetProfileSha256: string;
+  selectorKind: "local-deterministic" | "remote-model-assisted";
+  promptVersion: string | null;
+}
+
+export interface AnalysisCompiledEventData {
+  analysisIntentId: string;
+  analysisSpecId: string;
+  specSha256: string;
+  datasetProfileSha256: string;
+  compilerVersion: string;
+  approvedCodeSha256: string;
+  runtimePolicyId: string;
+}
+
+export interface AnalysisStructuredResultEventData {
+  structuredResultId: string;
+  analysisSpecId: string;
+  analysisIntentId: string;
+  runId: string;
+  resultSha256: string;
+}
+
+export interface AnalysisUnsupportedEventData {
+  capability: string;
+  explanation: string;
+  supportedAlternatives: Array<
+    "descriptive" | "two-group-comparison" | "correlation"
+  >;
+  selectorInputSha256: string;
+  selectorOutputSha256: string;
+}
+
 interface InteractionEventDataBase {
   interactionId: string;
   requestType: InteractionRequestType;
@@ -1399,6 +1485,12 @@ export type WorkflowEventData =
   | DatasetReviewWarningsAcceptedEventData
   | AgentRunCreatedEventData
   | IntentDecisionEventData
+  | AnalysisMethodSelectionStartedEventData
+  | AnalysisClarificationRequestedEventData
+  | AnalysisSpecEventData
+  | AnalysisCompiledEventData
+  | AnalysisStructuredResultEventData
+  | AnalysisUnsupportedEventData
   | InteractionEventData;
 
 interface WorkflowEventEnvelope<Type extends string, Data extends WorkflowEventData> {
@@ -1417,6 +1509,36 @@ export type WorkflowEvent =
       "intent.decision-recorded",
       IntentDecisionEventData
     >
+  | WorkflowEventEnvelope<
+      "analysis.method-selection-started",
+      AnalysisMethodSelectionStartedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.clarification-requested",
+      AnalysisClarificationRequestedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.spec-created" | "analysis.spec-superseded" | "analysis.spec-approved",
+      AnalysisSpecEventData
+    >
+  | WorkflowEventEnvelope<"analysis.compiled", AnalysisCompiledEventData>
+  | WorkflowEventEnvelope<
+      "analysis.execution-approval-requested",
+      AnalysisApprovalEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.execution-started",
+      AnalysisRunStartedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.structured-result-created",
+      AnalysisStructuredResultEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.review-completed",
+      WorkflowReviewEventData
+    >
+  | WorkflowEventEnvelope<"analysis.unsupported", AnalysisUnsupportedEventData>
   | WorkflowEventEnvelope<
       "interaction.requested",
       InteractionRequestedEventData
@@ -1651,6 +1773,276 @@ export interface DatasetProfile {
   warnings: DatasetInspectionWarning[];
 }
 
+/** JSON contract mirrored from science-core analysis_spec/schemas.py. */
+export type DescriptiveStatistic =
+  | "count"
+  | "missing"
+  | "mean"
+  | "std"
+  | "median"
+  | "min"
+  | "max"
+  | "q1"
+  | "q3"
+  | "iqr"
+  | "unique"
+  | "frequency";
+
+export interface DescriptiveOperation {
+  type: "descriptive";
+  columns: string[];
+  statistics: DescriptiveStatistic[];
+  plot: "none" | "histogram" | "bar";
+}
+
+interface TwoGroupComparisonOperationBase {
+  type: "two-group-comparison";
+  outcomeColumn: string;
+  groupColumn: string;
+  groups: [string, string];
+  checkAssumptions: boolean;
+  plot: "boxplot" | "violin" | "none";
+}
+
+/** Method/effect-size pairs rejected by science-core are also unrepresentable here. */
+export type TwoGroupComparisonOperation =
+  | (TwoGroupComparisonOperationBase & {
+      method: "auto";
+      effectSize: "hedges-g" | "rank-biserial";
+    })
+  | (TwoGroupComparisonOperationBase & {
+      method: "welch-t-test";
+      effectSize: "hedges-g";
+    })
+  | (TwoGroupComparisonOperationBase & {
+      method: "mann-whitney-u";
+      effectSize: "rank-biserial";
+    });
+
+export interface CorrelationOperation {
+  type: "correlation";
+  xColumn: string;
+  yColumn: string;
+  method: "auto" | "pearson" | "spearman";
+  confidenceInterval: boolean;
+  plot: "scatter" | "none";
+}
+
+export type AnalysisOperation =
+  | DescriptiveOperation
+  | TwoGroupComparisonOperation
+  | CorrelationOperation;
+
+interface AnalysisSpecBase {
+  schemaVersion: "1";
+  objective: string;
+  datasetSourceId: string;
+  datasetContentHash: string;
+  datasetProfileHash: string;
+  missingValuePolicy: "drop-per-operation" | "report-only";
+  confidenceLevel: number;
+  randomSeed: number;
+  assumptions: string[];
+  limitations: string[];
+}
+
+export type AnalysisSpec =
+  | (AnalysisSpecBase & { operation: DescriptiveOperation })
+  | (AnalysisSpecBase & { operation: TwoGroupComparisonOperation })
+  | (AnalysisSpecBase & { operation: CorrelationOperation });
+
+/** Durable, revisioned method selection bound to the approved workflow plan. */
+export interface WorkflowAnalysisSpec {
+  id: string;
+  revision: number;
+  status: "pending-approval" | "approved" | "superseded" | "rejected";
+  selectorKind: "local-deterministic" | "remote-model-assisted";
+  selectorReason: string;
+  promptVersion: string | null;
+  specSha256: string;
+  datasetProfileSha256: string;
+  spec: AnalysisSpec;
+  createdAt: string;
+}
+
+export type ScientificClarificationType =
+  | "outcome-column"
+  | "group-column"
+  | "group-values"
+  | "x-column"
+  | "y-column"
+  | "analysis-objective"
+  | "method-confirmation"
+  | "independence-assumption"
+  | "missing-value-policy";
+
+export interface ScientificClarificationOption {
+  value: string;
+  label: string;
+  description: string | null;
+}
+
+export interface ScientificClarification {
+  type: ScientificClarificationType;
+  question: string;
+  options: ScientificClarificationOption[];
+}
+
+export interface ScientificClarificationProposal {
+  reason: string;
+  requests: ScientificClarification[];
+}
+
+export interface UnsupportedAnalysis {
+  capability: string;
+  explanation: string;
+  supportedAlternatives: Array<
+    "descriptive" | "two-group-comparison" | "correlation"
+  >;
+}
+
+export interface CompiledAnalysis {
+  compilerVersion: string;
+  specSha256: string;
+  code: string;
+  codeSha256: string;
+  expectedOutputs: string[];
+  runtimePolicyId: string;
+}
+
+export interface AnalysisSampleSummary {
+  totalRows: number;
+  analyzedRows: number;
+  missingRows: number;
+}
+
+export interface DescriptiveColumnResult {
+  column: string;
+  sampleSize: number;
+  missingCount: number;
+  statistics: Record<string, number | string | null>;
+}
+
+export interface DescriptiveAnalysisResult {
+  type: "descriptive";
+  columns: DescriptiveColumnResult[];
+}
+
+export interface TwoGroupComparisonResult {
+  type: "two-group-comparison";
+  groupColumn: string;
+  outcomeColumn: string;
+  groups: [string, string];
+  sampleSizes: Record<string, number>;
+  missingCounts: Record<string, number>;
+  descriptiveStatistics: Record<string, Record<string, number | null>>;
+  testStatistic: number;
+  pValue: number;
+  effectSizeName: "hedges-g" | "rank-biserial";
+  effectSize: number;
+  confidenceInterval: [number, number];
+}
+
+export interface CorrelationAnalysisResult {
+  type: "correlation";
+  xColumn: string;
+  yColumn: string;
+  sampleSize: number;
+  missingPairs: number;
+  correlation: number;
+  pValue: number;
+  confidenceInterval: [number, number] | null;
+}
+
+export type OperationResult =
+  | DescriptiveAnalysisResult
+  | TwoGroupComparisonResult
+  | CorrelationAnalysisResult;
+
+export type RequestedMethod =
+  | "descriptive"
+  | "auto"
+  | "welch-t-test"
+  | "mann-whitney-u"
+  | "pearson"
+  | "spearman";
+
+export type ResolvedMethod =
+  | "descriptive"
+  | "welch-t-test"
+  | "mann-whitney-u"
+  | "pearson"
+  | "spearman";
+
+interface StructuredAnalysisResultBase {
+  schemaVersion: "1";
+  objective: string;
+  datasetSourceId: string;
+  datasetContentHash: string;
+  datasetProfileHash: string;
+  methodSelectionReason: string;
+  sampleSummary: AnalysisSampleSummary;
+  warnings: string[];
+  limitations: string[];
+}
+
+type DescriptiveStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "descriptive";
+  requestedMethod: "descriptive";
+  resolvedMethod: "descriptive";
+  result: DescriptiveAnalysisResult;
+};
+
+type WelchStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "two-group-comparison";
+  requestedMethod: "auto" | "welch-t-test";
+  resolvedMethod: "welch-t-test";
+  result: TwoGroupComparisonResult & { effectSizeName: "hedges-g" };
+};
+
+type MannWhitneyStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "two-group-comparison";
+  requestedMethod: "auto" | "mann-whitney-u";
+  resolvedMethod: "mann-whitney-u";
+  result: TwoGroupComparisonResult & { effectSizeName: "rank-biserial" };
+};
+
+type PearsonStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "correlation";
+  requestedMethod: "auto" | "pearson";
+  resolvedMethod: "pearson";
+  result: CorrelationAnalysisResult;
+};
+
+type SpearmanStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "correlation";
+  requestedMethod: "auto" | "spearman";
+  resolvedMethod: "spearman";
+  result: CorrelationAnalysisResult;
+};
+
+/**
+ * JSON result union mirrored from analysis_spec/results.py, including its
+ * method/result compatibility validation.
+ */
+export type StructuredAnalysisResult =
+  | DescriptiveStructuredAnalysisResult
+  | WelchStructuredAnalysisResult
+  | MannWhitneyStructuredAnalysisResult
+  | PearsonStructuredAnalysisResult
+  | SpearmanStructuredAnalysisResult;
+
+/** Persisted structured result and the exact Spec/Intent/Run lineage it attests. */
+export interface WorkflowStructuredAnalysisResult {
+  id: string;
+  analysisSpecId: string;
+  analysisIntentId: string;
+  runId: string;
+  resultSha256: string;
+  result: StructuredAnalysisResult;
+  createdAt: string;
+}
+
 export type AnalysisIntentStatus =
   | "waiting-approval"
   | "approved"
@@ -1679,6 +2071,13 @@ export interface AnalysisIntent {
   expectedOutputs?: DatasetAnalysisExpectedOutput[] | null;
   timeoutSeconds?: number | null;
   repairAttempt?: 0 | 1 | 2 | null;
+  /** All six fields are present together for compiler-produced AnalysisSpec intents. */
+  analysisSpecId?: string | null;
+  specSha256?: string | null;
+  datasetProfileSha256?: string | null;
+  compilerVersion?: string | null;
+  codeSha256?: string | null;
+  runtimePolicyId?: string | null;
   errorSummary?: AnalysisErrorSummary | null;
   codeDiff?: string | null;
   createdAt: string;
@@ -1746,8 +2145,31 @@ interface InitialWorkflowAnalysisIntentLineage {
   codeDiff: null;
 }
 
+interface LegacyWorkflowAnalysisIntentProvenance {
+  analysisSpecId?: null;
+  specSha256?: null;
+  datasetProfileSha256?: null;
+  compilerVersion?: null;
+  codeSha256?: null;
+  runtimePolicyId?: null;
+}
+
+interface CompiledWorkflowAnalysisIntentProvenance {
+  analysisSpecId: string;
+  specSha256: string;
+  datasetProfileSha256: string;
+  compilerVersion: string;
+  codeSha256: string;
+  runtimePolicyId: string;
+}
+
+type WorkflowAnalysisIntentProvenance =
+  | LegacyWorkflowAnalysisIntentProvenance
+  | CompiledWorkflowAnalysisIntentProvenance;
+
 export type InitialWorkflowAnalysisIntent = WorkflowAnalysisIntentBase &
   InitialWorkflowAnalysisIntentLineage &
+  WorkflowAnalysisIntentProvenance &
   (
     | (NonFailedWorkflowAnalysisIntentLifecycle & { errorSummary: null })
     | (FailedWorkflowAnalysisIntentLifecycle & {
@@ -1764,6 +2186,7 @@ interface RepairWorkflowAnalysisIntentLineage {
 
 export type RepairWorkflowAnalysisIntent = WorkflowAnalysisIntentBase &
   RepairWorkflowAnalysisIntentLineage &
+  LegacyWorkflowAnalysisIntentProvenance &
   WorkflowAnalysisIntentLifecycle;
 
 /** Fully bound AnalysisIntent created by a dataset workflow step. */
@@ -1893,6 +2316,10 @@ export interface DatasetAnalysisReviewResult {
   runId: string;
   analysisIntentId: string;
   inputDatasetContentHash: string;
+  /** Compiled reviewer conclusion and lineage; all null for legacy fixed analyses. */
+  conclusion?: string | null;
+  analysisSpecId?: string | null;
+  structuredResultSha256?: string | null;
 }
 
 interface DatasetAnalysisReviewBase<
