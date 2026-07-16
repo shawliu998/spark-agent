@@ -40,14 +40,18 @@
       "aria": "Approval mode",
       "title": "How agent actions get approved",
       "menuAria": "Approval modes",
-      "menuTitle": "How should agent actions be approved?",
+      "menuTitle": "Spark actions require manual approval",
       "approve": {
-        "label": "Approve for me",
-        "description": "Asks before deleting, installing, or going remote"
+        "label": "Manual approval",
+        "description": "Asks before every shell command, patch application, and web request"
       },
       "full": {
-        "label": "Full access",
-        "description": "Runs every command without asking"
+        "label": "Legacy Full Access",
+        "description": "Unsafe legacy mode; switch to Manual approval"
+      },
+      "custom": {
+        "label": "External custom policy",
+        "description": "Not managed by Spark; switch to Manual approval to restore the safe default"
       }
     },
     "error": {
@@ -59,6 +63,16 @@
     "newDescription": "Clear chat context in this folder",
     "clearDescription": "Same as /new; files stay in this folder",
     "cleared": "Chat context cleared. Files stay in the same folder."
+  },
+  "researchControls": {
+    "mode": { "aria": "Execution mode", "general": "General Research", "sandbox": "Sandbox Research", "verified": "Verified Workflows" },
+    "agent": { "aria": "Research agent", "empty": "No agents available", "primaryGroup": "Primary agents", "subagentGroup": "Sub-agents", "otherGroup": "Other agents" },
+    "model": { "aria": "Model", "empty": "No models available" },
+    "skills": { "aria": "Open research skills", "title": "Browse skills reported by OpenCode", "count": "{{count}} skills" }
+  },
+  "workspaceArtifacts": {
+    "heading": "Workspace artifacts", "count": "{{count}} discovered", "refreshAria": "Refresh workspace artifacts",
+    "sandboxTitle": "Sandbox Research is not configured yet.", "sandboxBody": "Choose General Research to use OpenCode now, or Verified Workflows for a structured workflow."
   },
   "starters": {
     "newSession": "New session",

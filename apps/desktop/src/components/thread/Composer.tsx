@@ -1,12 +1,20 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowUp, Check, ChevronDown, Hand, Paperclip, Square, Terminal, X, Zap } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Hand, Paperclip, SlidersHorizontal, Square, Terminal, X, Zap } from "lucide-react";
 import { addFilesToWorkspace, addTextToWorkspace, isTauri, type ApprovalMode } from "@/lib/tauri";
 import { WorkspaceChip } from "@/components/thread/WorkspaceChip";
 import { useUiStore } from "@/lib/store";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { RUNTIME_POLICY } from "@/lib/runtimePolicy";
+import { useRuntimeStore } from "@/lib/runtime";
 
 /** A paste longer than this becomes a workspace file chip instead of raw text. */
 const PASTE_AS_FILE_CHARS = 2000;
@@ -44,12 +52,9 @@ export interface ComposerCommand {
   source?: string;
 }
 
-/** The two approval modes the composer can switch between (Codex-style). Copy
- *  (label/description) is translated at render time — see `approvalCopy`. */
-const APPROVAL_OPTIONS: { mode: ApprovalMode; icon: typeof Hand }[] = [
-  { mode: "approve", icon: Hand },
-  { mode: "full", icon: Zap },
-];
+/** Spark's only selectable approval preset. Legacy Full Access and external
+ *  custom policies remain visible so the user can restore this safe default. */
+const APPROVAL_OPTIONS = [{ mode: "approve", icon: Hand }] as const;
 
 /**
  * The "Ask anything" composer. Static mock sessions pass no `onSend`; the live
@@ -74,6 +79,7 @@ export function Composer({
   placeholder,
   approvalMode,
   onApprovalModeChange,
+  researchControls,
 }: {
   onSend?: (text: string) => void;
   onRunShell?: (command: string) => void;
@@ -85,10 +91,12 @@ export function Composer({
   onStop?: () => void;
   /** Defaults to `t("composer.placeholder.default")` ("Ask anything"). */
   placeholder?: string;
-  /** The approval switch shows only when the surface provides both (the live
-   *  session does; static mock sessions don't). */
+  /** The approval control shows only when the live surface can restore Spark's
+   *  manual-approval preset; static mock sessions omit it. */
   approvalMode?: ApprovalMode;
   onApprovalModeChange?: (mode: ApprovalMode) => void;
+  /** Runtime-backed General Research mode/agent/model controls. */
+  researchControls?: ReactNode;
 }) {
   const { t } = useTranslation(["session", "common"]);
   const resolvedPlaceholder = placeholder ?? t("composer.placeholder.default");
@@ -102,6 +110,10 @@ export function Composer({
     full: {
       label: t("composer.approval.full.label"),
       description: t("composer.approval.full.description"),
+    },
+    custom: {
+      label: t("composer.approval.custom.label"),
+      description: t("composer.approval.custom.description"),
     },
   };
   const [value, setValue] = useState("");
@@ -132,6 +144,7 @@ export function Composer({
   const taRef = useRef<HTMLTextAreaElement>(null);
   const composerDraft = useUiStore((s) => s.composerDraft);
   const setComposerDraft = useUiStore((s) => s.setComposerDraft);
+  const prepareDraftWorkspace = useRuntimeStore((s) => s.prepareDraftWorkspace);
 
   const shellMode =
     RUNTIME_POLICY.allowDirectShell && !!onRunShell && !command && value.startsWith("!");
@@ -327,6 +340,7 @@ export function Composer({
     e.preventDefault();
     void (async () => {
       try {
+        await prepareDraftWorkspace();
         const name = await addTextToWorkspace("pasted.txt", text);
         setFiles((f) => [...f, name]);
       } catch (err) {
@@ -343,6 +357,7 @@ export function Composer({
   const addFiles = async () => {
     setAdding(true);
     try {
+      await prepareDraftWorkspace();
       const names = await addFilesToWorkspace();
       if (names.length > 0) setFiles((f) => [...f, ...names]);
     } catch (err) {
@@ -486,6 +501,7 @@ export function Composer({
         {/* Folder picker for a fresh draft — renders nothing once the session
             exists (its folder then shows in the header's Files toggle). */}
         <WorkspaceChip />
+        {researchControls}
         {RUNTIME_POLICY.allowApprovalModeChanges && approvalMode && onApprovalModeChange && (
           <div className="relative shrink-0" ref={approvalRef}>
             {approvalOpen && (
@@ -497,6 +513,21 @@ export function Composer({
                 <div className="px-2 pb-1 pt-1.5 text-xs text-muted">
                   {t("composer.approval.menuTitle")}
                 </div>
+                {approvalMode !== "approve" && (
+                  <div className="flex items-start gap-2 rounded-input bg-surface-2 px-2 py-1.5">
+                    {approvalMode === "full" ? (
+                      <Zap size={13} className="mt-0.5 shrink-0 text-warn" />
+                    ) : (
+                      <SlidersHorizontal size={13} className="mt-0.5 shrink-0 text-warn" />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs text-text">{approvalCopy[approvalMode].label}</span>
+                      <span className="block text-xs text-muted">
+                        {approvalCopy[approvalMode].description}
+                      </span>
+                    </span>
+                  </div>
+                )}
                 {APPROVAL_OPTIONS.map((opt) => (
                   <button
                     key={opt.mode}
@@ -527,10 +558,19 @@ export function Composer({
             <button
               aria-label={t("composer.approval.aria")}
               title={t("composer.approval.title")}
-              className="flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs text-muted hover:bg-surface-2 hover:text-text"
+              className={cn(
+                "flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs hover:bg-surface-2 hover:text-text",
+                approvalMode === "approve" ? "text-muted" : "text-warn",
+              )}
               onClick={() => setApprovalOpen((o) => !o)}
             >
-              {approvalMode === "full" ? <Zap size={12} /> : <Hand size={12} />}
+              {approvalMode === "full" ? (
+                <Zap size={12} />
+              ) : approvalMode === "custom" ? (
+                <SlidersHorizontal size={12} />
+              ) : (
+                <Hand size={12} />
+              )}
               <span>{approvalCopy[approvalMode].label}</span>
               <ChevronDown size={11} />
             </button>

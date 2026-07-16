@@ -36,6 +36,10 @@
     "resources": {
       "../../../runtime/skills/external/ai4s-skills": "skills/",
       "../../../runtime/skills/core": "skills-core/",
+      "../../../runtime/opencode-profile/agents": "opencode-profile/agents/",
+      "../../../runtime/opencode-profile/opencode.json": "opencode-profile/opencode.json",
+      "../../../runtime/opencode-profile/OPENSCIENCE_LICENSE.txt": "licenses/OPENSCIENCE_LICENSE.txt",
+      "../../../runtime/opencode-profile/OPENSCIENCE_NOTICE.txt": "licenses/OPENSCIENCE_NOTICE.txt",
       "../../../runtime/harness": "harness/",
       "../../../examples/climate-trends": "examples/climate-trends/",
       "../../../LICENSE": "LICENSE",

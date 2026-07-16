@@ -9,7 +9,7 @@
   },
   "items": {
     "new": "New",
-    "research": "Research",
+    "research": "Verified Workflows",
     "analysis": "Data analysis",
     "notebooks": "Notebooks",
     "files": "Files",
@@ -47,7 +47,7 @@
     "noResults": "No results.",
     "actions": {
       "newSession": "New session",
-      "analyzeData": "Analyze my data (new workflow)",
+      "analyzeData": "Start Verified Dataset Analysis",
       "auditReport": "Audit a report (traceability review)",
       "openNotebooks": "Open notebooks",
       "manageSkills": "Manage skills",

@@ -14,11 +14,17 @@ import { Composer } from "@/components/thread/Composer";
 import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
 import { InteractionPrompt } from "@/components/thread/InteractionPrompt";
+import {
+  ResearchSessionControls,
+  type ResearchExecutionMode,
+} from "@/components/thread/ResearchSessionControls";
+import { WorkspaceArtifactShelf } from "@/components/thread/WorkspaceArtifactShelf";
 import { InspectorShell } from "@/components/inspector/InspectorShell";
 import { MaximizePaneButton, RightPane } from "@/components/inspector/RightPane";
 import { SessionFilesPane } from "./FilesPage";
 import { RunsPane } from "./RunsPage";
 import { cn } from "@/lib/cn";
+import { discoverWorkspaceArtifacts } from "@/lib/workspaceArtifacts";
 
 /** Live agent session backed by the OpenCode runtime. `/live` (no id) is a blank draft;
  *  the session is created lazily on the first message, then the URL updates to /live/:id. */
@@ -42,6 +48,11 @@ export function LiveSessionPage() {
     workspace,
     panes,
     commands,
+    skills,
+    agents,
+    providers,
+    selectedAgent,
+    defaultModel,
     connect,
     openSession,
     startDraft,
@@ -59,7 +70,14 @@ export function LiveSessionPage() {
     reconcileRunning,
     approvalMode,
     setApprovalMode,
+    setSelectedAgent,
+    setDefaultModel,
   } = useRuntimeStore();
+  const [executionMode, setExecutionMode] = useState<ResearchExecutionMode>("general");
+  const [discoveredArtifacts, setDiscoveredArtifacts] = useState<
+    Awaited<ReturnType<typeof discoverWorkspaceArtifacts>>
+  >([]);
+  const [artifactRefresh, setArtifactRefresh] = useState(0);
   const clearingLocalCommand = useRef(false);
   const mounted = useRef(false);
   useEffect(() => {
@@ -93,7 +111,10 @@ export function LiveSessionPage() {
   const afterTurn = (id: string | null) => {
     if (mounted.current && id && !sessionId) navigate(`/live/${id}`);
   };
-  const onSend = async (text: string) => afterTurn(await sendPrompt(text));
+  const onSend = async (text: string) => {
+    if (executionMode !== "general") return;
+    afterTurn(await sendPrompt(text));
+  };
   const onRunShell = async (command: string) => afterTurn(await runShell(command));
   const onRunCommand = async (name: string, args: string) => {
     const localClear = name === "new" || name === "clear";
@@ -140,6 +161,24 @@ export function LiveSessionPage() {
   // working indicator, so a sent message is never silently "nowhere".
   const running = !!(currentId && runningSessions[currentId]);
   const working = sending || running;
+
+  // General sessions own ordinary workspace files directly. Re-scan on open,
+  // workspace switch, explicit refresh, and after every completed turn so
+  // outputs created indirectly by Python/shell survive reload and still show.
+  useEffect(() => {
+    if (!workspace) {
+      setDiscoveredArtifacts([]);
+      return;
+    }
+    if (working) return;
+    let cancelled = false;
+    void discoverWorkspaceArtifacts().then((artifacts) => {
+      if (!cancelled) setDiscoveredArtifacts(artifacts);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactRefresh, currentId, working, workspace]);
   // What the agent is doing right now — the newest still-running tool call.
   const currentTool = working
     ? [...(thread?.blocks ?? [])]
@@ -191,6 +230,16 @@ export function LiveSessionPage() {
       b.kind === "artifact" && b.filename.endsWith(".ipynb"),
   );
   const uniqueNotebooks = [...new Map(sessionNotebooks.map((b) => [b.path, b])).values()];
+  const surfacedArtifactPaths = new Set(
+    (thread?.blocks ?? [])
+      .filter((block): block is Extract<typeof block, { kind: "artifact" }> =>
+        block.kind === "artifact",
+      )
+      .map((block) => block.path),
+  );
+  const reconstructedArtifacts = discoveredArtifacts
+    .map((item) => item.block)
+    .filter((artifact) => !surfacedArtifactPaths.has(artifact.path));
 
   // The right pane belongs to the session: each one remembers its own open
   // artifact or Files browser (mutually exclusive, enforced by the store) and
@@ -355,8 +404,18 @@ export function LiveSessionPage() {
                 {error}
               </div>
             )}
-            {connected && isEmpty && !sessionId && (
+            {connected && executionMode === "general" && isEmpty && !sessionId && (
               <WorkflowStarters onPick={(p) => void onSend(p)} />
+            )}
+            {executionMode === "sandbox" && (
+              <div className="rounded-card border border-warn/30 bg-warn/10 px-4 py-3">
+                <div className="text-sm font-medium text-text">
+                  {t("workspaceArtifacts.sandboxTitle")}
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  {t("workspaceArtifacts.sandboxBody")}
+                </p>
+              </div>
             )}
             {historyLoading && <ThreadSkeleton />}
             {!historyLoading && thread && <BlockList blocks={thread.blocks} handlers={handlers} />}
@@ -387,6 +446,13 @@ export function LiveSessionPage() {
                 )}
               </div>
             )}
+            {!historyLoading && !working && (
+              <WorkspaceArtifactShelf
+                artifacts={reconstructedArtifacts}
+                onOpen={openArtifact}
+                onRefresh={() => setArtifactRefresh((version) => version + 1)}
+              />
+            )}
           </div>
         </div>
 
@@ -407,7 +473,7 @@ export function LiveSessionPage() {
               onRunShell={(c) => void onRunShell(c)}
               onRunCommand={(n, a) => void onRunCommand(n, a)}
               commands={composerCommands}
-              disabled={!connected || switching || working}
+              disabled={!connected || switching || working || executionMode !== "general"}
               working={running}
               onStop={() => void interrupt()}
               placeholder={
@@ -419,6 +485,27 @@ export function LiveSessionPage() {
               }
               approvalMode={approvalMode}
               onApprovalModeChange={(mode) => void setApprovalMode(mode)}
+              researchControls={
+                <ResearchSessionControls
+                  mode={executionMode}
+                  onModeChange={(mode) => {
+                    if (mode === "verified") {
+                      navigate("/research");
+                      return;
+                    }
+                    setExecutionMode(mode);
+                  }}
+                  agents={agents}
+                  selectedAgent={selectedAgent}
+                  onAgentChange={setSelectedAgent}
+                  providers={providers}
+                  selectedModel={defaultModel}
+                  onModelChange={(model) => void setDefaultModel(model).catch(() => {})}
+                  disabled={!connected || switching || working}
+                  skillCount={skills.length}
+                  onOpenSkills={() => navigate("/skills")}
+                />
+              }
             />
           </div>
         </div>

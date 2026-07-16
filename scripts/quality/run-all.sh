@@ -24,6 +24,7 @@ run_step "desktop lint" bash "$CHECK" desktop lint
 run_step "release sidecar integrity" bash "$ROOT/scripts/quality/check-release-assets.sh"
 run_step "desktop typecheck" bash "$CHECK" desktop typecheck
 run_step "desktop tests" bash "$CHECK" desktop test
+run_step "Foundation General Research vertical slice" bash "$ROOT/scripts/quality/check-foundation.sh"
 run_step "Rust formatting" bash "$CHECK" rust fmt
 run_step "Rust lint" bash "$CHECK" rust lint
 run_step "Rust tests" bash "$CHECK" rust test

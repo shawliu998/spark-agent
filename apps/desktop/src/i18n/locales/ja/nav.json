@@ -9,7 +9,7 @@
   },
   "items": {
     "new": "新規",
-    "research": "リサーチ",
+    "research": "検証済みワークフロー",
     "analysis": "データ分析",
     "notebooks": "ノートブック",
     "files": "ファイル",
@@ -47,7 +47,7 @@
     "noResults": "結果がありません。",
     "actions": {
       "newSession": "新規セッション",
-      "analyzeData": "データを分析する（新しいワークフロー）",
+      "analyzeData": "検証済みデータセット分析を開始",
       "auditReport": "レポートを検証する（トレーサビリティレビュー）",
       "openNotebooks": "ノートブックを開く",
       "manageSkills": "スキルを管理",

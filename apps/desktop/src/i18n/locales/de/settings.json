@@ -152,7 +152,7 @@
       "workspaceFiles": "Ihre Arbeitsbereichsdateien und Rohdaten",
       "codeExecution": "Codeausführung — der Python-Kernel und Jupyter laufen lokal; Datensätze werden hier verarbeitet, nie in großen Mengen hochgeladen.",
       "sessionHistory": "Sitzungsverlauf und Herkunftsnachweise, im privaten Datenordner der App.",
-      "providerKeys": "Anbieterschlüssel und Anmelde-Token — eine app-private Datei, die nur von Ihrem Konto gelesen werden kann; wird nie in den Arbeitsbereich, die Herkunftsdaten, Protokolle oder Exporte geschrieben."
+      "providerKeys": "Anbieter-API-Schlüssel — im Ruhezustand durch die Anmeldeinformationsverwaltung des Betriebssystems geschützt. OAuth-Datensätze, Connector-Schlüssel und das Jupyter-Token liegen weiterhin in kontoeigenen App-Dateien. Genehmigte lokale Tools können Laufzeitgeheimnisse erben; die Ausführungsisolation ist noch in Arbeit."
     },
     "remote": {
       "heading": "An Ihren Modellanbieter gesendet",

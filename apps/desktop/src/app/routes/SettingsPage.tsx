@@ -72,6 +72,9 @@ export function SettingsPage() {
   const defaultModel = useRuntimeStore((s) => s.defaultModel);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
   const removeConfigEntry = useRuntimeStore((s) => s.removeConfigEntry);
+  const saveProviderApiKey = useRuntimeStore((s) => s.saveProviderApiKey);
+  const removeProviderApiKey = useRuntimeStore((s) => s.removeProviderApiKey);
+  const finalizeProviderLogin = useRuntimeStore((s) => s.finalizeProviderLogin);
   const importOpenCodeLogin = useRuntimeStore((s) => s.importOpenCodeLogin);
   const connected = status === "ready";
   const updateEnabled = useUpdateStore((s) => s.enabled);
@@ -314,10 +317,14 @@ export function SettingsPage() {
 
   const saveKey = (providerID: string) =>
     run(t("toast.couldNotSaveKey"), async () => {
-      const actionClient = getClient();
-      if (!actionClient) throw new Error("Runtime endpoint is not connected.");
-      await actionClient.setProviderApiKey(providerID, keyInput.trim());
-      if (getClient() !== actionClient) return;
+      if (isTauri) {
+        await saveProviderApiKey(providerID, keyInput.trim());
+      } else {
+        const actionClient = getClient();
+        if (!actionClient) throw new Error("Runtime endpoint is not connected.");
+        await actionClient.setProviderApiKey(providerID, keyInput.trim());
+        if (getClient() !== actionClient) return;
+      }
       cancelOAuth(); // a pending browser login for this panel is now moot
       setKeyInput("");
       setConnectQuery("");
@@ -378,9 +385,12 @@ export function SettingsPage() {
       if (getClient() !== oauthClient) return;
       const abort = new AbortController();
       oauthAbort.current = abort;
+      let callbackCompleted = false;
       try {
         await oauthClient.oauthCallback(providerID, methodIndex, undefined, abort.signal);
+        callbackCompleted = true;
         if (getClient() !== oauthClient) return;
+        if (isTauri) await finalizeProviderLogin(providerID);
         if (gen !== oauthGen.current) {
           // Cancelled in the UI, but the login DID complete — refresh silently
           // so the now-connected provider still shows up in the list.
@@ -392,6 +402,18 @@ export function SettingsPage() {
         await refreshAll();
         return;
       } catch (e) {
+        // Once the callback succeeded, a native finalization failure is a
+        // credential-custody error, not a dropped browser wait. Surface it and
+        // never emit the connected toast (the native command rolls back an
+        // unsupported just-created API record before rejecting).
+        if (callbackCompleted) {
+          if (gen !== oauthGen.current) return;
+          setOauth(null);
+          toast.error(
+            `${t("toast.loginDidNotComplete")}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return;
+        }
         if (gen !== oauthGen.current || getClient() !== oauthClient) return;
         // Webview fetch failures (idle timeout, transient drop) are TypeError;
         // apiError() throws plain Error for the server's HTTP verdicts.
@@ -431,6 +453,7 @@ export function SettingsPage() {
       if (!oauthClient) throw new Error("Runtime endpoint is not connected.");
       await oauthClient.oauthCallback(providerID, methodIndex, codeInput.trim() || undefined);
       if (getClient() !== oauthClient) return;
+      if (isTauri) await finalizeProviderLogin(providerID);
       toast.success(t("toast.providerConnected", { providerID }));
       setOauth(null);
       setCodeInput("");
@@ -440,13 +463,23 @@ export function SettingsPage() {
     run(t("toast.couldNotRemove"), async () => {
       const actionClient = getClient();
       if (!actionClient) throw new Error("Runtime endpoint is not connected.");
-      if (customIds.includes(providerID)) {
+      const custom = customIds.includes(providerID);
+      if (isTauri && custom) {
+        await removeProviderApiKey(providerID, true);
+      } else if (isTauri) {
+        // OAuth is OpenCode-owned, while API keys are keychain-owned. Delete
+        // the former first, then let the native transaction remove every
+        // keychain/config reference and restart against the authoritative URL.
+        await actionClient.removeProviderAuth(providerID);
+        if (getClient() !== actionClient) return;
+        await removeProviderApiKey(providerID, false);
+      } else if (custom) {
         // Custom endpoints live in the config file; removal restarts the sidecar.
         await removeConfigEntry("provider", providerID);
       } else {
         await actionClient.removeProviderAuth(providerID);
       }
-      if (getClient() !== actionClient) return;
+      if (!isTauri && getClient() !== actionClient) return;
       toast.success(t("toast.providerRemoved", { providerID }));
     });
 
@@ -460,14 +493,19 @@ export function SettingsPage() {
         toast.error(t("toast.endpointFieldsRequired"));
         return;
       }
+      const apiKey = cKey.trim();
       await actionClient.addCustomProvider(id, {
         name: cName.trim(),
         npm: cNpm,
         baseURL: cUrl.trim(),
-        apiKey: cKey.trim() || undefined,
+        // Never send desktop secrets through OpenCode's config PATCH. The
+        // native transaction below writes the keychain entry and an env-only
+        // placeholder after the non-secret endpoint metadata exists.
+        apiKey: isTauri ? undefined : apiKey || undefined,
         models,
       });
-      if (getClient() !== actionClient) return;
+      if (isTauri && apiKey) await saveProviderApiKey(id, apiKey);
+      else if (getClient() !== actionClient) return;
       toast.success(t("toast.endpointAdded", { name: cName.trim() }));
       setShowCustom(false);
       setCName("");

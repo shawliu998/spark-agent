@@ -188,7 +188,7 @@ export function WorkflowGoalComposer({
           className="text-sm font-medium text-text"
         >
           {t("research.workflow.composerLabel", {
-            defaultValue: "Give Spark Agent a research goal",
+            defaultValue: "Give Spark Agent a structured research goal",
           })}
         </label>
       </div>

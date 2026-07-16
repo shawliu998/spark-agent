@@ -133,6 +133,13 @@ export interface AgentInfo {
   mode?: string;
 }
 
+/** Per-turn runtime selection. The public model id uses OpenCode's canonical
+ * `provider/model` form; OpenCodeClient converts it to the wire ModelRef. */
+export interface OpenCodePromptOptions {
+  agent?: string;
+  model?: string;
+}
+
 /** A slash command the runtime can run. GET /command merges every source:
  *  config commands, skills, and MCP prompts — one list for the composer's
  *  "/" palette. */
@@ -190,8 +197,8 @@ export interface OpenCodeClientOptions {
   requestTimeoutMs?: number;
   /**
    * Workspace directory the server should scope skill discovery to. OpenCode
-   * initializes per-directory instances lazily; without this, /api/skill can
-   * return an empty list until something else touches the workspace instance.
+   * initializes per-directory instances lazily; `/skill` uses this value to
+   * select the workspace instance whose bundled and project skills are listed.
    */
   directory?: string;
 }

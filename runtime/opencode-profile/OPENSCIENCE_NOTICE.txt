@@ -1,0 +1,12 @@
+OpenScience
+Copyright 2026 Synthetic Sciences
+
+This product includes software developed at Synthetic Sciences.
+Licensed under the Apache License, Version 2.0.
+
+Spark Agent modification notice
+--------------------------------
+The Agent definitions under runtime/opencode-profile/agents are modified,
+Spark-specific adaptations of OpenScience Agent behavior at revision
+e9844a49f1f4d93cbf5f88b8f4880c003adc6e61. They remove OpenScience branding,
+Atlas, wallet, managed-model, mandatory cloud-GPU, and OpenScience CLI assumptions.

@@ -152,7 +152,7 @@
       "workspaceFiles": "Your workspace files and raw data",
       "codeExecution": "Code execution — the Python kernel and Jupyter run locally; datasets are processed here, never uploaded in bulk.",
       "sessionHistory": "Session history and provenance records, in the app's private data folder.",
-      "providerKeys": "Provider keys and login tokens — an app-private file readable only by your account; never written to the workspace, provenance, logs, or exports."
+      "providerKeys": "Provider API keys — protected at rest by the OS credential manager. OAuth records, connector keys, and the Jupyter token still use owner-only app-private files. Approved local tools may inherit runtime secrets; execution isolation is still in progress."
     },
     "remote": {
       "heading": "Sent to your model provider",

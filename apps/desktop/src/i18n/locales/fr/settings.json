@@ -152,7 +152,7 @@
       "workspaceFiles": "Vos fichiers d'espace de travail et données brutes",
       "codeExecution": "Exécution du code — le noyau Python et Jupyter s'exécutent localement ; les jeux de données sont traités ici, jamais téléversés en masse.",
       "sessionHistory": "L'historique des sessions et les enregistrements de provenance, dans le dossier de données privé de l'application.",
-      "providerKeys": "Les clés de fournisseur et jetons de connexion — un fichier privé à l'application, lisible uniquement par votre compte ; jamais écrit dans l'espace de travail, la provenance, les journaux ou les exports."
+      "providerKeys": "Clés API de fournisseur — protégées au repos par le gestionnaire d'identifiants du système. Les enregistrements OAuth, clés de connecteur et le jeton Jupyter utilisent encore des fichiers privés de l'application, lisibles uniquement par votre compte. Les outils locaux approuvés peuvent hériter des secrets d'exécution ; l'isolation reste en cours."
     },
     "remote": {
       "heading": "Envoyé à votre fournisseur de modèle",

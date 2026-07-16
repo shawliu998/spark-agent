@@ -12,7 +12,24 @@ skills/
 
 Core skills are bundled as the `skills-core/` app resource and deployed next to
 the external pack on every sidecar start; directories without a `SKILL.md` are
-skipped.
+skipped. `manifest.json` is the catalog and provenance contract for bundled core
+skills; every listed path must stay inside this directory and contain a matching
+`SKILL.md` name.
+
+## Foundation research skills
+
+The first general-research pack covers the evidence-to-writing loop:
+
+- `literature-review`, `citation-management`, `hypothesis-generation`;
+- `scientific-critical-thinking`, `scientific-writing`;
+- `exploratory-data-analysis`, `statistical-analysis`, `matplotlib`.
+
+Their instructions are Spark-authored, behavior-only implementations informed
+by corresponding OpenScience capabilities at commit
+`e9844a49f1f4d93cbf5f88b8f4880c003adc6e61` (Apache-2.0); no upstream skill file
+is copied or substantially adapted. Closed services, Atlas, mandatory cloud
+compute, and provider-specific search are intentionally excluded. Exact source
+references and reuse classifications are recorded in `manifest.json`.
 
 ## Default pack: ai4s-skills (bundled into the installer)
 
@@ -31,18 +48,19 @@ How they ship, end to end:
    which OpenCode scans regardless of project detection. Bundled skill directories
    are replaced on app upgrade; the workspace's own `.opencode/skills/` stays
    reserved for user-installed skills. Skill listing must be workspace-scoped
-   (`GET /api/skill?directory=…`) — the SDK does this via its `directory` option.
+   (`GET /skill?directory=…`) — the SDK does this via its `directory` option.
 
 To bump the pack version, update `AI4S_SKILLS_COMMIT` in `fetch-skills.sh`.
 
-## Office pack: Anthropic document skills (bundled into the installer)
+## Office pack: Anthropic document skills (not currently bundled)
 
 The docx / pdf / pptx / xlsx skills come from Anthropic's open-source
 [anthropics/skills](https://github.com/anthropics/skills) repo (Apache-2.0;
-each skill directory keeps its own `LICENSE.txt`). Same pipeline as above:
-`fetch-skills.sh` pins them into `external/anthropic-skills/`, bundled as the
-`skills-office/` app resource, deployed by `deploy_bundled_skills`. Bump via
-`ANTHROPIC_SKILLS_COMMIT` in `fetch-skills.sh`.
+each skill directory keeps its own `LICENSE.txt`). Spark does not currently
+fetch or declare an Anthropic `skills-office/` app resource, so these skills are
+not part of the installer or deployed by `deploy_bundled_skills`. Adding an
+optional office pack later must pin its source, preserve its licenses, declare
+the Tauri resource explicitly, and add matching deployment and validation.
 
 ## Third-party skills
 

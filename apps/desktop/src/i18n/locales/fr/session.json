@@ -40,14 +40,18 @@
       "aria": "Mode d'approbation",
       "title": "Comment les actions de l'agent sont approuvées",
       "menuAria": "Modes d'approbation",
-      "menuTitle": "Comment les actions de l'agent doivent-elles être approuvées ?",
+      "menuTitle": "Les actions Spark exigent une approbation manuelle",
       "approve": {
-        "label": "Approuver pour moi",
-        "description": "Demande avant de supprimer, d'installer ou de se connecter à distance"
+        "label": "Approbation manuelle",
+        "description": "Demande avant chaque commande shell, application de correctif et requête web"
       },
       "full": {
-        "label": "Accès complet",
-        "description": "Exécute toutes les commandes sans demander"
+        "label": "Ancien accès complet",
+        "description": "Ancien mode non sécurisé ; passez à l'approbation manuelle"
+      },
+      "custom": {
+        "label": "Politique personnalisée externe",
+        "description": "Non gérée par Spark ; passez à l'approbation manuelle pour rétablir le réglage sûr"
       }
     },
     "error": {
@@ -59,6 +63,16 @@
     "newDescription": "Effacer le contexte du chat dans ce dossier",
     "clearDescription": "Identique à /new ; les fichiers restent dans ce dossier",
     "cleared": "Contexte du chat effacé. Les fichiers restent dans le même dossier."
+  },
+  "researchControls": {
+    "mode": { "aria": "Mode d’exécution", "general": "Recherche générale", "sandbox": "Recherche en bac à sable", "verified": "Workflows vérifiés" },
+    "agent": { "aria": "Agent de recherche", "empty": "Aucun agent disponible", "primaryGroup": "Agents principaux", "subagentGroup": "Sous-agents", "otherGroup": "Autres agents" },
+    "model": { "aria": "Modèle", "empty": "Aucun modèle disponible" },
+    "skills": { "aria": "Ouvrir les compétences de recherche", "title": "Voir les compétences signalées par OpenCode", "count": "{{count}} compétences" }
+  },
+  "workspaceArtifacts": {
+    "heading": "Artefacts de l’espace", "count": "{{count}} détectés", "refreshAria": "Actualiser les artefacts de l’espace",
+    "sandboxTitle": "La recherche en bac à sable n’est pas encore configurée.", "sandboxBody": "Choisissez Recherche générale pour OpenCode ou Workflows vérifiés pour un processus structuré."
   },
   "starters": {
     "newSession": "Nouvelle session",

@@ -1,47 +1,41 @@
 # Spark Agent Desktop — Technical Design
 
-> **Implementation status (internal MVP, 2026-07-14).** The Tauri/React desktop,
-> isolated OpenCode agent shell, science-core (FastAPI/SQLite/PaperQA), and
-> no-network Jupyter science-runtime are implemented. science-core is now the
-> canonical control plane for persisted Workflow, Plan, Task, Approval, Job,
-> Review, Answer/Claim/Evidence, Run, Artifact, and Event state. A leased worker
-> executes a typed literature-synthesis plan and recovers expired work after
-> restart. Local deterministic generation is the default; an optional remote model
-> may propose only schema-bounded plan parameters and exact extractive claims after
-> two explicit disclosure approvals. Content-bound source descriptors, immutable
-> plan/approval envelopes, endpoint/model binding, frozen reviewed-result hashes,
-> workflow revisions, Bearer authentication, and a deterministic Reviewer fail
-> closed. The Research UI exposes plan approval,
-> progress, results, evidence, review, and activity. Activity currently uses cursor
-> polling rather than SSE. Later sections retain historical target design where
-> useful; `README.md`, `PROGRESS.md`, and the current code are authoritative.
+> **Implementation status (Foundation, 2026-07-16).** The Tauri/React desktop
+> provides two coordinated but independent product surfaces. OpenCode is the
+> canonical runtime for default General Research sessions, turns, agents, skills,
+> tools, providers, permissions, MCP, and sub-agents. `science-core` is canonical
+> only for optional Structured / Verified Workflows and their strict persisted
+> state. General Research does not depend on Docker or the Python services.
 
-Current workflow control path:
+Current control paths:
 
 ```text
-Research UI
-  → @spark/research-sdk (Bearer + typed snapshots)
-  → science-core Workflow API
-  → SQLite state machine + durable leased jobs + ordered events
-  → local template (default) or explicitly approved schema-bound remote planner
-  → inspect hash-bound local PDFs → extract evidence → atomic extractive claims
-  → deterministic Reviewer + frozen result snapshot → completed or blocked
+General Research (default)
+  Desktop → @ai4s/sdk OpenCodeClient → app-private bundled OpenCode
+          → session → selected agent/model → skills/tools/sub-agents
+          → workspace files and executable research artifacts
+
+Structured / Verified Workflows (optional)
+  Desktop → @spark/research-sdk → science-core Workflow API
+          → SQLite state machine + leased jobs + approvals
+          → hash-bound evidence / deterministic compiler
+          → isolated science-runtime + Reviewer + frozen result
 ```
 
 The internal launcher binds science-core to a dynamically allocated loopback port,
 generates an ephemeral credential, migrates/backs up the database with Alembic, and
-passes connection details to the UI. Optional model credentials are stored in macOS
+passes connection details to the Verified UI. Optional model credentials are stored in macOS
 Keychain and mounted into science-core as a runtime-only Compose secret, never as a
-container environment variable. OpenCode, PaperQA, MCP, STORM, and future
-OpenHands/MLX adapters remain replaceable capabilities; none is a second workflow
-fact source.
+container environment variable. This state is never duplicated for an ordinary
+OpenCode session; the two control planes are presented together without requiring
+cross-control-plane consistency.
 
 ## 1. Technical goals
 
-A high-performance, open-source research workbench with macOS / Windows installers.
-Design priorities: fast startup; smooth UI; simple install; replaceable agent runtime;
-local and sandboxed execution; MCP / skills / workflow support; artifact provenance;
-extensibility to Jupyter, HPC, Modal, Docker, and remote servers.
+A high-performance, open-source, local-first AI workbench for scientific research
+with macOS / Windows installers. Design priorities: open-ended research through
+one agent runtime; local and sandboxed execution; pluggable models, MCP, skills,
+agents, and workflows; artifact discovery; optional verification; and extensibility.
 
 ## 2. Overall architecture
 
@@ -50,13 +44,14 @@ Spark Agent Desktop
 ├── Desktop Shell: Tauri 2
 ├── Frontend: React + TypeScript + Vite
 ├── UI System: Tailwind CSS + Radix UI / shadcn-style components
-├── Local Service: Rust commands + bundled OpenCode sidecar
-├── Agent Runtime: OpenCode (bundled single-binary sidecar)
-├── Agent Protocol: OpenCode HTTP + SSE API (opencode serve)
-├── Skills Layer: OpenCode skills/agents + optional third-party scientific skills
-├── MCP Layer: filesystem / paper-search / BioMCP / Zotero / GitHub / custom
-├── Execution Layer: OpenCode agents/tools + optional Jupyter Kernel Gateway
-├── Storage: Local workspace + SQLite + JSONL provenance
+├── General Research (default)
+│   ├── packages/sdk OpenCodeClient → bundled OpenCode HTTP + SSE
+│   ├── OpenCode-owned sessions, agents, skills, tools, MCP, and providers
+│   └── Local workspace files and runtime-discovered artifacts
+├── Sandbox Research (optional constrained backend)
+├── Structured / Verified Workflows (optional)
+│   └── @spark/research-sdk → science-core → science-runtime / Reviewer
+├── Storage: OpenCode app data + workspace + Verified SQLite/JSONL
 └── Packaging: Tauri DMG / APP / NSIS / MSI
 ```
 
@@ -115,8 +110,9 @@ binary**, which makes it ideal to bundle as a desktop sidecar — no Python/Node
 to package. It supports MCP, skills, and agents, is model-agnostic (BYOK), and serves as
 an open-source coding/agent runtime in the spirit of Claude Code.
 
-OpenCode exposes an HTTP + SSE server (`opencode serve`) that a GUI can drive directly —
-sessions, prompts, streaming assistant/tool output, skills, and agents.
+OpenCode exposes an HTTP + SSE server (`opencode serve`) for sessions, prompts,
+streaming output, skills, agents, commands, providers, permissions, MCP, and
+sub-agent activity. Spark extends this boundary instead of adding another runtime.
 
 ### 5.2 Desktop ↔ OpenCode communication
 
@@ -127,9 +123,11 @@ The app talks to OpenCode over its HTTP + SSE API, wrapped by `packages/sdk`
 | --- | --- |
 | `POST /session` · `GET /session` | Create / list sessions (conversation history) |
 | `GET /session/:id/message` | Load a session's history |
-| `POST /session/:id/prompt_async` | Send a prompt |
+| `POST /session/:id/prompt_async` | Send a prompt with selected agent/model |
 | `GET /event` (SSE) | Stream `message.part.updated` (text/tool), `session.idle`, `session.error` |
-| `GET /api/skill` · `GET /agent` | Real loaded skills / agents |
+| `GET /skill` · `GET /agent` | Real loaded skills / agents |
+| `GET /command` | Runtime slash commands |
+| provider/config APIs | Real providers, models, and defaults |
 
 Flow:
 
@@ -156,38 +154,53 @@ git-ignored and fetched by `scripts/dev/fetch-opencode.sh`). The Rust side
 - with an **app-private** config/data dir via `XDG_CONFIG_HOME`/`XDG_DATA_HOME` under
   `~/Library/Application Support/io.github.shawliu998.sparkagent/runtime/` (macOS) — so the user's
   sessions/config are never touched;
-- but it **shares the user's login**: the user's `auth.json` (OpenCode credentials / free
-  access) is copied read-only into the sandbox at startup, so the bundled runtime can
-  reply out of the box without a separate login. We only read the user's auth file; we
-  never modify it or their sessions.
+- it can **explicitly import the user's login** from Settings: Spark parses the
+  selected `auth.json` in memory, stores simple provider API keys in the OS
+  credential manager, writes only environment references for those keys, and
+  copies only sanitized non-API records into its owner-only auth file. Unsupported
+  API records with metadata fail closed. The source file and user sessions remain
+  untouched, and no import occurs silently at startup.
 - killed on app exit.
 
-The user's model provider key (entered in Settings) is written into that app-private
-`opencode.json` by the `configure_opencode` Rust command, and the sidecar is restarted
-to pick it up. Keys never enter the user's global OpenCode config, logs, or git.
+The runtime manager idempotently deploys Spark agents and skills into the
+app-private profile and merges Spark defaults without replacing existing provider
+or user fields. Settings sends simple API keys through native Rust commands that
+store them in the OS credential manager and persist only an environment reference;
+OpenCode owns OAuth login, after which Spark finalizes any simple API record. The
+legacy `configure_opencode` bridge uses the same native custody path. Neither path
+touches the user's global OpenCode config. OAuth records remain in an owner-only
+app-private auth file. Provider keys are injected into the sidecar environment,
+so this design currently protects storage at rest but does not isolate a key from
+an explicitly approved local tool running inside that process tree.
 
 ## 6. Skills & MCP
 
 ### 6.1 Skill layering
 
 ```text
-skills/
-  core/      # reproducible-research, literature-review, figure-provenance,
-             # citation-reviewer, paper-to-report
-  external/  # K-Dense scientific-agent-skills
-  user/      # custom skills
+runtime/skills/
+  core/       # Spark-authored helpers and Foundation scientific skills
+
+app-private OpenCode profile
+  agents/     # Spark roster in pinned OpenCode markdown format
+  skills/     # idempotently deployed bundles
+
+project workspace
+  .opencode/{agent,agents,skill,skills}/ # project extensions
 ```
 
 ### 6.2 v1 built-in skills
 
 | Skill | Purpose |
 | --- | --- |
-| `reproducible-research` | Standardize project structure, artifacts, logs, reproducibility |
-| `literature-review` | Search, filter, summarize literature |
-| `bibliometric-analysis` | Year trends, keywords, journal distribution, clustering |
-| `figure-provenance` | Figures must trace to code and data |
-| `citation-reviewer` | Check citation format and sources |
-| `paper-to-report` | Generate a Markdown report |
+| `literature-review` | Search, screen, synthesize, and report literature |
+| `citation-management` | Verify and manage traceable citations |
+| `hypothesis-generation` | Form testable hypotheses from gaps and observations |
+| `scientific-critical-thinking` | Challenge assumptions, bias, leakage, and claims |
+| `exploratory-data-analysis` | Profile and visualize data before inference |
+| `statistical-analysis` | Select, check, execute, and report statistical methods |
+| `scientific-writing` | Write evidence-calibrated scientific outputs |
+| `matplotlib` | Produce reproducible publication figures |
 
 ### 6.3 Third-party skills
 
@@ -218,7 +231,7 @@ OpenCode executes its tools locally within the bundled runtime, gated by its per
 system. Heavier/remote execution (Docker sandbox, SSH, Modal) is optional and belongs in
 an advanced "Remote Compute" area, never the default path.
 
-**v1 default:** local execution + manual approval for high-risk actions. Do not
+**Default:** local execution + Spark's OpenCode manual-approval profile. Do not
 hard-depend on Docker Desktop or WSL in v1 — that raises the install barrier and is not
 consumer-grade.
 
@@ -249,12 +262,17 @@ the OpenCode server; start an optional Jupyter Gateway; monitor runtime health.
 ### 8.3 Runtime directory
 
 ```text
-~/.ai4s-workbench/
-  config/  runtime/{opencode,python,node}/  profiles/ai4s-workbench/
-  workspaces/  logs/  cache/  secrets/
+macOS app data:
+  ~/Library/Application Support/io.github.shawliu998.sparkagent/runtime/
+    xdg-config/  xdg-data/  xdg-cache/  xdg-state/
+
+default research workspaces:
+  ~/Documents/SparkAgent/<dated-session>/
 ```
 
-Windows: `%APPDATA%/Spark Agent/` · macOS: `~/Library/Application Support/Spark Agent/`
+Tauri resolves the corresponding per-user app-data directory on Windows. The
+workspace base is user-selectable; the active workspace path is persisted under
+the app-private runtime root.
 
 ## 9. Storage
 
@@ -317,7 +335,7 @@ export, and open-source friendly.
 }
 ```
 
-### 10.3 Reviewer rules (v2, deterministic evidence integrity)
+### 10.3 Verified Reviewer rules (v2, deterministic evidence integrity)
 
 For literature workflows, every claim must belong to the workflow answer, retain an
 exact sentence from a verified project-owned passage, and have a valid supporting
@@ -335,47 +353,57 @@ data/code relationships, reproducibility metadata, containment, and content hash
 
 ### 11.1 Default permissions
 
-The agent may only access the current workspace; command execution requires approval;
-it cannot delete files outside the workspace; it cannot read the whole Home directory;
-it cannot auto-upload files; it cannot silently install dependencies.
+General Research uses a Spark-managed OpenCode profile. Ordinary reads inside the
+workspace are allowed, while every workspace write/edit, Shell command, web
+fetch/search, MCP action, and patch operation asks. Unknown concrete tool IDs
+default to ask, and file-tool access outside the workspace is denied. The Composer
+does not offer Full Access or persistent permission grants. Manual approval is not
+an OS sandbox; Verified Workflows retain their stricter approvals.
 
 ### 11.2 Approval levels
 
 | Action | Default |
 | --- | --- |
 | Read current project files | Allow |
-| Write current project files | Allow (shown) |
-| Overwrite file | Ask |
-| Delete file | Require approval |
-| Shell command | Require approval |
-| Install dependency | Require approval |
-| Network access | First-time approval |
-| Connect remote server | Require approval |
-| Access files outside workspace | Require approval |
+| Workspace write/overwrite/patch (including possible deletion) | Ask |
+| Any Shell command | Ask |
+| Web fetch/search or MCP action | Ask |
+| File-tool access outside workspace | Deny |
 
-OpenCode has a per-tool permission system (allow / ask / deny per agent). The desktop
-maps high-risk actions to "ask" and must never blanket-allow them.
+OpenCode has a per-tool permission system (allow / ask / deny per agent). The
+desktop exposes only the safe manual profile and can remediate an old Full/custom
+configuration without fabricating a second permission protocol. Verified
+approvals remain separate domain objects.
 
 ### 11.3 API keys
 
-Stored in macOS Keychain / Windows Credential Manager (fallback: encrypted local
-secrets). Never enter provenance, logs, crash reports, git, or exported projects.
-The internal macOS launcher reads the model key only for the Compose secret handoff;
-science-core reads a bounded secret file. Public and LAN model endpoints require
-HTTPS, while plain HTTP is limited to literal loopback destinations.
+Verified-workflow gateway credentials are stored in macOS Keychain and handed to
+science-core through a bounded Compose secret. For General Research, simple
+provider API keys are migrated to the OS credential manager; OpenCode config holds
+only an environment reference and the sidecar receives the key at launch. This is
+at-rest protection, not process isolation: an approved Shell or local MCP process
+can inherit the sidecar environment. Structured provider API records fail closed
+instead of losing metadata. OAuth records, scientific-connector keys, and the
+persistent Jupyter token still use owner-only app-private files and remain open
+custody work. Spark does not intentionally write secrets to workspace provenance,
+git, crash reports, or exports, but execution-time redaction is not yet a hard
+boundary. Public and LAN model endpoints require HTTPS, while plain HTTP is
+limited to literal loopback destinations.
 
 ## 12. Packaging & release
 
 ### 12.1 macOS
 
-Outputs: `AI4S-Workbench-aarch64.dmg`, `AI4S-Workbench-x64.dmg`,
-`AI4S-Workbench-universal.dmg` (later). Code signing / notarization needs an Apple
+Outputs use the Tauri product name, for example `Spark Agent_<version>_aarch64.dmg`
+and `Spark Agent_<version>_x64.dmg`; a universal build can be added later. Code
+signing / notarization needs an Apple
 Developer account; a free account cannot notarize, so users may still see an
 "unverified" prompt.
 
 ### 12.2 Windows
 
-Outputs: `AI4S-Workbench-Setup.exe`, `AI4S-Workbench.msi` (later). Prefer the NSIS
+Outputs use the Spark Agent product name for NSIS `Setup.exe` and MSI artifacts.
+Prefer the NSIS
 `Setup.exe` in v1 for a familiar install experience. Unsigned apps run but may trigger
 SmartScreen; formal release needs a code-signing certificate (EV certs earn SmartScreen
 reputation faster). Early GitHub Release preview builds may be unsigned, but the README
@@ -414,11 +442,15 @@ User opens app → Tauri starts → Frontend loads → Runtime Manager checks de
 ### 13.2 Agent task
 
 ```text
-User submits task → Frontend sends prompt to OpenCode → OpenCode plans
-→ Frontend renders plan approval card → User approves → OpenCode executes tools
-→ Tool events stream back → Runtime writes artifacts → Provenance service records events
-→ Reviewer runs checks → Frontend updates artifact/review panels
+User submits goal → Frontend sends selected agent/model to OpenCode
+→ Agent scopes and plans → loads skills → uses tools/sub-agents
+→ writes and runs workspace code → inspects results and may revise the method
+→ tool events stream back → bounded artifact scan updates the dock
+→ final synthesis remains in the durable OpenCode session
 ```
+
+Structured / Verified tasks follow the separate
+`@spark/research-sdk → science-core → approval/compiler/runtime/reviewer` path.
 
 ## 14. High-performance design
 
@@ -467,7 +499,7 @@ the cause, a fallback suggestion, a retry button, and an edit-plan button.
 Monorepo:
 
 ```text
-ai4s-workbench/
+spark-agent/
   apps/desktop/{src,src-tauri}/
   packages/{ui,shared,sdk}/
   runtime/{manager,opencode-profile,mcp,skills}/
@@ -527,9 +559,12 @@ defer Docker / Jupyter.
 
 ### 18.4 Agent safety
 
-Risk: the agent runs commands, reads/writes files, accesses the network. Mitigation:
-manual approval by default; workspace allowlist; isolated local secrets; dangerous-
-command dialogs; optional Docker sandbox; full provenance recording.
+Risk: the agent runs commands, reads/writes files, and accesses the network.
+Mitigation: every General Shell/web/MCP/patch operation asks, outside-workspace
+file-tool access is denied, Full Access is not selectable, and the product clearly
+states that manual approval is not an OS sandbox.
+Use the optional sandbox or Verified runtime when a hard isolation boundary is
+required; record best-effort provenance without treating it as containment.
 
 ## 19. Final stack
 

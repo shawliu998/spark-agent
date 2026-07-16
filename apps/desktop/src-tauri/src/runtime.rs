@@ -16,6 +16,7 @@ use crate::opencode_config::merge_config;
 const SIDECAR_START_TIMEOUT: Duration = Duration::from_secs(300);
 const SIDECAR_PROBE_INTERVAL: Duration = Duration::from_millis(75);
 const SIDECAR_HTTP_TIMEOUT: Duration = Duration::from_millis(250);
+const SIDECAR_POLICY_TIMEOUT: Duration = Duration::from_secs(15);
 const SIDECAR_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const SIDECAR_PORT_ATTEMPTS: usize = 3;
 const EXPECTED_OPENCODE_VERSION: &str = "1.17.13";
@@ -76,6 +77,19 @@ struct TerminationFailure<T> {
 struct SpawnAttemptError {
     message: String,
     retryable_early_exit: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ResolvedPermissionRule {
+    permission: String,
+    pattern: String,
+    action: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ResolvedAgent {
+    name: String,
+    permission: Vec<ResolvedPermissionRule>,
 }
 
 #[derive(serde::Serialize)]
@@ -258,20 +272,484 @@ fn opencode_config_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(xdg_config_home(app)?.join("opencode").join("opencode.json"))
 }
 
+/// OpenCode's app-private auth database. OAuth records remain OpenCode-owned;
+/// legacy `type: api` entries are migrated to the system credential manager
+/// before the sidecar starts.
+fn opencode_auth_file(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(runtime_root(app)?
+        .join("xdg-data")
+        .join("opencode")
+        .join("auth.json"))
+}
+
 /// The config file to edit in place: the server may have rewritten the config
 /// as opencode.jsonc — prefer whichever exists, fall back to opencode.json.
 fn effective_config_file(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = xdg_config_home(app)?.join("opencode");
+    let fallback = opencode_config_file(app)?;
     Ok(["opencode.jsonc", "opencode.json"]
         .iter()
         .map(|n| dir.join(n))
         .find(|p| p.exists())
-        .unwrap_or_else(|| dir.join("opencode.json")))
+        .unwrap_or(fallback))
+}
+
+/// Effective config first, followed by any other legacy/current filename that
+/// exists. Credential scrubbing covers both conservatively because OpenCode
+/// installations can retain `opencode.json` beside a newer `opencode.jsonc`.
+fn opencode_config_files(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let effective = effective_config_file(app)?;
+    let dir = xdg_config_home(app)?.join("opencode");
+    let mut paths = vec![effective.clone()];
+    for name in ["opencode.jsonc", "opencode.json"] {
+        let path = dir.join(name);
+        if path != effective && path.exists() {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+/// Read an optional config file without confusing a real I/O failure with a
+/// first-run missing file. Callers may safely seed defaults only for NotFound.
+fn read_optional_config(path: &Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+    }
+}
+
+const MANAGED_PROFILE_REGISTRY_VERSION: u32 = 2;
+const MANAGED_PROFILE_REGISTRY_FILE: &str = ".spark-agent-managed.json";
+
+/// Fingerprints in this app-private registry are the ownership proof required
+/// before Spark may replace or remove a global agent or skill. A same-name
+/// entry with different content is user-owned and always wins.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedProfileRegistry {
+    version: u32,
+    #[serde(default)]
+    agents: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    skills: std::collections::BTreeMap<String, String>,
+    /// True only when no fingerprint registry existed (including a validated
+    /// legacy v1 file). Never serialized: once v2 is written, unregistered
+    /// collisions remain user-owned even when they happen to match a bundle.
+    #[serde(skip)]
+    allow_exact_adoption: bool,
+}
+
+impl Default for ManagedProfileRegistry {
+    fn default() -> Self {
+        Self {
+            version: MANAGED_PROFILE_REGISTRY_VERSION,
+            agents: std::collections::BTreeMap::new(),
+            skills: std::collections::BTreeMap::new(),
+            allow_exact_adoption: true,
+        }
+    }
+}
+
+/// Version 1 tracked names only. It cannot prove that the current object was
+/// not edited after deployment, so loading it intentionally drops ownership.
+/// A byte-identical bundled target can then be safely re-adopted by the normal
+/// unregistered-target path; anything else remains user-owned.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyManagedProfileRegistry {
+    version: u32,
+    #[serde(default)]
+    agents: std::collections::BTreeSet<String>,
+    #[serde(default)]
+    skills: std::collections::BTreeSet<String>,
+}
+
+fn managed_profile_registry_file(profile_root: &Path) -> PathBuf {
+    profile_root.join(MANAGED_PROFILE_REGISTRY_FILE)
+}
+
+fn valid_profile_component(name: &str, suffix: Option<&str>) -> bool {
+    if name.is_empty()
+        || name.starts_with('.')
+        || suffix.is_some_and(|suffix| !name.ends_with(suffix))
+    {
+        return false;
+    }
+    let mut components = Path::new(name).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn valid_content_fingerprint(fingerprint: &str) -> bool {
+    fingerprint.strip_prefix("sha256:").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+fn validate_legacy_registry(registry: &LegacyManagedProfileRegistry) -> Result<(), String> {
+    if let Some(name) = registry
+        .agents
+        .iter()
+        .find(|name| !valid_profile_component(name, Some(".md")))
+    {
+        return Err(format!("unsafe managed agent name in registry: {name}"));
+    }
+    if let Some(name) = registry
+        .skills
+        .iter()
+        .find(|name| !valid_profile_component(name, None))
+    {
+        return Err(format!("unsafe managed skill name in registry: {name}"));
+    }
+    Ok(())
+}
+
+fn load_managed_profile_registry(profile_root: &Path) -> Result<ManagedProfileRegistry, String> {
+    let path = managed_profile_registry_file(profile_root);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ManagedProfileRegistry::default())
+        }
+        Err(error) => return Err(format!("failed to read {}: {error}", path.display())),
+    };
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| format!("invalid Spark managed-profile registry: {error}"))?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| "invalid Spark managed-profile registry version".to_string())?;
+    if version == 1 {
+        let legacy: LegacyManagedProfileRegistry = serde_json::from_value(value)
+            .map_err(|error| format!("invalid legacy Spark managed-profile registry: {error}"))?;
+        validate_legacy_registry(&legacy)?;
+        debug_assert_eq!(legacy.version, 1);
+        return Ok(ManagedProfileRegistry::default());
+    }
+    if version != u64::from(MANAGED_PROFILE_REGISTRY_VERSION) {
+        return Err(format!(
+            "unsupported Spark managed-profile registry version {version}"
+        ));
+    }
+    let registry: ManagedProfileRegistry = serde_json::from_value(value)
+        .map_err(|error| format!("invalid Spark managed-profile registry: {error}"))?;
+    if let Some(name) = registry
+        .agents
+        .keys()
+        .find(|name| !valid_profile_component(name, Some(".md")))
+    {
+        return Err(format!("unsafe managed agent name in registry: {name}"));
+    }
+    if let Some(name) = registry
+        .skills
+        .keys()
+        .find(|name| !valid_profile_component(name, None))
+    {
+        return Err(format!("unsafe managed skill name in registry: {name}"));
+    }
+    if let Some(fingerprint) = registry
+        .agents
+        .values()
+        .chain(registry.skills.values())
+        .find(|fingerprint| !valid_content_fingerprint(fingerprint))
+    {
+        return Err(format!(
+            "invalid managed-profile content fingerprint: {fingerprint}"
+        ));
+    }
+    Ok(registry)
+}
+
+fn write_managed_profile_registry(
+    profile_root: &Path,
+    registry: &ManagedProfileRegistry,
+) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(registry).map_err(|error| error.to_string())?;
+    write_private_atomic(
+        &managed_profile_registry_file(profile_root),
+        text.as_bytes(),
+    )
+}
+
+fn fingerprint_record(hasher: &mut sha2::Sha256, kind: &[u8], name: &[u8], contents: &[u8]) {
+    use sha2::Digest;
+    hasher.update((kind.len() as u64).to_be_bytes());
+    hasher.update(kind);
+    hasher.update((name.len() as u64).to_be_bytes());
+    hasher.update(name);
+    hasher.update((contents.len() as u64).to_be_bytes());
+    hasher.update(contents);
+}
+
+fn finish_content_fingerprint(hasher: sha2::Sha256) -> String {
+    use sha2::Digest;
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn fingerprint_agent_file(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("agent is a link or special file: {}", path.display()),
+        ));
+    }
+    let contents = std::fs::read(path)?;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"spark-agent-managed-agent-v1\0");
+    fingerprint_record(&mut hasher, b"file", b"", &contents);
+    Ok(finish_content_fingerprint(hasher))
+}
+
+fn fingerprint_skill_dir(path: &Path) -> std::io::Result<String> {
+    use sha2::Digest;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("skill is a link or special file: {}", path.display()),
+        ));
+    }
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"spark-agent-managed-skill-v1\0");
+    fingerprint_skill_entries(path, "", &mut hasher)?;
+    Ok(finish_content_fingerprint(hasher))
+}
+
+fn fingerprint_skill_entries(
+    path: &Path,
+    relative: &str,
+    hasher: &mut sha2::Sha256,
+) -> std::io::Result<()> {
+    let mut entries = std::fs::read_dir(path)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let file_type = entry.file_type()?;
+        if is_python_cache_entry(&entry.path(), file_type.is_dir()) {
+            continue;
+        }
+        let name = entry.file_name().into_string().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("skill path is not UTF-8: {}", entry.path().display()),
+            )
+        })?;
+        let entry_relative = if relative.is_empty() {
+            name
+        } else {
+            format!("{relative}/{name}")
+        };
+        if file_type.is_dir() {
+            fingerprint_record(hasher, b"dir", entry_relative.as_bytes(), b"");
+            fingerprint_skill_entries(&entry.path(), &entry_relative, hasher)?;
+        } else if file_type.is_file() {
+            let contents = std::fs::read(entry.path())?;
+            fingerprint_record(hasher, b"file", entry_relative.as_bytes(), &contents);
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "skill contains a link or special resource: {}",
+                    entry.path().display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_yaml_scalar(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.starts_with('"') {
+        return serde_json::from_str::<String>(raw).ok();
+    }
+    if let Some(inner) = raw
+        .strip_prefix('\'')
+        .and_then(|value| value.strip_suffix('\''))
+    {
+        return Some(inner.replace("''", "'"));
+    }
+    let raw = raw
+        .find(" #")
+        .map_or(raw, |comment_start| &raw[..comment_start])
+        .trim();
+    (!raw.is_empty()
+        && !matches!(
+            raw.as_bytes().first(),
+            Some(b'[' | b'{' | b'&' | b'*' | b'!' | b'|' | b'>')
+        ))
+    .then(|| raw.to_string())
+}
+
+fn valid_skill_manifest_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
+}
+
+/// Return a valid Agent Skills frontmatter name. Invalid manifests are ignored
+/// exactly like non-skill Markdown; links and special manifests are rejected so
+/// collision discovery never traverses an untrusted target.
+fn skill_manifest_name(path: &Path) -> std::io::Result<Option<String>> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "skill manifest is a link or special file: {}",
+                path.display()
+            ),
+        ));
+    }
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return Ok(None);
+    }
+    let mut name = None;
+    let mut has_description = false;
+    let mut closed = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            closed = true;
+            break;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') || line.starts_with([' ', '\t']) {
+            continue;
+        }
+        let Some((key, raw)) = line.split_once(':') else {
+            continue;
+        };
+        match key.trim() {
+            "name" => {
+                if name.is_some() {
+                    return Ok(None);
+                }
+                name = parse_yaml_scalar(raw);
+            }
+            "description" => has_description = !raw.trim().is_empty(),
+            _ => {}
+        }
+    }
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    Ok((closed && has_description && valid_skill_manifest_name(&name)).then_some(name))
+}
+
+fn discover_skill_names_in_root(
+    root: &Path,
+    excluded_roots: &std::collections::BTreeSet<PathBuf>,
+    ignored_manifest_parent: Option<&Path>,
+    names: &mut std::collections::BTreeSet<String>,
+) -> std::io::Result<()> {
+    if excluded_roots.contains(root) {
+        return Ok(());
+    }
+    let metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "skill search root is a link or special file: {}",
+                root.display()
+            ),
+        ));
+    }
+    let mut entries = std::fs::read_dir(root)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        if excluded_roots.contains(&path) {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            discover_skill_names_in_root(&path, excluded_roots, ignored_manifest_parent, names)?;
+        } else if file_type.is_file() {
+            if entry.file_name() == std::ffi::OsStr::new("SKILL.md") {
+                if let Some(name) = skill_manifest_name(&path)? {
+                    let is_direct_destination = path.parent().and_then(Path::parent)
+                        == ignored_manifest_parent
+                        && path
+                            .parent()
+                            .and_then(Path::file_name)
+                            .and_then(std::ffi::OsStr::to_str)
+                            == Some(name.as_str());
+                    if !is_direct_destination {
+                        names.insert(name);
+                    }
+                }
+            }
+        } else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "skill search path contains a link or special file: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Discover user/project skill names that must take precedence over bundled
+/// global definitions. Only a still-byte-identical managed destination is
+/// excluded; modified former targets participate as user-owned definitions.
+fn discover_user_skill_names(
+    workspace: &Path,
+    profile_root: &Path,
+    managed: &std::collections::BTreeMap<String, String>,
+) -> std::io::Result<std::collections::BTreeSet<String>> {
+    let global_skills = profile_root.join("skills");
+    let mut excluded = std::collections::BTreeSet::new();
+    for (name, recorded_fingerprint) in managed {
+        let target = global_skills.join(name);
+        if fingerprint_skill_dir(&target).ok().as_ref() == Some(recorded_fingerprint) {
+            excluded.insert(target);
+        }
+    }
+
+    let mut names = std::collections::BTreeSet::new();
+    for root in [
+        workspace.join(".opencode").join("skill"),
+        workspace.join(".opencode").join("skills"),
+        profile_root.join("skill"),
+    ] {
+        discover_skill_names_in_root(&root, &excluded, None, &mut names)?;
+    }
+    // A direct `<global>/skills/<name>/SKILL.md` is the deployment target
+    // itself: sync_managed_skill_pack handles that collision atomically. Still
+    // inspect nested manifests inside an unregistered directory, since those
+    // are separate user-global definitions OpenCode also discovers.
+    discover_skill_names_in_root(&global_skills, &excluded, Some(&global_skills), &mut names)?;
+    Ok(names)
 }
 
 /// The user's existing OpenCode auth file (their login / free credits), if any.
-/// Read-only: we copy it into our sandbox so the bundled runtime can use the same
-/// login, but we never modify the user's file or sessions.
+/// Explicit import sanitizes API keys into the system credential manager and
+/// copies only OAuth/non-API state; the user's source file is never modified.
 fn user_auth_source() -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
@@ -288,9 +766,9 @@ fn user_auth_source() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
-/// Copy the user's OpenCode CLI login into the app-private data dir, EXPLICITLY
-/// (from the Settings page) — never silently. Reports whether credentials were
-/// found plus the authoritative post-restart URL.
+/// Explicitly import the user's OpenCode CLI login from Settings. API keys are
+/// parsed in memory and moved directly to the system credential manager; the
+/// app-private auth file receives only sanitized OAuth/non-API records.
 #[tauri::command(async)]
 pub fn import_opencode_login(
     app: AppHandle,
@@ -303,12 +781,16 @@ pub fn import_opencode_login(
         });
     };
     let (imported, runtime_url) = with_config_transaction(&app, &state, || {
-        let dst = runtime_root(&app)?
-            .join("xdg-data")
-            .join("opencode")
-            .join("auth.json");
-        let contents = std::fs::read(&src).map_err(|e| format!("copy failed: {e}"))?;
-        write_private_atomic(&dst, &contents)?;
+        let dst = opencode_auth_file(&app)?;
+        let contents = std::fs::read_to_string(&src)
+            .map_err(|e| format!("could not read the OpenCode login for import: {e}"))?;
+        crate::credential::import_auth_secure(
+            &crate::credential::SystemCredentialStore,
+            &opencode_config_files(&app)?,
+            &dst,
+            &contents,
+            &write_private_atomic,
+        )?;
         Ok(true)
     })?;
     Ok(ImportOpenCodeLoginResult {
@@ -323,11 +805,20 @@ pub fn import_opencode_login(
 /// pack and `skills-core/` contains the product-owned core skills. The
 /// workspace's own `.opencode/skills/` stays reserved for skills the user
 /// installs. Runs before every sidecar start so app upgrades refresh the packs.
-fn deploy_bundled_skills(app: &AppHandle) -> Result<(), String> {
-    let dst = xdg_config_home(app)?.join("opencode").join("skills");
-    let mut bundled: std::collections::HashSet<std::ffi::OsString> =
-        std::collections::HashSet::new();
+fn deploy_bundled_skills(
+    app: &AppHandle,
+    profile_root: &Path,
+    registry: &mut ManagedProfileRegistry,
+) -> Result<(), String> {
+    let dst = profile_root.join("skills");
+    let previous = registry.skills.clone();
+    let user_skill_names = discover_user_skill_names(&workspace_dir(app)?, profile_root, &previous)
+        .map_err(|error| format!("failed to inspect user/project skills: {error}"))?;
+    let mut ownership = previous.clone();
+    let mut managed = std::collections::BTreeMap::new();
+    let mut bundled = std::collections::BTreeSet::new();
     let mut all_resources_available = true;
+    let allow_exact_adoption = registry.allow_exact_adoption;
     for resource in ["skills", "skills-core"] {
         let src = match app
             .path()
@@ -353,22 +844,29 @@ fn deploy_bundled_skills(app: &AppHandle) -> Result<(), String> {
                 ));
             }
         };
-        let names = sync_skill_pack(&src, &dst)
-            .map_err(|error| format!("failed to deploy bundled skills ({resource}): {error}"))?;
+        let (names, installed) = sync_managed_skill_pack(
+            &src,
+            &dst,
+            &mut ownership,
+            allow_exact_adoption,
+            &user_skill_names,
+        )
+        .map_err(|error| format!("failed to deploy bundled skills ({resource}): {error}"))?;
         all_resources_available &=
             register_skill_pack_names(resource, names, cfg!(debug_assertions), &mut bundled)?;
+        managed.extend(installed);
     }
-    // The global skills dir is exclusively app-managed (the user's own skills
-    // live in the workspace's `.opencode/skills/`), so any skill dir not in the
-    // freshly-bundled set is a stale leftover — e.g. one renamed across an app
-    // upgrade (`hpc-slurm` → `remote-compute`) — and must be removed so the
-    // obsolete duplicate can't shadow or confuse the agent. Prune ONLY when all
-    // packs deployed cleanly: a partial deploy would make `bundled`
-    // incomplete and wrongly delete valid skills.
+    // Prune only names recorded as Spark-managed by a prior successful deploy.
+    // Unknown global skills (including a same-name collision on first install)
+    // are user-owned and must remain untouched. With an incomplete debug pack,
+    // retain the old registry and defer stale cleanup to a complete deployment.
     if all_resources_available {
-        prune_stale_skills(&dst, &bundled)
+        prune_stale_skills(&dst, &previous, &managed)
             .map_err(|error| format!("failed to prune stale bundled skills: {error}"))?;
+    } else {
+        managed.extend(ownership);
     }
+    registry.skills = managed;
     Ok(())
 }
 
@@ -378,9 +876,9 @@ fn deploy_bundled_skills(app: &AppHandle) -> Result<(), String> {
 /// external or core pack.
 fn register_skill_pack_names(
     resource: &str,
-    names: Vec<std::ffi::OsString>,
+    names: Vec<String>,
     allow_incomplete: bool,
-    bundled: &mut std::collections::HashSet<std::ffi::OsString>,
+    bundled: &mut std::collections::BTreeSet<String>,
 ) -> Result<bool, String> {
     if names.is_empty() {
         if allow_incomplete {
@@ -394,48 +892,314 @@ fn register_skill_pack_names(
     Ok(true)
 }
 
-/// Remove every visible SKILL.md-bearing directory in `dst` whose name is not
-/// in `bundled` (the set just deployed), plus exact app-owned recovery artifacts
-/// for skills that are no longer bundled. Other hidden and non-skill directories
-/// remain untouched.
+/// Remove only stale names from the last successful Spark registry, plus their
+/// exact app-owned recovery artifacts. Unregistered global skills are user data.
 fn prune_stale_skills(
     dst: &Path,
-    bundled: &std::collections::HashSet<std::ffi::OsString>,
+    previous: &std::collections::BTreeMap<String, String>,
+    current: &std::collections::BTreeMap<String, String>,
 ) -> std::io::Result<()> {
+    let mut removed = std::collections::BTreeSet::new();
+    for (name, recorded_fingerprint) in previous {
+        if current.contains_key(name) {
+            continue;
+        }
+        let target = dst.join(name);
+        let fingerprint = match fingerprint_skill_dir(&target) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            // Modified trees, top-level links, and special files are no longer
+            // ours. Relinquish ownership without touching them.
+            Err(_) => continue,
+        };
+        if fingerprint == *recorded_fingerprint {
+            remove_app_managed_path_without_following(&target)?;
+            removed.insert(name.clone());
+        }
+    }
     for entry in std::fs::read_dir(dst)? {
         let entry = entry?;
         let path = entry.path();
         let entry_name = entry.file_name();
         if let Some((skill_name, _)) = parse_skill_recovery_artifact(&entry_name) {
-            if !bundled.contains(std::ffi::OsStr::new(skill_name)) {
+            if removed.contains(skill_name) {
                 remove_app_managed_path_without_following(&path)?;
             }
-            continue;
-        }
-        if entry_name.to_string_lossy().starts_with('.') || bundled.contains(&entry_name) {
-            continue;
-        }
-        if path_is_skill_dir(&path)? {
-            remove_app_managed_path_without_following(&path)?;
         }
     }
     Ok(())
 }
 
-fn path_is_skill_dir(path: &Path) -> std::io::Result<bool> {
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(error),
+/// Deploy a skill pack without taking ownership of an existing unregistered
+/// same-name directory. The two returned collections are respectively all
+/// valid bundled names (for completeness checks) and names Spark now manages.
+fn sync_managed_skill_pack(
+    src: &Path,
+    dst: &Path,
+    ownership: &mut std::collections::BTreeMap<String, String>,
+    allow_exact_adoption: bool,
+    user_skill_names: &std::collections::BTreeSet<String>,
+) -> std::io::Result<(Vec<String>, std::collections::BTreeMap<String, String>)> {
+    std::fs::create_dir_all(dst)?;
+    let mut bundled = Vec::new();
+    let mut managed = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || !entry.path().join("SKILL.md").is_file() {
+            continue;
+        }
+        let name = entry.file_name().into_string().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "bundled skill name must be UTF-8",
+            )
+        })?;
+        if !valid_profile_component(&name, None) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("unsafe bundled skill name: {name}"),
+            ));
+        }
+        bundled.push(name.clone());
+        if user_skill_names.contains(&name) {
+            ownership.remove(&name);
+            continue;
+        }
+        let bundled_fingerprint = fingerprint_skill_dir(&entry.path())?;
+        let target = dst.join(&name);
+        if path_exists_without_following(&target)? {
+            let target_fingerprint = match fingerprint_skill_dir(&target) {
+                Ok(fingerprint) => fingerprint,
+                Err(_) => {
+                    ownership.remove(&name);
+                    continue;
+                }
+            };
+            match ownership.get(&name) {
+                Some(recorded_fingerprint) if target_fingerprint == *recorded_fingerprint => {
+                    if target_fingerprint != bundled_fingerprint {
+                        replace_skill_dir(&entry.path(), &target)?;
+                    }
+                }
+                Some(_) => {
+                    // A user edited a formerly managed skill. Forget ownership
+                    // immediately and never overwrite the divergent tree.
+                    ownership.remove(&name);
+                    continue;
+                }
+                None if allow_exact_adoption && target_fingerprint == bundled_fingerprint => {
+                    // Exact adoption recovers a first-deploy/registry-write
+                    // crash and upgrades the legacy name-only registry safely.
+                }
+                None => continue,
+            }
+        } else {
+            replace_skill_dir(&entry.path(), &target)?;
+        }
+        let installed_fingerprint = fingerprint_skill_dir(&target)?;
+        if installed_fingerprint != bundled_fingerprint {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("deployed skill fingerprint mismatch: {}", target.display()),
+            ));
+        }
+        ownership.insert(name.clone(), installed_fingerprint.clone());
+        managed.insert(name, installed_fingerprint);
+    }
+    Ok((bundled, managed))
+}
+
+fn sync_managed_agent_pack(
+    src: &Path,
+    dst: &Path,
+    ownership: &mut std::collections::BTreeMap<String, String>,
+    allow_exact_adoption: bool,
+) -> Result<(Vec<String>, std::collections::BTreeMap<String, String>), String> {
+    std::fs::create_dir_all(dst).map_err(|error| error.to_string())?;
+    let mut bundled = Vec::new();
+    let mut managed = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(src).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if entry.path().extension() != Some(std::ffi::OsStr::new("md")) {
+            continue;
+        }
+        if !file_type.is_file() {
+            return Err(format!(
+                "bundled agent is a link or special file: {}",
+                entry.path().display()
+            ));
+        }
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| "bundled agent name must be UTF-8".to_string())?;
+        if !valid_profile_component(&name, Some(".md")) {
+            return Err(format!("unsafe bundled agent name: {name}"));
+        }
+        bundled.push(name.clone());
+        let bundled_fingerprint = fingerprint_agent_file(&entry.path())
+            .map_err(|error| format!("failed to fingerprint bundled agent {name}: {error}"))?;
+        let target = dst.join(&name);
+        if path_exists_without_following(&target).map_err(|error| error.to_string())? {
+            let target_fingerprint = match fingerprint_agent_file(&target) {
+                Ok(fingerprint) => fingerprint,
+                Err(_) => {
+                    ownership.remove(&name);
+                    continue;
+                }
+            };
+            match ownership.get(&name) {
+                Some(recorded_fingerprint) if target_fingerprint == *recorded_fingerprint => {
+                    if target_fingerprint != bundled_fingerprint {
+                        let contents =
+                            std::fs::read(entry.path()).map_err(|error| error.to_string())?;
+                        write_private_atomic(&target, &contents)?;
+                    }
+                }
+                Some(_) => {
+                    ownership.remove(&name);
+                    continue;
+                }
+                None if allow_exact_adoption && target_fingerprint == bundled_fingerprint => {
+                    // Safe exact-content adoption; no write is needed.
+                }
+                None => continue,
+            }
+        } else {
+            let contents = std::fs::read(entry.path()).map_err(|error| error.to_string())?;
+            write_private_atomic(&target, &contents)?;
+        }
+        let installed_fingerprint = fingerprint_agent_file(&target)
+            .map_err(|error| format!("failed to fingerprint deployed agent {name}: {error}"))?;
+        if installed_fingerprint != bundled_fingerprint {
+            return Err(format!(
+                "deployed agent fingerprint mismatch: {}",
+                target.display()
+            ));
+        }
+        ownership.insert(name.clone(), installed_fingerprint.clone());
+        managed.insert(name, installed_fingerprint);
+    }
+    Ok((bundled, managed))
+}
+
+fn deploy_bundled_agents(
+    app: &AppHandle,
+    profile_root: &Path,
+    registry: &mut ManagedProfileRegistry,
+) -> Result<(), String> {
+    let resource = "opencode-profile/agents";
+    let src = match app
+        .path()
+        .resolve(resource, tauri::path::BaseDirectory::Resource)
+    {
+        Ok(path) if path.is_dir() => path,
+        _ if cfg!(debug_assertions) => return Ok(()),
+        Ok(path) => {
+            return Err(format!(
+                "bundled agent resource is not a directory: {}",
+                path.display()
+            ))
+        }
+        Err(error) => return Err(format!("failed to resolve bundled agents: {error}")),
     };
-    if !metadata.is_dir() {
-        return Ok(false);
+    let previous = registry.agents.clone();
+    let mut ownership = previous.clone();
+    let (bundled, managed) = sync_managed_agent_pack(
+        &src,
+        &profile_root.join("agents"),
+        &mut ownership,
+        registry.allow_exact_adoption,
+    )
+    .map_err(|error| format!("failed to deploy bundled agents: {error}"))?;
+    if bundled.is_empty() {
+        if cfg!(debug_assertions) {
+            return Ok(());
+        }
+        return Err("bundled agent resource contains no Markdown agents".to_string());
     }
-    match std::fs::metadata(path.join("SKILL.md")) {
-        Ok(metadata) => Ok(metadata.is_file()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
+    prune_stale_agents(&profile_root.join("agents"), &previous, &managed)
+        .map_err(|error| format!("failed to prune stale managed agents: {error}"))?;
+    registry.agents = managed;
+    Ok(())
+}
+
+fn prune_stale_agents(
+    dst: &Path,
+    previous: &std::collections::BTreeMap<String, String>,
+    current: &std::collections::BTreeMap<String, String>,
+) -> std::io::Result<()> {
+    for (name, recorded_fingerprint) in previous {
+        if current.contains_key(name) {
+            continue;
+        }
+        let target = dst.join(name);
+        let fingerprint = match fingerprint_agent_file(&target) {
+            Ok(fingerprint) => fingerprint,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => continue,
+        };
+        if fingerprint == *recorded_fingerprint {
+            remove_app_managed_path_without_following(&target)?;
+        }
     }
+    Ok(())
+}
+
+fn bundled_profile_template(app: &AppHandle) -> Result<String, String> {
+    let resource = "opencode-profile/opencode.json";
+    match app
+        .path()
+        .resolve(resource, tauri::path::BaseDirectory::Resource)
+    {
+        Ok(path) if path.is_file() => std::fs::read_to_string(&path)
+            .map_err(|error| format!("failed to read bundled OpenCode profile: {error}")),
+        _ if cfg!(debug_assertions) => {
+            Ok(include_str!("../../../../runtime/opencode-profile/opencode.json").to_string())
+        }
+        Ok(path) => Err(format!(
+            "bundled OpenCode profile is not a file: {}",
+            path.display()
+        )),
+        Err(error) => Err(format!(
+            "failed to resolve bundled OpenCode profile: {error}"
+        )),
+    }
+}
+
+/// Refresh only Spark-owned global profile entries and merge missing base
+/// defaults into the app-private OpenCode config. Project `.opencode` content
+/// is never inspected or modified here and remains OpenCode-owned.
+fn deploy_bundled_profile(app: &AppHandle, config_file: &Path) -> Result<(), String> {
+    let profile_root = xdg_config_home(app)?.join("opencode");
+    std::fs::create_dir_all(&profile_root).map_err(|error| error.to_string())?;
+
+    // Validate and merge the template before mutating deployed entries.
+    let template = bundled_profile_template(app)?;
+    let existing = read_optional_config(config_file)?;
+    let merged = crate::opencode_config::merge_profile_defaults(&existing, &template)?;
+
+    let mut registry = load_managed_profile_registry(&profile_root)?;
+    deploy_bundled_skills(app, &profile_root, &mut registry)?;
+    deploy_bundled_agents(app, &profile_root, &mut registry)?;
+    write_managed_profile_registry(&profile_root, &registry)?;
+    if merged != existing {
+        write_private_atomic(config_file, merged.as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Re-evaluate only the workspace-sensitive bundled skill set. This runs on an
+/// active-workspace switch before the frontend asks OpenCode for that
+/// directory's instance, avoiding duplicate global/project names without
+/// restarting the shared sidecar.
+fn reconcile_bundled_skills(app: &AppHandle) -> Result<(), String> {
+    let profile_root = xdg_config_home(app)?.join("opencode");
+    std::fs::create_dir_all(&profile_root).map_err(|error| error.to_string())?;
+    let mut registry = load_managed_profile_registry(&profile_root)?;
+    deploy_bundled_skills(app, &profile_root, &mut registry)?;
+    write_managed_profile_registry(&profile_root, &registry)
 }
 
 /// Copy every skill directory under `src` into `dst`, replacing same-named
@@ -444,6 +1208,7 @@ fn path_is_skill_dir(path: &Path) -> std::io::Result<bool> {
 /// failure, so an interrupted app upgrade never leaves a half-copied skill.
 /// Returns the deployed names for stale pruning. Directories without SKILL.md
 /// (placeholders) are skipped.
+#[cfg(test)]
 fn sync_skill_pack(src: &Path, dst: &Path) -> std::io::Result<Vec<std::ffi::OsString>> {
     std::fs::create_dir_all(dst)?;
     let mut deployed = Vec::new();
@@ -896,11 +1661,10 @@ pub(crate) fn quiet_command(bin: impl AsRef<std::ffi::OsStr>) -> std::process::C
 }
 
 /// Make a secret-holding path owner-only: 700 for directories, 600 for files
-/// (unix). The runtime root carries provider/connector API keys in
-/// `opencode.jsonc`/`auth.json`, and the sidecar rewrites those files with a
-/// default umask while running — locking the DIRECTORY is what holds, since a
-/// 700 dir is unreachable for other users whatever the file modes inside. On
-/// Windows, %APPDATA% is per-user ACL'd already; nothing to do.
+/// (unix). The runtime root carries OAuth/connector state and any legacy
+/// credentials still pending migration, and the sidecar can rewrite those
+/// files with a default umask while running. Locking the directory is what
+/// holds. On Windows, %APPDATA% is per-user ACL'd already; nothing to do.
 pub(crate) fn tighten_private(path: &Path) {
     #[cfg(unix)]
     {
@@ -963,7 +1727,7 @@ pub(crate) fn random_hex(bytes: usize) -> String {
 /// built-in Basic auth, `OPENCODE_SERVER_PASSWORD`). Generated fresh each app
 /// launch and held only in memory — never written to disk — so a local
 /// webpage that scans loopback ports can neither drive agent turns nor read
-/// `/global/config` (which carries provider API keys). The webview gets it
+/// `/global/config` (which carries provider metadata and key placeholders). The webview gets it
 /// via the `runtime_password` command; Tauri IPC is app-only.
 pub(crate) fn server_password() -> &'static str {
     static PASSWORD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -1247,6 +2011,244 @@ fn sidecar_health_ready(port: u16) -> Result<bool, String> {
     parse_sidecar_health_response(response)
 }
 
+/// Pinned OpenCode uses a tiny wildcard language: `*` spans every character,
+/// including `/`, `?` spans one character, and a trailing ` *` also matches
+/// the command without arguments. Keep this local matcher aligned with
+/// `@opencode-ai/core/util/wildcard` so resolved-rule validation is based on
+/// runtime semantics rather than filename-glob assumptions.
+fn opencode_wildcard_matches(input: &str, pattern: &str) -> bool {
+    let input = input.replace('\\', "/");
+    let pattern = pattern.replace('\\', "/");
+    if let Some(without_arguments) = pattern.strip_suffix(" *") {
+        if input == without_arguments {
+            return true;
+        }
+    }
+
+    let input: Vec<char> = input.chars().collect();
+    let pattern: Vec<char> = pattern.chars().collect();
+    let mut previous = vec![false; input.len() + 1];
+    previous[0] = true;
+    for token in pattern {
+        let mut current = vec![false; input.len() + 1];
+        if token == '*' {
+            current[0] = previous[0];
+        }
+        for index in 1..=input.len() {
+            current[index] = match token {
+                '*' => previous[index] || current[index - 1],
+                '?' => previous[index - 1],
+                literal => previous[index - 1] && input[index - 1] == literal,
+            };
+        }
+        previous = current;
+    }
+    previous[input.len()]
+}
+
+fn resolved_permission_action<'a>(
+    rules: &'a [ResolvedPermissionRule],
+    permission: &str,
+    pattern: &str,
+) -> Option<&'a str> {
+    rules
+        .iter()
+        .rev()
+        .find(|rule| {
+            opencode_wildcard_matches(permission, &rule.permission)
+                && opencode_wildcard_matches(pattern, &rule.pattern)
+        })
+        .map(|rule| rule.action.as_str())
+}
+
+fn require_not_allowed(
+    agent: &ResolvedAgent,
+    permission: &str,
+    pattern: &str,
+) -> Result<(), String> {
+    match resolved_permission_action(&agent.permission, permission, pattern) {
+        Some("ask" | "deny") => Ok(()),
+        Some(action) => Err(format!(
+            "agent {:?} resolves {permission:?} {pattern:?} to {action:?}",
+            agent.name
+        )),
+        None => Err(format!(
+            "agent {:?} has no resolved rule for {permission:?} {pattern:?}",
+            agent.name
+        )),
+    }
+}
+
+fn validate_resolved_agents(agents: &[ResolvedAgent], truncate_glob: &str) -> Result<(), String> {
+    if agents.is_empty() {
+        return Err("OpenCode returned no resolved agents".into());
+    }
+    let normalized_truncate = truncate_glob.replace('\\', "/");
+    for agent in agents {
+        for rule in &agent.permission {
+            if !matches!(rule.action.as_str(), "allow" | "ask" | "deny") {
+                return Err(format!(
+                    "agent {:?} returned unsupported permission action {:?}",
+                    agent.name, rule.action
+                ));
+            }
+        }
+
+        // OPENCODE_PERMISSION is merged after project/global config. Agent
+        // frontmatter is appended later, so this exact wildcard ask is the
+        // boundary after which only explicitly safe allowances may appear.
+        let floor_index = agent
+            .permission
+            .iter()
+            .rposition(|rule| rule.permission == "*" && rule.pattern == "*" && rule.action == "ask")
+            .ok_or_else(|| {
+                format!(
+                    "agent {:?} is missing the mandatory wildcard approval floor",
+                    agent.name
+                )
+            })?;
+
+        for (index, rule) in agent.permission.iter().enumerate() {
+            if index <= floor_index || rule.action != "allow" {
+                continue;
+            }
+            let safe_workspace_permission = matches!(
+                rule.permission.as_str(),
+                "read" | "glob" | "grep" | "list" | "lsp" | "question" | "skill" | "task"
+            );
+            let pinned_truncate_exception = rule.permission == "external_directory"
+                && rule.pattern.replace('\\', "/") == normalized_truncate;
+            if !safe_workspace_permission && !pinned_truncate_exception {
+                return Err(format!(
+                    "agent {:?} appends an unsafe allow after the approval floor: permission {:?}, pattern {:?}",
+                    agent.name, rule.permission, rule.pattern
+                ));
+            }
+        }
+
+        // A later broad read allow can silently undo the two sensitive-file
+        // asks. Standard read-only agents remain valid because they repeat the
+        // allow first and the sensitive asks afterwards.
+        let env_ask = agent
+            .permission
+            .iter()
+            .rposition(|rule| {
+                rule.permission == "read"
+                    && rule.pattern == "*.env"
+                    && matches!(rule.action.as_str(), "ask" | "deny")
+            })
+            .ok_or_else(|| format!("agent {:?} is missing the *.env read floor", agent.name))?;
+        let env_variant_ask = agent
+            .permission
+            .iter()
+            .rposition(|rule| {
+                rule.permission == "read"
+                    && rule.pattern == "*.env.*"
+                    && matches!(rule.action.as_str(), "ask" | "deny")
+            })
+            .ok_or_else(|| format!("agent {:?} is missing the *.env.* read floor", agent.name))?;
+        let sensitive_floor = env_ask.min(env_variant_ask);
+        if let Some(rule) = agent
+            .permission
+            .iter()
+            .skip(sensitive_floor + 1)
+            .find(|rule| {
+                rule.action == "allow"
+                    && opencode_wildcard_matches("read", &rule.permission)
+                    && rule.pattern != "*.env.example"
+            })
+        {
+            return Err(format!(
+                "agent {:?} appends a read allow after the sensitive-file floor: {:?}",
+                agent.name, rule.pattern
+            ));
+        }
+
+        for (permission, pattern) in [
+            ("bash", "*"),
+            ("edit", "*"),
+            ("apply_patch", "*"),
+            ("webfetch", "*"),
+            ("websearch", "*"),
+            ("mcp", "*"),
+            ("spark-policy-unknown-tool", "*"),
+            ("read", ".env"),
+            ("read", "nested/.env"),
+            ("read", ".env.local"),
+            ("read", "nested/secrets.env.local"),
+            ("read", "mcp:policy-check:*"),
+        ] {
+            require_not_allowed(agent, permission, pattern)?;
+        }
+        match resolved_permission_action(
+            &agent.permission,
+            "external_directory",
+            "/spark-agent-policy-check/outside",
+        ) {
+            Some("deny") => {}
+            Some(action) => {
+                return Err(format!(
+                    "agent {:?} resolves external workspace access to {action:?}",
+                    agent.name
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "agent {:?} has no external-directory rule",
+                    agent.name
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn truncation_glob(app: &AppHandle) -> Result<String, String> {
+    Ok(runtime_root(app)?
+        .join("xdg-data")
+        .join("opencode")
+        .join("tool-output")
+        .join("*")
+        .to_string_lossy()
+        .to_string())
+}
+
+fn validate_runtime_permission_floor(
+    app: &AppHandle,
+    port: u16,
+    workspace: &Path,
+    timeout: Duration,
+) -> Result<(), String> {
+    let mut url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/agent"))
+        .map_err(|error| format!("could not build OpenCode agent URL: {error}"))?;
+    url.query_pairs_mut()
+        .append_pair("directory", &workspace.to_string_lossy());
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(timeout)
+        .build()
+        .map_err(|error| format!("could not create OpenCode policy client: {error}"))?;
+    let response = client
+        .get(url)
+        .basic_auth("opencode", Some(server_password()))
+        .send()
+        .map_err(|error| format!("could not resolve OpenCode agent permissions: {error}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|error| format!("could not read OpenCode agent permissions: {error}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "OpenCode agent permission lookup returned HTTP {status}: {}",
+            body.chars().take(512).collect::<String>()
+        ));
+    }
+    let agents: Vec<ResolvedAgent> = serde_json::from_str(&body)
+        .map_err(|error| format!("invalid OpenCode agent permission response: {error}"))?;
+    validate_resolved_agents(&agents, &truncation_glob(app)?)
+        .map_err(|error| format!("OpenCode permission floor rejected the workspace: {error}"))
+}
+
 fn startup_event_failure(
     events: &mut tauri::async_runtime::Receiver<CommandEvent>,
 ) -> Option<(String, bool)> {
@@ -1386,19 +2388,27 @@ fn spawn_sidecar(
         for d in [&cfg, &data, &cache, &runtime_state] {
             std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
-        // Ship the bundled scientific skills into the app-private OpenCode profile.
-        deploy_bundled_skills(app)?;
-        // Safety default (AGENTS.md non-negotiable): enforce the internal safe
-        // policy on every start, repairing legacy full/partial permission configs.
+        // Refresh Spark-managed agents and skills, then merge missing profile
+        // defaults. Existing providers, models, MCP servers, custom permission,
+        // user-global entries, and project `.opencode` content remain untouched.
         let cfg_file = effective_config_file(app)?;
-        let existing = std::fs::read_to_string(&cfg_file).unwrap_or_default();
-        if let Some(seeded) = crate::opencode_config::seed_default_permission(&existing) {
-            write_private_atomic(&cfg_file, seeded.as_bytes())?;
-        }
-        // Secrets live under the runtime root (provider/connector keys in
-        // opencode.jsonc, OpenCode's auth.json) — owner-only on every start, so
-        // existing installs are repaired and whatever the sidecar later rewrites
-        // inside stays unreachable to other users regardless of its umask.
+        deploy_bundled_profile(app, &cfg_file)?;
+        // On successful migration, provider API keys no longer remain in
+        // config/auth at rest. Remove legacy plaintext only after a durable
+        // credential-manager save, then resolve every Spark-owned env
+        // placeholder before spawning. Unsupported metadata records and missing
+        // credentials fail closed while retaining their source unchanged.
+        let auth_file = opencode_auth_file(app)?;
+        let config_files = opencode_config_files(app)?;
+        let provider_env = crate::credential::migrate_and_collect_env(
+            &crate::credential::SystemCredentialStore,
+            &config_files,
+            &auth_file,
+            &write_private_atomic,
+        )?;
+        let permission_floor = crate::opencode_config::effective_permission_floor_json()?;
+        // OAuth and connector state still live under the private runtime root.
+        // Repair owner-only access on every start.
         tighten_private(&root);
         tighten_private(&cfg_file);
         let home = std::env::var("HOME").unwrap_or_default();
@@ -1419,6 +2429,10 @@ fn spawn_sidecar(
             // trusts ANY localhost-origin page. The webview authenticates via the
             // SDK; nothing else may.
             .env("OPENCODE_SERVER_PASSWORD", server_password())
+            // OpenCode merges this after global/project config. Agent-specific
+            // frontmatter is merged later and is therefore validated through
+            // the resolved `/agent` payload before the process is published.
+            .env("OPENCODE_PERMISSION", permission_floor)
             // App-private dirs: OpenCode never touches the user's ~/.config/opencode.
             .env("XDG_CONFIG_HOME", cfg.to_string_lossy().to_string())
             .env("XDG_DATA_HOME", data.to_string_lossy().to_string())
@@ -1434,13 +2448,16 @@ fn spawn_sidecar(
                 "OPENSCIENCE_APP_VERSION",
                 app.package_info().version.to_string(),
             )
-            .current_dir(workspace);
+            .current_dir(&workspace);
         // GUI-launched apps get a minimal PATH; give the agent the user's real tools.
         let mut cmd = cmd.env("PATH", enriched_path());
         // Apply the network-proxy setting so provider logins and API calls work
         // where direct connections are blocked (see resolve_proxy_env).
         let (proxy_mode, proxy_url) = read_proxy_setting(app);
         for (key, value) in resolve_proxy_env(&proxy_mode, &proxy_url) {
+            cmd = cmd.env(key, value);
+        }
+        for (key, value) in provider_env {
             cmd = cmd.env(key, value);
         }
 
@@ -1506,6 +2523,31 @@ fn spawn_sidecar(
                 && !state.shutting_down.load(Ordering::Acquire)
                 && Instant::now() < deadline,
         });
+    }
+
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let policy_validation = if remaining.is_zero() {
+        Err(SIDECAR_START_TIMEOUT_ERROR.into())
+    } else {
+        validate_runtime_permission_floor(
+            app,
+            port,
+            &workspace_dir(app)?,
+            remaining.min(SIDECAR_POLICY_TIMEOUT),
+        )
+    };
+    if let Err(policy_error) = policy_validation {
+        let sidecar = SpawnedSidecar {
+            process,
+            events,
+            pid,
+        };
+        let cleanup = terminate_unpublished(state, sidecar, "reject unsafe permission rules");
+        let message = match cleanup {
+            Ok(()) => policy_error,
+            Err(kill_error) => format!("{policy_error}; {kill_error}"),
+        };
+        return Err(SpawnAttemptError::fatal(message));
     }
 
     Ok(SpawnedSidecar {
@@ -1823,7 +2865,7 @@ pub fn open_workspace_base(app: AppHandle) -> Result<(), String> {
 #[tauri::command(async)]
 pub fn set_workspace(
     app: AppHandle,
-    _state: State<'_, RuntimeState>,
+    state: State<'_, RuntimeState>,
     path: String,
 ) -> Result<String, String> {
     let dir = PathBuf::from(&path);
@@ -1832,16 +2874,62 @@ pub fn set_workspace(
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not create folder: {e}"))?;
     let canon = dir.canonicalize().map_err(|e| e.to_string())?;
-    std::fs::write(
-        active_workspace_file(&app)?,
-        canon.to_string_lossy().as_bytes(),
-    )
-    .map_err(|e| e.to_string())?;
+    let active_file = active_workspace_file(&app)?;
+    let previous = match std::fs::read(&active_file) {
+        Ok(contents) => Some(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("failed to read {}: {error}", active_file.display())),
+    };
+    with_lifecycle(&state.lifecycle, || -> Result<(), String> {
+        if state.shutting_down.load(Ordering::Acquire) {
+            return Err("runtime is shutting down".into());
+        }
+        let has_url = state.url.lock().unwrap().is_some();
+        let has_child = state.child.lock().unwrap().is_some();
+        if has_url || has_child {
+            if !has_url || !has_child {
+                return Err("OpenCode runtime is not in a usable state".into());
+            }
+            let port = state
+                .port
+                .lock()
+                .unwrap()
+                .ok_or("OpenCode runtime has no published port")?;
+            validate_runtime_permission_floor(&app, port, &canon, SIDECAR_POLICY_TIMEOUT)?;
+        }
+
+        // Startup/profile mutations use the same lock. Publish the workspace
+        // choice and reconcile global skills as one app-owned operation before
+        // the frontend creates or reconnects the directory-scoped instance.
+        let _config_guard = state.config.lock().unwrap();
+        write_private_atomic(&active_file, canon.to_string_lossy().as_bytes())?;
+        if let Err(error) = reconcile_bundled_skills(&app) {
+            let restore_file = match previous {
+                Some(ref contents) => write_private_atomic(&active_file, contents),
+                None => match std::fs::remove_file(&active_file) {
+                    Ok(()) => Ok(()),
+                    Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => {
+                        Ok(())
+                    }
+                    Err(remove_error) => Err(remove_error.to_string()),
+                },
+            };
+            let restore_profile = restore_file.and_then(|()| reconcile_bundled_skills(&app));
+            return match restore_profile {
+                Ok(()) => Err(error),
+                Err(restore_error) => Err(format!(
+                    "{error}; additionally failed to restore prior workspace skills: {restore_error}"
+                )),
+            };
+        }
+        Ok(())
+    })?;
 
     // No sidecar restart: OpenCode serves every folder from one process via
     // per-directory instances, and the frontend reconnects its event stream
     // with `?directory=<new folder>`. Restarting here used to cost 3-6 s per
-    // history-session switch (process boot + reconnect polling).
+    // history-session switch (process boot + reconnect polling). Bundled global
+    // skills were reconciled above before the new directory instance is used.
     // Jupyter-lab, however, pins its root_dir at spawn time — re-root it (in
     // the background) so agent-created notebooks land in the new folder.
     crate::jupyter::reroot_jupyter(&app);
@@ -1850,6 +2938,45 @@ pub fn set_workspace(
     // every session's agent without reaching outside the workspace.
     crate::compute::materialize_active(&app);
     Ok(canon.to_string_lossy().to_string())
+}
+
+/// Resolve and validate every agent immediately before a desktop turn. The
+/// active directory must match the app-owned workspace choice so a caller
+/// cannot validate one instance and send through another directory-scoped
+/// client. This is a fail-closed compatibility gate, not an OS sandbox.
+#[tauri::command(async)]
+pub fn validate_runtime_permissions(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    path: String,
+) -> Result<(), String> {
+    let requested = PathBuf::from(path);
+    if !requested.is_absolute() {
+        return Err("workspace path must be absolute".into());
+    }
+    let requested = requested
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let active = workspace_dir(&app)?
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if requested != active {
+        return Err("permission validation path is not the active workspace".into());
+    }
+    with_lifecycle(&state.lifecycle, || {
+        if state.shutting_down.load(Ordering::Acquire) {
+            return Err("runtime is shutting down".into());
+        }
+        if state.url.lock().unwrap().is_none() || state.child.lock().unwrap().is_none() {
+            return Err("OpenCode runtime is not running".into());
+        }
+        let port = state
+            .port
+            .lock()
+            .unwrap()
+            .ok_or("OpenCode runtime has no published port")?;
+        validate_runtime_permission_floor(&app, port, &requested, SIDECAR_POLICY_TIMEOUT)
+    })
 }
 
 /// Record which session owns the active workspace, so bundled skill helpers
@@ -1937,12 +3064,15 @@ fn stop_runtime_inner(state: &RuntimeState) -> Result<(), String> {
 mod tests {
     use super::{
         base64_encode, before_startup_deadline, config_transaction, current_sidecar_matches,
-        parse_scutil_proxy, parse_sidecar_health_response, prune_stale_skills, random_hex,
-        recover_skill_replacement, register_skill_pack_names, remove_key_from_config,
-        resolve_proxy_env, server_password, sidecar_health_ready, start_once,
-        start_with_port_retry, sync_skill_pack, terminate_checked, termination_outcome,
-        validate_proxy_url, wait_until_ready, with_lifecycle, write_private_atomic,
-        SpawnAttemptError, EXPECTED_OPENCODE_VERSION,
+        discover_user_skill_names, fingerprint_agent_file, fingerprint_skill_dir,
+        load_managed_profile_registry, parse_scutil_proxy, parse_sidecar_health_response,
+        prune_stale_agents, prune_stale_skills, random_hex, recover_skill_replacement,
+        register_skill_pack_names, remove_key_from_config, resolve_proxy_env, server_password,
+        sidecar_health_ready, skill_manifest_name, start_once, start_with_port_retry,
+        sync_managed_agent_pack, sync_managed_skill_pack, sync_skill_pack, terminate_checked,
+        termination_outcome, validate_proxy_url, validate_resolved_agents, wait_until_ready,
+        with_lifecycle, write_managed_profile_registry, write_private_atomic,
+        ManagedProfileRegistry, ResolvedAgent, SpawnAttemptError, EXPECTED_OPENCODE_VERSION,
     };
     use std::cell::{Cell, RefCell};
     use std::fs;
@@ -2240,6 +3370,98 @@ mod tests {
         assert!(sdk_types.lines().any(|line| line == expected_declaration));
     }
 
+    fn resolved_agents_with(extra_rules: Vec<serde_json::Value>) -> Vec<ResolvedAgent> {
+        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
+        let mut rules = vec![
+            serde_json::json!({"permission":"*","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"*","pattern":"*","action":"ask"}),
+            serde_json::json!({"permission":"read","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"read","pattern":"*.env","action":"ask"}),
+            serde_json::json!({"permission":"read","pattern":"*.env.*","action":"ask"}),
+            serde_json::json!({"permission":"read","pattern":"*.env.example","action":"allow"}),
+            serde_json::json!({"permission":"read","pattern":"mcp:*","action":"ask"}),
+            serde_json::json!({"permission":"glob","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"grep","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"list","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"lsp","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"question","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"skill","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"task","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"edit","pattern":"*","action":"ask"}),
+            serde_json::json!({"permission":"apply_patch","pattern":"*","action":"ask"}),
+            serde_json::json!({"permission":"bash","pattern":"*","action":"ask"}),
+            serde_json::json!({"permission":"webfetch","pattern":"*","action":"ask"}),
+            serde_json::json!({"permission":"websearch","pattern":"*","action":"ask"}),
+            serde_json::json!({"permission":"external_directory","pattern":"*","action":"deny"}),
+        ];
+        rules.extend(extra_rules);
+        rules.push(serde_json::json!({
+            "permission":"external_directory",
+            "pattern":truncate,
+            "action":"allow"
+        }));
+        serde_json::from_value(serde_json::json!([{
+            "name": "research",
+            "permission": rules
+        }]))
+        .unwrap()
+    }
+
+    #[test]
+    fn resolved_agent_floor_accepts_safe_and_more_restrictive_rules() {
+        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
+        validate_resolved_agents(&resolved_agents_with(Vec::new()), truncate).unwrap();
+        validate_resolved_agents(
+            &resolved_agents_with(vec![
+                serde_json::json!({"permission":"bash","pattern":"*","action":"deny"}),
+                serde_json::json!({"permission":"*","pattern":"*","action":"deny"}),
+            ]),
+            truncate,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolved_agent_floor_rejects_late_high_risk_and_concrete_tool_allows() {
+        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
+        for permission in ["bash", "edit", "webfetch", "paper-search_search_crossref"] {
+            let error = validate_resolved_agents(
+                &resolved_agents_with(vec![serde_json::json!({
+                    "permission": permission,
+                    "pattern": "*",
+                    "action": "allow"
+                })]),
+                truncate,
+            )
+            .unwrap_err();
+            assert!(error.contains("unsafe allow"), "{permission}: {error}");
+        }
+    }
+
+    #[test]
+    fn resolved_agent_floor_rejects_sensitive_read_and_external_bypasses() {
+        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
+        let read_error = validate_resolved_agents(
+            &resolved_agents_with(vec![
+                serde_json::json!({"permission":"read","pattern":"*","action":"allow"}),
+            ]),
+            truncate,
+        )
+        .unwrap_err();
+        assert!(read_error.contains("read allow after the sensitive-file floor"));
+
+        let external_error = validate_resolved_agents(
+            &resolved_agents_with(vec![serde_json::json!({
+                "permission":"external_directory",
+                "pattern":"/tmp/*",
+                "action":"allow"
+            })]),
+            truncate,
+        )
+        .unwrap_err();
+        assert!(external_error.contains("unsafe allow"));
+    }
+
     #[test]
     fn termination_errors_include_action_and_pid() {
         let error = terminate_checked((), 4242, "restart", |_| Err("denied")).unwrap_err();
@@ -2512,10 +3734,16 @@ mod tests {
     fn prune_removes_only_stale_skill_dirs() {
         let dst = std::env::temp_dir().join(format!("os-prune-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dst);
-        for name in ["remote-compute", "hpc-slurm"] {
+        for name in ["remote-compute", "hpc-slurm", "edited-stale", "user-global"] {
             fs::create_dir_all(dst.join(name)).unwrap();
             fs::write(dst.join(name).join("SKILL.md"), b"---\n").unwrap();
         }
+        let edited_fingerprint = fingerprint_skill_dir(&dst.join("edited-stale")).unwrap();
+        fs::write(
+            dst.join("edited-stale").join("SKILL.md"),
+            b"user changed this\n",
+        )
+        .unwrap();
         // A directory without a SKILL.md must never be touched.
         fs::create_dir_all(dst.join("notes")).unwrap();
         // Hidden directories belong to no stale-skill namespace. In
@@ -2529,12 +3757,27 @@ mod tests {
         .unwrap();
         let stale_recovery = dst.join(".hpc-slurm.1111111111111111.backup");
         let current_recovery = dst.join(".remote-compute.2222222222222222.backup");
+        let edited_recovery = dst.join(".edited-stale.3333333333333333.backup");
         fs::create_dir_all(&stale_recovery).unwrap();
         fs::create_dir_all(&current_recovery).unwrap();
+        fs::create_dir_all(&edited_recovery).unwrap();
 
-        let mut bundled = std::collections::HashSet::new();
-        bundled.insert(std::ffi::OsString::from("remote-compute"));
-        prune_stale_skills(&dst, &bundled).unwrap();
+        let previous = std::collections::BTreeMap::from([
+            (
+                "remote-compute".to_string(),
+                fingerprint_skill_dir(&dst.join("remote-compute")).unwrap(),
+            ),
+            (
+                "hpc-slurm".to_string(),
+                fingerprint_skill_dir(&dst.join("hpc-slurm")).unwrap(),
+            ),
+            ("edited-stale".to_string(), edited_fingerprint),
+        ]);
+        let current = std::collections::BTreeMap::from([(
+            "remote-compute".to_string(),
+            fingerprint_skill_dir(&dst.join("remote-compute")).unwrap(),
+        )]);
+        prune_stale_skills(&dst, &previous, &current).unwrap();
 
         assert!(dst.join("remote-compute").is_dir(), "bundled skill kept");
         assert!(
@@ -2542,6 +3785,14 @@ mod tests {
             "stale renamed skill removed"
         );
         assert!(dst.join("notes").is_dir(), "non-skill dir left alone");
+        assert!(
+            dst.join("user-global").is_dir(),
+            "unregistered user-global skill left alone"
+        );
+        assert!(
+            dst.join("edited-stale").is_dir(),
+            "modified formerly managed skill becomes user-owned"
+        );
         assert!(
             dst.join(".hpc-slurm.not-ours.backup").is_dir(),
             "hidden dir left alone"
@@ -2554,12 +3805,495 @@ mod tests {
             current_recovery.exists(),
             "recovery artifact for current skill left to recovery"
         );
+        assert!(
+            edited_recovery.exists(),
+            "recovery artifact is retained when ownership proof no longer matches"
+        );
         let _ = fs::remove_dir_all(&dst);
+    }
+
+    fn write_skill_manifest(path: &std::path::Path, name: &str) {
+        write(
+            path,
+            &format!("---\nname: {name}\ndescription: Test skill.\n---\n\n# {name}\n"),
+        );
+    }
+
+    #[test]
+    fn discovers_project_and_user_global_skill_names_without_counting_managed_targets() {
+        let tmp = skill_test_root("skill-collision-discovery");
+        let workspace = tmp.join("workspace");
+        let profile = tmp.join("profile");
+        write_skill_manifest(
+            &workspace.join(".opencode/skill/literature/SKILL.md"),
+            "literature-review",
+        );
+        write_skill_manifest(
+            &workspace.join(".opencode/skills/team/nested/SKILL.md"),
+            "statistical-analysis",
+        );
+        write_skill_manifest(&profile.join("skill/writer/SKILL.md"), "scientific-writing");
+        write_skill_manifest(
+            &profile.join("skills/group/nested/SKILL.md"),
+            "publication-figures",
+        );
+        // Direct plural-global entries are deployment destinations and are
+        // resolved by sync_managed_skill_pack, not counted as a second copy.
+        write_skill_manifest(
+            &profile.join("skills/citation-management/SKILL.md"),
+            "citation-management",
+        );
+        // A direct entry whose declared name differs from its destination can
+        // collide with another bundle and therefore must be discovered.
+        write_skill_manifest(
+            &profile.join("skills/renamed-target/SKILL.md"),
+            "exploratory-data-analysis",
+        );
+        // A verified managed tree is entirely excluded from user discovery.
+        write_skill_manifest(&profile.join("skills/managed/SKILL.md"), "domain-check");
+        write_skill_manifest(
+            &profile.join("skills/managed/nested/SKILL.md"),
+            "remote-compute",
+        );
+        let managed = std::collections::BTreeMap::from([(
+            "managed".to_string(),
+            fingerprint_skill_dir(&profile.join("skills/managed")).unwrap(),
+        )]);
+        // Name without the required description is not a valid skill.
+        write(
+            &workspace.join(".opencode/skills/invalid/SKILL.md"),
+            "---\nname: exploratory-data-analysis\n---\n",
+        );
+
+        let names = discover_user_skill_names(&workspace, &profile, &managed).unwrap();
+        assert_eq!(
+            names,
+            std::collections::BTreeSet::from([
+                "exploratory-data-analysis".to_string(),
+                "literature-review".to_string(),
+                "publication-figures".to_string(),
+                "scientific-writing".to_string(),
+                "statistical-analysis".to_string(),
+            ])
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn project_collision_relinquishes_and_prunes_only_proven_bundled_skill() {
+        let tmp = skill_test_root("skill-collision-enforcement");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        write_skill_manifest(&src.join("literature-review/SKILL.md"), "literature-review");
+        write_skill_manifest(&dst.join("literature-review/SKILL.md"), "literature-review");
+        let previous = std::collections::BTreeMap::from([(
+            "literature-review".to_string(),
+            fingerprint_skill_dir(&dst.join("literature-review")).unwrap(),
+        )]);
+        let mut ownership = previous.clone();
+        let collisions = std::collections::BTreeSet::from(["literature-review".to_string()]);
+
+        let (_, current) =
+            sync_managed_skill_pack(&src, &dst, &mut ownership, false, &collisions).unwrap();
+        assert!(current.is_empty());
+        assert!(ownership.is_empty());
+        prune_stale_skills(&dst, &previous, &current).unwrap();
+        assert!(!dst.join("literature-review").exists());
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn skill_manifest_parser_accepts_quoted_names_and_rejects_invalid_frontmatter() {
+        let tmp = skill_test_root("skill-manifest-parser");
+        let quoted = tmp.join("quoted.md");
+        write(
+            &quoted,
+            "---\nname: \"literature-review\"\ndescription: A valid skill.\n---\n",
+        );
+        assert_eq!(
+            skill_manifest_name(&quoted).unwrap().as_deref(),
+            Some("literature-review")
+        );
+        let duplicate = tmp.join("duplicate.md");
+        write(
+            &duplicate,
+            "---\nname: first\nname: second\ndescription: Invalid.\n---\n",
+        );
+        assert_eq!(skill_manifest_name(&duplicate).unwrap(), None);
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_collision_discovery_fails_closed_without_following_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = skill_test_root("skill-collision-symlink");
+        let workspace = tmp.join("workspace");
+        let outside = tmp.join("outside");
+        let profile = tmp.join("profile");
+        write_skill_manifest(&outside.join("SKILL.md"), "literature-review");
+        fs::create_dir_all(workspace.join(".opencode/skills")).unwrap();
+        symlink(&outside, workspace.join(".opencode/skills/linked")).unwrap();
+
+        let error =
+            discover_user_skill_names(&workspace, &profile, &Default::default()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            fs::read_to_string(outside.join("SKILL.md")).unwrap(),
+            "---\nname: literature-review\ndescription: Test skill.\n---\n\n# literature-review\n"
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn managed_skill_sync_preserves_unmarked_collision_and_is_idempotent() {
+        let tmp = skill_test_root("managed-skill-sync");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        write(&src.join("literature-review/SKILL.md"), "bundled");
+        write(&src.join("statistical-analysis/SKILL.md"), "v1");
+        write(&dst.join("literature-review/SKILL.md"), "user override");
+        write(&dst.join("custom-lab/SKILL.md"), "user custom");
+
+        let mut ownership = Default::default();
+        let (available, first_managed) =
+            sync_managed_skill_pack(&src, &dst, &mut ownership, true, &Default::default()).unwrap();
+        assert_eq!(available.len(), 2);
+        assert_eq!(
+            first_managed.keys().cloned().collect::<Vec<_>>(),
+            ["statistical-analysis"]
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("literature-review/SKILL.md")).unwrap(),
+            "user override"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("custom-lab/SKILL.md")).unwrap(),
+            "user custom"
+        );
+
+        write(&src.join("statistical-analysis/SKILL.md"), "v2");
+        let mut ownership = first_managed.clone();
+        let (_, second_managed) =
+            sync_managed_skill_pack(&src, &dst, &mut ownership, false, &Default::default())
+                .unwrap();
+        let mut ownership = second_managed.clone();
+        let (_, third_managed) =
+            sync_managed_skill_pack(&src, &dst, &mut ownership, false, &Default::default())
+                .unwrap();
+        assert_eq!(second_managed, third_managed);
+        assert_eq!(
+            fs::read_to_string(dst.join("statistical-analysis/SKILL.md")).unwrap(),
+            "v2"
+        );
+        assert_eq!(
+            fs::read_dir(&dst)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".statistical-analysis."))
+                .count(),
+            0
+        );
+
+        write(
+            &dst.join("statistical-analysis/SKILL.md"),
+            "user modified managed skill",
+        );
+        write(&src.join("statistical-analysis/SKILL.md"), "v3");
+        let mut ownership = third_managed;
+        let (_, after_edit) =
+            sync_managed_skill_pack(&src, &dst, &mut ownership, false, &Default::default())
+                .unwrap();
+        assert!(!after_edit.contains_key("statistical-analysis"));
+        assert!(!ownership.contains_key("statistical-analysis"));
+        assert_eq!(
+            fs::read_to_string(dst.join("statistical-analysis/SKILL.md")).unwrap(),
+            "user modified managed skill"
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn managed_agent_sync_preserves_collision_and_relinquishes_modified_content() {
+        let tmp = skill_test_root("managed-agent-sync");
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        write(&src.join("research.md"), "bundled research");
+        write(&src.join("task.md"), "task v1");
+        write(&dst.join("research.md"), "user research");
+        write(&dst.join("custom.md"), "user custom");
+
+        let mut ownership = Default::default();
+        let (_, first_managed) = sync_managed_agent_pack(&src, &dst, &mut ownership, true).unwrap();
+        assert_eq!(
+            first_managed.keys().cloned().collect::<Vec<_>>(),
+            ["task.md"]
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("research.md")).unwrap(),
+            "user research"
+        );
+
+        write(&src.join("task.md"), "task v2");
+        let mut ownership = first_managed;
+        let (_, second_managed) =
+            sync_managed_agent_pack(&src, &dst, &mut ownership, false).unwrap();
+        assert_eq!(fs::read_to_string(dst.join("task.md")).unwrap(), "task v2");
+
+        write(&dst.join("task.md"), "user task override");
+        write(&src.join("task.md"), "task v3");
+        let mut ownership = second_managed;
+        let (_, current) = sync_managed_agent_pack(&src, &dst, &mut ownership, false).unwrap();
+        assert!(!current.contains_key("task.md"));
+        assert!(!ownership.contains_key("task.md"));
+        assert_eq!(
+            fs::read_to_string(dst.join("task.md")).unwrap(),
+            "user task override"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("research.md")).unwrap(),
+            "user research"
+        );
+        assert_eq!(
+            fs::read_to_string(dst.join("custom.md")).unwrap(),
+            "user custom"
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn stale_agent_prune_requires_the_recorded_fingerprint() {
+        let tmp = skill_test_root("managed-agent-prune");
+        let dst = tmp.join("agents");
+        write(&dst.join("exact.md"), "managed");
+        write(&dst.join("edited.md"), "before edit");
+        let previous = std::collections::BTreeMap::from([
+            (
+                "exact.md".to_string(),
+                fingerprint_agent_file(&dst.join("exact.md")).unwrap(),
+            ),
+            (
+                "edited.md".to_string(),
+                fingerprint_agent_file(&dst.join("edited.md")).unwrap(),
+            ),
+        ]);
+        write(&dst.join("edited.md"), "user edit");
+
+        prune_stale_agents(&dst, &previous, &Default::default()).unwrap();
+
+        assert!(!dst.join("exact.md").exists());
+        assert_eq!(
+            fs::read_to_string(dst.join("edited.md")).unwrap(),
+            "user edit"
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn exact_targets_are_adopted_after_registry_write_crashes() {
+        let tmp = skill_test_root("managed-profile-crash-adoption");
+        let skill_src = tmp.join("skill-src");
+        let skill_dst = tmp.join("skills");
+        write(&skill_src.join("analysis/SKILL.md"), "exact skill");
+        write(
+            &skill_src.join("analysis/references/method.md"),
+            "same bytes",
+        );
+        write(&skill_dst.join("analysis/SKILL.md"), "exact skill");
+        write(
+            &skill_dst.join("analysis/references/method.md"),
+            "same bytes",
+        );
+        let mut skill_ownership = Default::default();
+        let (_, skills) = sync_managed_skill_pack(
+            &skill_src,
+            &skill_dst,
+            &mut skill_ownership,
+            true,
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            skills.get("analysis"),
+            Some(&fingerprint_skill_dir(&skill_dst.join("analysis")).unwrap())
+        );
+
+        let agent_src = tmp.join("agent-src");
+        let agent_dst = tmp.join("agents");
+        write(&agent_src.join("research.md"), "exact agent");
+        write(&agent_dst.join("research.md"), "exact agent");
+        let mut agent_ownership = Default::default();
+        let (_, agents) =
+            sync_managed_agent_pack(&agent_src, &agent_dst, &mut agent_ownership, true).unwrap();
+        assert_eq!(
+            agents.get("research.md"),
+            Some(&fingerprint_agent_file(&agent_dst.join("research.md")).unwrap())
+        );
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_registry_does_not_adopt_unregistered_exact_collisions() {
+        let tmp = skill_test_root("managed-profile-v2-collision");
+        let skill_src = tmp.join("skill-src");
+        let skill_dst = tmp.join("skills");
+        write(&skill_src.join("analysis/SKILL.md"), "same skill");
+        write(&skill_dst.join("analysis/SKILL.md"), "same skill");
+        let mut skill_ownership = Default::default();
+        let (_, skills) = sync_managed_skill_pack(
+            &skill_src,
+            &skill_dst,
+            &mut skill_ownership,
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(skills.is_empty());
+        assert!(skill_ownership.is_empty());
+
+        let agent_src = tmp.join("agent-src");
+        let agent_dst = tmp.join("agents");
+        write(&agent_src.join("research.md"), "same agent");
+        write(&agent_dst.join("research.md"), "same agent");
+        let mut agent_ownership = Default::default();
+        let (_, agents) =
+            sync_managed_agent_pack(&agent_src, &agent_dst, &mut agent_ownership, false).unwrap();
+        assert!(agents.is_empty());
+        assert!(agent_ownership.is_empty());
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn legacy_registry_drops_name_only_ownership_but_allows_exact_adoption() {
+        let tmp = skill_test_root("managed-profile-legacy-adoption");
+        write(
+            &tmp.join(".spark-agent-managed.json"),
+            r#"{"version":1,"agents":["research.md"],"skills":["analysis"]}"#,
+        );
+        let mut registry = load_managed_profile_registry(&tmp).unwrap();
+        assert!(registry.agents.is_empty());
+        assert!(registry.skills.is_empty());
+        assert!(registry.allow_exact_adoption);
+        let allow_exact_adoption = registry.allow_exact_adoption;
+
+        let skill_src = tmp.join("skill-src");
+        let skill_dst = tmp.join("skills");
+        write(&skill_src.join("analysis/SKILL.md"), "legacy exact");
+        write(&skill_dst.join("analysis/SKILL.md"), "legacy exact");
+        let (_, skills) = sync_managed_skill_pack(
+            &skill_src,
+            &skill_dst,
+            &mut registry.skills,
+            allow_exact_adoption,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(skills.contains_key("analysis"));
+
+        let agent_src = tmp.join("agent-src");
+        let agent_dst = tmp.join("agents");
+        write(&agent_src.join("research.md"), "legacy exact");
+        write(&agent_dst.join("research.md"), "legacy exact");
+        let (_, agents) = sync_managed_agent_pack(
+            &agent_src,
+            &agent_dst,
+            &mut registry.agents,
+            allow_exact_adoption,
+        )
+        .unwrap();
+        assert!(agents.contains_key("research.md"));
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[test]
+    fn managed_registry_round_trips_and_rejects_unsafe_names() {
+        let tmp = skill_test_root("managed-profile-registry");
+        let mut registry = ManagedProfileRegistry::default();
+        registry.agents.insert(
+            "research.md".to_string(),
+            format!("sha256:{}", "a".repeat(64)),
+        );
+        registry.skills.insert(
+            "literature-review".to_string(),
+            format!("sha256:{}", "b".repeat(64)),
+        );
+        write_managed_profile_registry(&tmp, &registry).unwrap();
+        let loaded = load_managed_profile_registry(&tmp).unwrap();
+        assert_eq!(loaded.agents, registry.agents);
+        assert_eq!(loaded.skills, registry.skills);
+        assert!(!loaded.allow_exact_adoption);
+
+        write(
+            &tmp.join(".spark-agent-managed.json"),
+            r#"{"version":1,"agents":["../escape.md"],"skills":[]}"#,
+        );
+        assert!(load_managed_profile_registry(&tmp).is_err());
+        write(
+            &tmp.join(".spark-agent-managed.json"),
+            r#"{"version":2,"agents":{"research.md":"not-a-fingerprint"},"skills":{}}"#,
+        );
+        assert!(load_managed_profile_registry(&tmp).is_err());
+        fs::remove_dir_all(tmp).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_sync_never_follows_existing_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = skill_test_root("managed-profile-symlink");
+        let outside_skill = tmp.join("outside-skill");
+        let skill_src = tmp.join("skill-src");
+        let skill_dst = tmp.join("skills");
+        write(&outside_skill.join("SKILL.md"), "outside skill");
+        write(&skill_src.join("analysis/SKILL.md"), "bundled skill");
+        fs::create_dir_all(&skill_dst).unwrap();
+        symlink(&outside_skill, skill_dst.join("analysis")).unwrap();
+        let mut skill_ownership = std::collections::BTreeMap::from([(
+            "analysis".to_string(),
+            format!("sha256:{}", "a".repeat(64)),
+        )]);
+        let (_, skills) = sync_managed_skill_pack(
+            &skill_src,
+            &skill_dst,
+            &mut skill_ownership,
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+        assert!(skills.is_empty());
+        assert!(skill_ownership.is_empty());
+        assert_eq!(
+            fs::read_to_string(outside_skill.join("SKILL.md")).unwrap(),
+            "outside skill"
+        );
+
+        let outside_agent = tmp.join("outside-agent.md");
+        let agent_src = tmp.join("agent-src");
+        let agent_dst = tmp.join("agents");
+        write(&outside_agent, "outside agent");
+        write(&agent_src.join("research.md"), "bundled agent");
+        fs::create_dir_all(&agent_dst).unwrap();
+        symlink(&outside_agent, agent_dst.join("research.md")).unwrap();
+        let mut agent_ownership = std::collections::BTreeMap::from([(
+            "research.md".to_string(),
+            format!("sha256:{}", "b".repeat(64)),
+        )]);
+        let (_, agents) =
+            sync_managed_agent_pack(&agent_src, &agent_dst, &mut agent_ownership, false).unwrap();
+        assert!(agents.is_empty());
+        assert!(agent_ownership.is_empty());
+        assert_eq!(fs::read_to_string(&outside_agent).unwrap(), "outside agent");
+        fs::remove_dir_all(tmp).unwrap();
     }
 
     #[test]
     fn empty_skill_pack_skips_debug_prune_and_fails_release() {
-        let mut bundled = std::collections::HashSet::new();
+        let mut bundled = std::collections::BTreeSet::new();
         assert!(!register_skill_pack_names("skills", Vec::new(), true, &mut bundled).unwrap());
         assert!(bundled.is_empty());
 
@@ -2569,12 +4303,12 @@ mod tests {
 
         assert!(register_skill_pack_names(
             "skills-core",
-            vec![std::ffi::OsString::from("research")],
+            vec!["research".to_string()],
             false,
             &mut bundled,
         )
         .unwrap());
-        assert!(bundled.contains(std::ffi::OsStr::new("research")));
+        assert!(bundled.contains("research"));
     }
 
     #[cfg(unix)]
@@ -2589,9 +4323,9 @@ mod tests {
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(&cfg, fs::Permissions::from_mode(0o644)).unwrap();
 
-        // The runtime root holds provider/connector keys (opencode.jsonc,
-        // auth.json) — it must be unreadable to other users even when the
-        // sidecar later rewrites files inside with a default umask.
+        // The runtime root holds OAuth/connector state and legacy credentials
+        // pending migration. It must be unreadable to other users even when
+        // the sidecar later rewrites files inside with a default umask.
         super::tighten_private(&dir);
         assert_eq!(
             fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
@@ -2628,7 +4362,11 @@ mod tests {
         assert!(!out2.contains("\"pw\""));
         // Absent key and non-JSON input are errors, not silent no-ops.
         assert!(remove_key_from_config(cfg, "provider", "missing").is_err());
-        assert!(remove_key_from_config("// jsonc comment\n{}", "provider", "x").is_err());
+        let jsonc =
+            "// user config\n{provider:{ollama:{options:{baseURL:'http://localhost',},},},}";
+        let out = remove_key_from_config(jsonc, "provider", "ollama").unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["provider"], serde_json::json!({}));
     }
 
     fn write(path: &std::path::Path, content: &str) {
@@ -3254,11 +4992,10 @@ pub fn remove_config_entry(
     Ok(RuntimeRestartResult { runtime_url })
 }
 
-/// Drop `key` from the config JSON's `section` map, erroring when the config
-/// is not plain JSON or the key is absent.
+/// Drop `key` from the config JSON/JSONC `section` map. The output is normalized
+/// to strict JSON, as are the other app-owned config mutations.
 fn remove_key_from_config(text: &str, section: &str, key: &str) -> Result<String, String> {
-    let mut cfg: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| format!("config is not plain JSON: {e}"))?;
+    let mut cfg = crate::opencode_config::parse_config(text, "OpenCode config")?;
     let removed = cfg
         .get_mut(section)
         .and_then(|p| p.as_object_mut())
@@ -3272,11 +5009,16 @@ fn remove_key_from_config(text: &str, section: &str, key: &str) -> Result<String
     serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
 }
 
-/// The internal MVP exposes one approval mode. Legacy config is repaired when
-/// the runtime starts, and this command never advertises full access.
+/// Report an exact persisted policy. Legacy Full Access and arbitrary custom
+/// policies remain distinguishable for warning/remediation; only Manual
+/// approval is writable through Spark Agent.
 #[tauri::command]
-pub fn get_approval_mode(_app: AppHandle) -> Result<String, String> {
-    Ok(crate::opencode_config::MODE_APPROVE.to_string())
+pub fn get_approval_mode(app: AppHandle) -> Result<String, String> {
+    let path = effective_config_file(&app)?;
+    let existing = read_optional_config(&path)?;
+    Ok(crate::opencode_config::permission_mode_of(&existing)?
+        .unwrap_or(crate::opencode_config::MODE_APPROVE)
+        .to_string())
 }
 
 /// Switch the approval mode and restart the sidecar so the permission rules
@@ -3289,7 +5031,7 @@ pub fn set_approval_mode(
 ) -> Result<RuntimeRestartResult, String> {
     let (_, runtime_url) = with_config_transaction(&app, &state, || {
         let path = effective_config_file(&app)?;
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
+        let existing = read_optional_config(&path)?;
         let updated = crate::opencode_config::set_permission_mode(&existing, &mode)?;
         write_private_atomic(&path, updated.as_bytes())?;
         Ok(path)
@@ -3336,9 +5078,94 @@ pub fn set_proxy_setting(
     Ok(RuntimeRestartResult { runtime_url })
 }
 
-/// Write the provider key/model into the app-private OpenCode config and restart
-/// the sidecar so it picks them up, returning its authoritative URL separately
-/// from the written config path.
+/// Save a provider API key in the system credential manager, leave only its
+/// env placeholder in OpenCode config, and restart the sidecar so the key is
+/// injected into its environment; tools it launches can inherit that value.
+#[tauri::command(async)]
+pub fn save_provider_api_key(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+    api_key: String,
+) -> Result<RuntimeRestartResult, String> {
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
+        crate::credential::save_provider_api_key(
+            &crate::credential::SystemCredentialStore,
+            &opencode_config_files(&app)?,
+            &opencode_auth_file(&app)?,
+            &provider_id,
+            &api_key,
+            &write_private_atomic,
+        )
+    })?;
+    Ok(RuntimeRestartResult { runtime_url })
+}
+
+/// Remove an API-key reference before deleting its credential-manager item.
+/// `remove_provider_config` is used for custom endpoints; built-in providers
+/// retain their unrelated model/base URL overrides.
+#[tauri::command(async)]
+pub fn remove_provider_api_key(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+    remove_provider_config: bool,
+) -> Result<RuntimeRestartResult, String> {
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
+        crate::credential::remove_provider_api_key(
+            &crate::credential::SystemCredentialStore,
+            &opencode_config_files(&app)?,
+            &opencode_auth_file(&app)?,
+            &provider_id,
+            remove_provider_config,
+            &write_private_atomic,
+        )
+    })?;
+    Ok(RuntimeRestartResult { runtime_url })
+}
+
+/// Finalize an OpenCode-owned provider login while the sidecar is stopped.
+/// Simple API records are moved to the system credential manager; OAuth stays
+/// in the private auth file. If API migration fails (including metadata-bearing
+/// records that cannot be represented losslessly), the just-created API record
+/// is rolled back and the caller receives an error instead of a false
+/// "connected" result.
+#[tauri::command(async)]
+pub fn finalize_provider_login(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+    provider_id: String,
+) -> Result<RuntimeRestartResult, String> {
+    let (_, runtime_url) = with_config_transaction(&app, &state, || {
+        let auth_path = opencode_auth_file(&app)?;
+        match crate::credential::migrate_and_collect_env(
+            &crate::credential::SystemCredentialStore,
+            &opencode_config_files(&app)?,
+            &auth_path,
+            &write_private_atomic,
+        ) {
+            Ok(_) => Ok(()),
+            Err(migration_error) => match crate::credential::rollback_provider_api_auth(
+                &auth_path,
+                &provider_id,
+                &write_private_atomic,
+            ) {
+                Ok(true) => Err(format!(
+                    "{migration_error}; the provider API login was rolled back"
+                )),
+                Ok(false) => Err(migration_error),
+                Err(rollback_error) => Err(format!(
+                    "{migration_error}; additionally failed to roll back the provider API login: {rollback_error}"
+                )),
+            },
+        }
+    })?;
+    Ok(RuntimeRestartResult { runtime_url })
+}
+
+/// Legacy onboarding command. Any supplied key is saved securely first; the
+/// config merge receives an empty literal and therefore can only retain the
+/// credential module's env placeholder.
 #[tauri::command(async)]
 pub fn configure_opencode(
     app: AppHandle,
@@ -3349,9 +5176,20 @@ pub fn configure_opencode(
     base_url: Option<String>,
 ) -> Result<ConfigureOpenCodeResult, String> {
     let (path, runtime_url) = with_config_transaction(&app, &state, || {
-        let path = opencode_config_file(&app)?;
-        let existing = std::fs::read_to_string(&path).unwrap_or_default();
-        let merged = merge_config(&existing, &provider, &api_key, &model, base_url.as_deref())?;
+        let provider = crate::credential::normalize_provider_id(&provider)?;
+        if !api_key.is_empty() {
+            crate::credential::save_provider_api_key(
+                &crate::credential::SystemCredentialStore,
+                &opencode_config_files(&app)?,
+                &opencode_auth_file(&app)?,
+                &provider,
+                &api_key,
+                &write_private_atomic,
+            )?;
+        }
+        let path = effective_config_file(&app)?;
+        let existing = read_optional_config(&path)?;
+        let merged = merge_config(&existing, &provider, "", &model, base_url.as_deref())?;
         write_private_atomic(&path, merged.as_bytes())?;
         Ok(path)
     })?;

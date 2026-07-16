@@ -56,8 +56,8 @@
   "skills": {
     "title": "Compétences et agents",
     "description": {
-      "prefix": "Chargé en direct depuis le runtime OpenCode — le pack ai4s-skills intégré, plus tout ce qui se trouve sous ",
-      "suffix": " dans votre espace de travail."
+      "prefix": "Chargé en direct depuis OpenCode — compétences scientifiques Spark intégrées et compétences OpenCode du projet et de l’utilisateur, dont ",
+      "suffix": "."
     },
     "install": {
       "sectionTitle": "Installer une compétence",
@@ -89,10 +89,36 @@
       "source": {
         "builtin": "intégré",
         "project": "projet",
-        "user": "utilisateur"
+        "global": "global / fourni",
+        "unknown": "source inconnue"
       }
     },
     "disconnected": "Connectez le runtime pour lister les compétences et agents qu'il a chargés."
+  },
+  "research": {
+    "title": "Workflows structurés / vérifiés",
+    "refreshAria": "Actualiser l’espace des workflows vérifiés",
+    "libraryTitle": "Bibliothèque de workflows vérifiés",
+    "newProjectAria": "Créer un projet de workflows vérifiés",
+    "workflows": {
+      "heading": "Workflows vérifiés",
+      "newAria": "Démarrer un nouveau workflow vérifié",
+      "empty": "Aucun workflow vérifié enregistré."
+    },
+    "workflow": {
+      "composerLabel": "Donnez à Spark Agent un objectif de recherche structuré",
+      "modeLabel": "Mode d’assurance du workflow",
+      "typeLabel": "Type de workflow vérifié",
+      "typeLiterature": "Synthèse bibliographique vérifiée",
+      "typeDataset": "Analyse vérifiée des données",
+      "listAutoType": " · routage automatique vérifié",
+      "listDatasetType": " · analyse vérifiée des données · runtime local isolé",
+      "listLiteratureRemoteType": " · synthèse bibliographique vérifiée · assistée par modèle",
+      "listLiteratureLocalType": " · synthèse bibliographique vérifiée · locale",
+      "goal": "Objectif de recherche vérifié",
+      "startAuto": "Démarrer le workflow vérifié",
+      "start": "Créer le plan vérifié"
+    }
   },
   "notFound": {
     "title": "404 — Introuvable",

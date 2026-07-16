@@ -7,6 +7,7 @@ interface FakeClient {
   listProviderCatalog: ReturnType<typeof vi.fn>;
   listCustomProviderIds: ReturnType<typeof vi.fn>;
   listMcpServers: ReturnType<typeof vi.fn>;
+  setProviderApiKey: ReturnType<typeof vi.fn>;
 }
 
 const mocks = vi.hoisted(() => ({
@@ -27,6 +28,9 @@ vi.mock("@/lib/runtime", async () => {
     defaultModel: null,
     loadCatalog: vi.fn(async () => {}),
     removeConfigEntry: vi.fn(async () => {}),
+    saveProviderApiKey: vi.fn(async () => {}),
+    removeProviderApiKey: vi.fn(async () => {}),
+    finalizeProviderLogin: vi.fn(async () => {}),
     importOpenCodeLogin: vi.fn(async () => false),
   }));
   mocks.runtimeStore = useRuntimeStore;
@@ -72,6 +76,7 @@ function fakeClient(
     listProviderCatalog: vi.fn(async () => ({ all: [], connected: [] })),
     listCustomProviderIds: vi.fn(async () => []),
     listMcpServers: vi.fn(async () => []),
+    setProviderApiKey: vi.fn(async () => {}),
   };
 }
 
@@ -147,5 +152,26 @@ describe("Settings endpoint ownership", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Custom endpoint/i }));
     expect(screen.getByPlaceholderText(/API key.*optional/i)).toHaveValue("");
+  });
+
+  it("keeps the direct OpenCode API-key flow as the browser fallback", async () => {
+    const client = fakeClient(Promise.resolve([]));
+    client.listProviderCatalog.mockResolvedValue({
+      all: [{ id: "anthropic", name: "Anthropic", env: ["ANTHROPIC_API_KEY"] }],
+      connected: [],
+    });
+    mocks.client = client;
+    mocks.runtimeStore!.setState({ status: "ready" });
+    render(<SettingsPage />);
+
+    const search = await screen.findByPlaceholderText(/Connect a provider/i);
+    fireEvent.change(search, { target: { value: "anthropic" } });
+    const key = await screen.findByPlaceholderText(/Anthropic API key/i);
+    fireEvent.change(key, { target: { value: "browser-key" } });
+    fireEvent.click(key.parentElement!.querySelector("button")!);
+
+    await waitFor(() =>
+      expect(client.setProviderApiKey).toHaveBeenCalledWith("anthropic", "browser-key"),
+    );
   });
 });

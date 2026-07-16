@@ -102,9 +102,9 @@ export function startMockOpenCode(port = 0): Promise<MockOpenCode> {
       res.end(JSON.stringify(messages[decodeURIComponent(mm[1])] ?? []));
       return;
     }
-    if (req.method === "GET" && url.startsWith("/api/skill")) {
+    if (req.method === "GET" && url.startsWith("/skill")) {
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ data: [{ name: "customize-opencode", description: "Configure OpenCode.", location: "/builtin/customize-opencode.md" }] }));
+      res.end(JSON.stringify([{ name: "customize-opencode", description: "Configure OpenCode.", location: "/builtin/customize-opencode.md" }]));
       return;
     }
     if (req.method === "GET" && url === "/config") {
@@ -151,7 +151,10 @@ export function startMockOpenCode(port = 0): Promise<MockOpenCode> {
       res.end("true");
       return;
     }
-    if (req.method === "GET" && (url === "/agent" || url === "/api/agent")) {
+    if (
+      req.method === "GET" &&
+      (url.split("?")[0] === "/agent" || url.split("?")[0] === "/api/agent")
+    ) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify([{ name: "build", description: "Default agent.", mode: "primary" }]));
       return;

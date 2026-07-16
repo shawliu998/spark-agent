@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
     mocks.workspacePathValue = path;
     return path;
   }),
+  permissionValidationError: null as string | null,
+  validateRuntimePermissions: vi.fn(async (_path: string | null) => {
+    if (mocks.permissionValidationError) throw new Error(mocks.permissionValidationError);
+  }),
   commitWorkspaceSnapshot: vi.fn(async () => false),
   kernelReset: vi.fn(async () => {}),
   /** Number of connect() attempts that fail before one succeeds. */
@@ -22,8 +26,10 @@ const mocks = vi.hoisted(() => ({
   failCreates: 0,
   createdSessionId: "ses_new",
   createSession: vi.fn(),
+  createSessionDirectories: [] as Array<string | undefined>,
   createWaits: [] as Promise<void>[],
   sendPrompt: vi.fn(),
+  sendPromptOptions: vi.fn(),
   sendWaits: [] as Promise<void>[],
   failPrompts: 0,
   /** Fire a normalized event into the store, as the SSE stream would. */
@@ -66,6 +72,7 @@ const mocks = vi.hoisted(() => ({
   dropCommandPost: false,
   /** Approval mode the Rust config currently holds. */
   approvalMode: "approve" as string,
+  getApprovalMode: vi.fn(async () => mocks.approvalMode),
   startRuntimeUrl: "http://127.0.0.1:1",
   restartUrl: "http://127.0.0.1:1",
   clientOpen: false,
@@ -80,6 +87,18 @@ const mocks = vi.hoisted(() => ({
     return { runtimeUrl: mocks.restartUrl };
   }),
   removeConfigEntry: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { runtimeUrl: mocks.restartUrl };
+  }),
+  saveProviderApiKey: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { runtimeUrl: mocks.restartUrl };
+  }),
+  removeProviderApiKey: vi.fn(async () => {
+    mocks.mutationSawClosedClient = !mocks.clientOpen;
+    return { runtimeUrl: mocks.restartUrl };
+  }),
+  finalizeProviderLogin: vi.fn(async () => {
     mocks.mutationSawClosedClient = !mocks.clientOpen;
     return { runtimeUrl: mocks.restartUrl };
   }),
@@ -98,13 +117,17 @@ vi.mock("./tauri", () => ({
   startRuntime: mocks.startRuntime,
   workspacePath: async () => mocks.workspacePathValue,
   setWorkspace: mocks.setWorkspace,
+  validateRuntimePermissions: mocks.validateRuntimePermissions,
   newDatedWorkspace: mocks.newDatedWorkspace,
   markSession: async () => {},
   commitWorkspaceSnapshot: mocks.commitWorkspaceSnapshot,
-  getApprovalMode: async () => mocks.approvalMode,
+  getApprovalMode: mocks.getApprovalMode,
   setApprovalMode: mocks.setApprovalMode,
   setProxySetting: mocks.setProxySetting,
   removeConfigEntry: mocks.removeConfigEntry,
+  saveProviderApiKey: mocks.saveProviderApiKey,
+  removeProviderApiKey: mocks.removeProviderApiKey,
+  finalizeProviderLogin: mocks.finalizeProviderLogin,
   importOpenCodeLogin: mocks.importOpenCodeLogin,
   runtimePassword: async () => "pw-test",
 }));
@@ -112,9 +135,11 @@ vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
 vi.mock("@ai4s/sdk", () => {
   class OpenCodeClient {
     private statusCb: (s: string) => void = () => {};
+    private directory: string | undefined;
     constructor(opts: Record<string, unknown>) {
       mocks.clientOpts.push(opts);
       mocks.clientOpen = true;
+      this.directory = typeof opts.directory === "string" ? opts.directory : undefined;
     }
     onStatus(cb: (s: string) => void) {
       this.statusCb = cb;
@@ -145,6 +170,9 @@ vi.mock("@ai4s/sdk", () => {
     async listAgents() {
       return [];
     }
+    async listProviders() {
+      return [];
+    }
     async getDefaultModel() {
       return mocks.currentModel;
     }
@@ -154,6 +182,7 @@ vi.mock("@ai4s/sdk", () => {
     }
     async createSession() {
       mocks.createSession();
+      mocks.createSessionDirectories.push(this.directory);
       const wait = mocks.createWaits.shift();
       if (wait) await wait;
       if (mocks.failCreates > 0) {
@@ -162,8 +191,9 @@ vi.mock("@ai4s/sdk", () => {
       }
       return mocks.createdSessionId;
     }
-    async sendPrompt(sid: string) {
+    async sendPrompt(sid: string, _text: string, options?: Record<string, unknown>) {
       mocks.sendPrompt(sid);
+      mocks.sendPromptOptions(options);
       const wait = mocks.sendWaits.shift();
       if (wait) await wait;
       if (mocks.failPrompts > 0) {
@@ -191,8 +221,8 @@ vi.mock("@ai4s/sdk", () => {
       });
       mocks.fireEvent({ type: "session.idle", sessionId: sid });
     }
-    async runCommand(sid: string, name: string, args?: string) {
-      mocks.runCommand(sid, name, args);
+    async runCommand(sid: string, name: string, args?: string, options?: unknown) {
+      mocks.runCommand(sid, name, args, options);
       const wait = mocks.commandWaits.shift();
       if (wait) await wait;
       if (mocks.failCommand) throw new Error("command exploded");
@@ -251,7 +281,7 @@ vi.mock("@ai4s/sdk", () => {
 });
 
 import type { ArtifactBlock } from "@ai4s/shared";
-import { DRAFT_KEY, rootSessionOf, useRuntimeStore } from "./runtime";
+import { DRAFT_KEY, resolveResearchAgent, rootSessionOf, useRuntimeStore } from "./runtime";
 
 let resetEndpointPort = 49_000;
 
@@ -282,6 +312,7 @@ beforeEach(async () => {
   mocks.pendingPermissions = [];
   mocks.failCreates = 0;
   mocks.createdSessionId = "ses_new";
+  mocks.createSessionDirectories = [];
   mocks.createWaits = [];
   mocks.sendWaits = [];
   mocks.failPrompts = 0;
@@ -298,6 +329,7 @@ beforeEach(async () => {
   mocks.startRuntimeUrl = "http://127.0.0.1:1";
   mocks.restartUrl = "http://127.0.0.1:1";
   mocks.workspacePathValue = "/ws/base";
+  mocks.permissionValidationError = null;
   mocks.clientOpen = false;
   mocks.mutationSawClosedClient = false;
   mocks.currentModel = null;
@@ -306,6 +338,7 @@ beforeEach(async () => {
     serverUrl: "http://127.0.0.1:1",
     currentId: null,
     workspacePinned: false,
+    draftWorkspaceMaterialized: false,
     threads: {},
     error: null,
     switching: false,
@@ -331,6 +364,75 @@ describe("runtime authentication", () => {
   });
 });
 
+describe("General Research runtime selection", () => {
+  it("prefers only real runtime agents and never invents a research option", () => {
+    expect(
+      resolveResearchAgent(
+        [
+          { name: "explore", description: "Explore", mode: "primary" },
+          { name: "critique", description: "Critique", mode: "subagent" },
+        ],
+        "missing-agent",
+      ),
+    ).toBe("explore");
+    expect(resolveResearchAgent([], "research")).toBeNull();
+  });
+
+  it("sends the selected runtime agent and configured model on a general prompt", async () => {
+    useRuntimeStore.setState({
+      currentId: "ses_general",
+      agents: [{ name: "research", description: "Research", mode: "primary" }],
+      selectedAgent: "research",
+      defaultModel: "openrouter/anthropic/claude-sonnet",
+      threads: {},
+    });
+
+    await useRuntimeStore.getState().sendPrompt("compare the paper and dataset");
+
+    expect(mocks.sendPromptOptions).toHaveBeenCalledWith({
+      agent: "research",
+      model: "openrouter/anthropic/claude-sonnet",
+    });
+    expect(mocks.validateRuntimePermissions).toHaveBeenCalledWith("/ws/base");
+  });
+
+  it("fails closed before posting when resolved agent permissions are unsafe", async () => {
+    useRuntimeStore.setState({
+      currentId: "ses_guarded",
+      workspace: "/ws/base",
+      threads: {},
+    });
+    mocks.permissionValidationError =
+      "OpenCode permission floor rejected the workspace: custom agent allows bash";
+
+    await expect(useRuntimeStore.getState().sendPrompt("do not run")).resolves.toBe("ses_guarded");
+
+    expect(mocks.validateRuntimePermissions).toHaveBeenCalledWith("/ws/base");
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().error).toContain("permission floor rejected");
+  });
+
+  it("keeps the submitted selections when draft materialization refreshes the catalog", async () => {
+    useRuntimeStore.setState({
+      currentId: null,
+      workspacePinned: false,
+      draftWorkspaceMaterialized: false,
+      agents: [{ name: "research", description: "Research", mode: "primary" }],
+      selectedAgent: "research",
+      defaultModel: "foundation/submitted-model",
+      threads: {},
+    });
+
+    await useRuntimeStore.getState().sendPrompt("materialize then research");
+
+    expect(mocks.newDatedWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.sendPromptOptions).toHaveBeenCalledWith({
+      agent: "research",
+      model: "foundation/submitted-model",
+    });
+  });
+});
+
 describe("per-session workspace folders", () => {
   it("creates a fresh dated folder before the first message of an unpinned draft", async () => {
     const id = await useRuntimeStore.getState().sendPrompt("hello");
@@ -339,6 +441,35 @@ describe("per-session workspace folders", () => {
     expect(mocks.newDatedWorkspace.mock.calls[0][0]).toMatch(/^\d{4}-\d{2}-\d{2}-\d{4}$/);
     // The kernel is reset so it respawns inside the new folder.
     expect(mocks.kernelReset).toHaveBeenCalled();
+  });
+
+  it("reuses the workspace materialized for a draft attachment on the first session", async () => {
+    const prepared = await useRuntimeStore.getState().prepareDraftWorkspace();
+    expect(prepared).toMatch(/^\/ws\/\d{4}-\d{2}-\d{2}-\d{4}$/);
+    expect(useRuntimeStore.getState()).toMatchObject({
+      workspace: prepared,
+      workspacePinned: false,
+      draftWorkspaceMaterialized: true,
+    });
+    expect(mocks.newDatedWorkspace).toHaveBeenCalledTimes(1);
+
+    const id = await useRuntimeStore.getState().sendPrompt(
+      "Files added to the workspace: observations.csv",
+    );
+
+    expect(id).toBe("ses_new");
+    expect(mocks.newDatedWorkspace).toHaveBeenCalledTimes(1);
+    expect(mocks.createSessionDirectories).toEqual([prepared]);
+  });
+
+  it("single-flights concurrent draft attachment and paste preparation", async () => {
+    const [attachmentWorkspace, pasteWorkspace] = await Promise.all([
+      useRuntimeStore.getState().prepareDraftWorkspace(),
+      useRuntimeStore.getState().prepareDraftWorkspace(),
+    ]);
+
+    expect(attachmentWorkspace).toBe(pasteWorkspace);
+    expect(mocks.newDatedWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a pinned folder: no dated folder is created", async () => {
@@ -714,7 +845,7 @@ describe("per-session workspace folders", () => {
 
     const oldCommand = useRuntimeStore.getState().runCommand("init");
     await vi.waitFor(() =>
-      expect(mocks.runCommand).toHaveBeenCalledWith("ses_shared_id", "init", undefined),
+      expect(mocks.runCommand).toHaveBeenCalledWith("ses_shared_id", "init", undefined, undefined),
     );
 
     useRuntimeStore.getState().setServerUrl("http://127.0.0.1:43203");
@@ -767,7 +898,12 @@ describe("per-session workspace folders", () => {
 
     const command = useRuntimeStore.getState().runCommand("init");
     await vi.waitFor(() =>
-      expect(mocks.runCommand).toHaveBeenCalledWith("ses_reconnected_sync", "init", undefined),
+      expect(mocks.runCommand).toHaveBeenCalledWith(
+        "ses_reconnected_sync",
+        "init",
+        undefined,
+        undefined,
+      ),
     );
     expect(useRuntimeStore.getState().runningSessions.ses_reconnected_sync).toBe(true);
     await useRuntimeStore.getState().connect();
@@ -1258,10 +1394,14 @@ describe("per-session workspace folders", () => {
     expect((bash as { outputSummary?: string }).outputSummary).toBeUndefined();
   });
 
-  it("runCommand: echoes `/name args` and posts the command with its arguments", async () => {
+  it("runCommand: echoes `/name args` and posts the command with its runtime selections", async () => {
+    useRuntimeStore.setState({ selectedAgent: "research", defaultModel: "mock/research-model" });
     const id = await useRuntimeStore.getState().runCommand("init", "focus on tests");
     expect(id).toBe("ses_new");
-    expect(mocks.runCommand).toHaveBeenCalledWith("ses_new", "init", "focus on tests");
+    expect(mocks.runCommand).toHaveBeenCalledWith("ses_new", "init", "focus on tests", {
+      agent: "research",
+      model: "mock/research-model",
+    });
     const s = useRuntimeStore.getState();
     expect(s.threads["ses_new"].blocks[0]).toEqual({ kind: "user", text: "/init focus on tests" });
     expect(s.runningSessions["ses_new"]).toBeUndefined();
@@ -1719,7 +1859,7 @@ describe("subagent permission asks and long sync turns", () => {
 
     const command = useRuntimeStore.getState().runCommand("init", "audit");
     await vi.waitFor(() =>
-      expect(mocks.runCommand).toHaveBeenCalledWith("ses_command_a", "init", "audit"),
+      expect(mocks.runCommand).toHaveBeenCalledWith("ses_command_a", "init", "audit", undefined),
     );
     await useRuntimeStore.getState().openSession("ses_command_b");
     gate.resolve();
@@ -1742,7 +1882,7 @@ describe("subagent permission asks and long sync turns", () => {
     );
   });
 
-  it("one reply answers all identical pending asks (same session, action, resources)", async () => {
+  it("one reply answers exactly one pending ask even when others are identical", async () => {
     await useRuntimeStore.getState().sendPrompt("go");
     const ask = (requestId: string) =>
       mocks.fireEvent({
@@ -1757,9 +1897,12 @@ describe("subagent permission asks and long sync turns", () => {
     ask("per_c");
     expect(useRuntimeStore.getState().permissions).toHaveLength(3);
     await useRuntimeStore.getState().replyPermission("per_a", "once");
-    expect(mocks.replyPermission).toHaveBeenCalledTimes(3);
-    expect(mocks.replyPermission).toHaveBeenCalledWith("per_b", "once");
-    expect(useRuntimeStore.getState().permissions).toHaveLength(0);
+    expect(mocks.replyPermission).toHaveBeenCalledTimes(1);
+    expect(mocks.replyPermission).toHaveBeenCalledWith("per_a", "once");
+    expect(useRuntimeStore.getState().permissions.map((p) => p.requestId)).toEqual([
+      "per_b",
+      "per_c",
+    ]);
   });
 
   it("does not batch distinct permission resources containing separator characters", async () => {
@@ -1837,7 +1980,12 @@ describe("stale running locks and interrupt", () => {
     });
     const command = useRuntimeStore.getState().runCommand("init");
     await vi.waitFor(() =>
-      expect(mocks.runCommand).toHaveBeenCalledWith("ses_sync_reconciled", "init", undefined),
+      expect(mocks.runCommand).toHaveBeenCalledWith(
+        "ses_sync_reconciled",
+        "init",
+        undefined,
+        undefined,
+      ),
     );
     mocks.messages = [
       { role: "user", parts: [{ type: "text", text: "/init" }] },
@@ -2204,21 +2352,40 @@ describe("per-session right pane", () => {
 
 
 describe("approval mode", () => {
-  it("ignores a legacy full mode when connecting", async () => {
+  it("restores Full Access from the native config when connecting", async () => {
     expect(useRuntimeStore.getState().approvalMode).toBe("approve");
     mocks.approvalMode = "full";
+    await useRuntimeStore.getState().connect();
+    expect(useRuntimeStore.getState().approvalMode).toBe("full");
+  });
+
+  it("rejects Full Access before invoking the native persistence command", async () => {
+    await expect(useRuntimeStore.getState().setApprovalMode("full")).rejects.toThrow(
+      "legacy unsafe mode",
+    );
+    expect(mocks.setApprovalMode).not.toHaveBeenCalled();
+    expect(useRuntimeStore.getState().approvalMode).toBe("approve");
+  });
+
+  it("preserves a custom native permission policy without labelling it Manual", async () => {
+    mocks.approvalMode = "custom";
+    await useRuntimeStore.getState().connect();
+    expect(useRuntimeStore.getState().approvalMode).toBe("custom");
+  });
+
+  it("falls back to Manual approval when native config cannot be read", async () => {
+    mocks.getApprovalMode.mockRejectedValueOnce(new Error("config unavailable"));
     await useRuntimeStore.getState().connect();
     expect(useRuntimeStore.getState().approvalMode).toBe("approve");
   });
 
-  it("rejects full mode without persisting or restarting", async () => {
-    await useRuntimeStore.getState().setApprovalMode("full");
+  it("rejects an unknown mode without persisting it", async () => {
+    await expect(
+      useRuntimeStore.getState().setApprovalMode("custom" as never),
+    ).rejects.toThrow("report-only");
     expect(mocks.setApprovalMode).not.toHaveBeenCalled();
-    const s = useRuntimeStore.getState();
-    expect(s.approvalMode).toBe("approve");
-    expect(s.switching).toBe(false);
-    expect(s.status).toBe("ready");
-    expect(s.error).toContain("Full access is disabled");
+    expect(useRuntimeStore.getState().approvalMode).toBe("approve");
+    expect(useRuntimeStore.getState().error).toContain("report-only");
   });
 
   it("closes the old client and adopts the proxy restart's changed port", async () => {
@@ -2448,6 +2615,24 @@ describe("approval mode", () => {
     expect(mocks.clientOpts[mocks.clientOpts.length - 1]).toMatchObject({
       baseUrl: mocks.restartUrl,
     });
+  });
+
+  it("provider keychain mutations use the same safe restart handoff", async () => {
+    mocks.restartUrl = "http://127.0.0.1:43131";
+    await useRuntimeStore.getState().saveProviderApiKey("anthropic", "sk-test");
+    expect(mocks.saveProviderApiKey).toHaveBeenCalledWith("anthropic", "sk-test");
+    expect(mocks.mutationSawClosedClient).toBe(true);
+
+    mocks.restartUrl = "http://127.0.0.1:43132";
+    await useRuntimeStore.getState().removeProviderApiKey("custom-lab", true);
+    expect(mocks.removeProviderApiKey).toHaveBeenCalledWith("custom-lab", true);
+    expect(useRuntimeStore.getState().serverUrl).toBe(mocks.restartUrl);
+
+    mocks.restartUrl = "http://127.0.0.1:43133";
+    await useRuntimeStore.getState().finalizeProviderLogin("openrouter");
+    expect(mocks.finalizeProviderLogin).toHaveBeenCalledWith("openrouter");
+    expect(useRuntimeStore.getState().serverUrl).toBe(mocks.restartUrl);
+    expect(useRuntimeStore.getState().status).toBe("ready");
   });
 
   it("restores an authoritative connection before surfacing a mutation failure", async () => {

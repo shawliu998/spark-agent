@@ -1,19 +1,51 @@
 # Spark Agent
 
-Spark Agent is a local-first, evidence-first research agent for macOS. It joins
-papers, citations, datasets, Python analysis, execution approvals, artifacts,
-and provenance in one auditable desktop workspace.
+**The open-source AI workbench for scientific research.**
 
-> Status: internal source MVP. The research and analysis loops run locally, but
-> the Python services are currently started with Docker Compose and are not yet
-> packaged as Tauri-managed sidecars.
+Give it a research goal. It can read the literature, form hypotheses, write and
+run code, execute experiments, analyze results, and write up what it finds.
+
+Spark Agent is local-first and model-agnostic. General Research runs through a
+bundled OpenCode sidecar in the current workspace; it does not require Docker or
+the optional Python services. Researchers who need a stricter, auditable path
+can choose a Verified Workflow with explicit approvals, isolated execution,
+evidence binding, and deterministic review.
+
+> Status: source-run Foundation build for macOS. The General Research vertical
+> slice and existing Verified literature/dataset workflows run today. Simple
+> provider API keys are migrated to the OS credential manager; structured/OAuth
+> credentials, connector/Jupyter secrets, execution-time secret isolation,
+> packaged-app restart E2E, installers, and broader connector parity remain in
+> progress.
 
 ## What works today
 
-- Create local research projects and import PDF papers.
-- Start a durable literature-synthesis workflow from a research goal, inspect its
+- Create local projects and durable OpenCode research sessions.
+- Select real agents, skills, commands, and models reported by the bundled
+  runtime instead of a hardcoded desktop catalog.
+- Choose general Research, Biology, Physics, or ML primary agents and delegate
+  focused literature, critique, review, writing, exploration, and task work to
+  runtime-defined sub-agents.
+- Use the Research Agent to work iteratively with local files, Shell, and Python
+  under OpenCode permissions, then discover generated tables, figures, scripts,
+  reports, and notebooks in the artifact dock.
+- Keep General Research sessions and workspace artifacts across app restarts.
+- Combine papers and datasets in an open-ended General Research session without
+  routing the task into one fixed workflow type.
+- Load a foundation pack for literature review, citation management, hypothesis
+  generation, scientific critique, exploratory and statistical analysis,
+  scientific writing, and Matplotlib.
+- Extend the runtime with project or user OpenCode agents, skills, MCP servers,
+  commands, and model providers.
+- Enable optional curated scientific MCP connectors, including multi-source
+  paper search (arXiv, PubMed, Crossref, and Semantic Scholar), BioMCP,
+  Materials Project, and FRED; unified connector-result parity remains in progress.
+
+Optional Verified Workflows preserve the existing stricter capabilities:
+
+- Start a durable Verified Literature Synthesis, inspect its
   typed three-step plan, and explicitly approve or cancel it.
-- Start a durable dataset-analysis workflow from an immutable CSV, approve its
+- Start a Verified Dataset Analysis from an immutable CSV, approve its
   typed four-step plan and exact Python payload, then review verified run artifacts.
 - Extract page-addressable evidence across local papers, build atomic claims, and
   require a deterministic evidence-integrity Reviewer pass before completion.
@@ -34,12 +66,16 @@ and provenance in one auditable desktop workspace.
 
 ```text
 Spark Agent Desktop (Tauri + React)
-  |-- OpenCode-compatible agent shell
-  |-- Research workflow, evidence, review, and Analysis workspaces
-  |-- explicit permission and approval UI
+  |-- General Research workspace (default)
+  |     +-- packages/sdk OpenCodeClient
+  |           +-- bundled OpenCode sidecar
+  |                 +-- sessions, agents, skills, tools, MCP, providers
+  |
+  |-- Structured / Verified Workflows (optional)
+  |     +-- evidence, approvals, review, and Analysis workspaces
   |
   +-- science-core (FastAPI + SQLite + PaperQA2)
-        |-- canonical Workflow / Plan / Task / Approval / Job / Review / Event state
+        |-- canonical state only for Verified workflows
         |-- leased background worker + restart recovery
         |-- local evidence extraction + deterministic claim review
         |
@@ -48,27 +84,42 @@ Spark Agent Desktop (Tauri + React)
               +-- science-runtime (Jupyter, no network, read-only root)
 ```
 
-The desktop shell reuses MIT-licensed Open Science Desktop code. Spark-specific
-research pages, domain contracts, science services, approval state, and the
-isolated execution runtime are maintained in this repository.
+The UI accesses OpenCode only through `packages/sdk`. OpenCode is the canonical
+runtime for General Research; `science-core` is the canonical control plane only
+for Structured / Verified Workflows. The desktop shell reuses MIT-licensed Open
+Science Desktop code and adapts selected Apache-2.0 OpenScience agents and skills.
+See `docs/OPENSCIENCE_PARITY.md` and `THIRD_PARTY_NOTICES.md` for the precise
+reuse boundary.
 
-## Run the internal MVP
+## Run General Research from source
 
 Requirements:
 
 - macOS with Node.js 20+ and pnpm 9
-- Docker Desktop or OrbStack
-- an OpenAI-compatible credential only for remote model-assisted workflows or
-  PaperQA questions
+- Rust stable with the Tauri prerequisites
+- a credential for the model provider you choose
 
 ```bash
 git clone https://github.com/shawliu998/spark-agent.git
 cd spark-agent
-pnpm install
+pnpm install --frozen-lockfile
+bash scripts/dev/fetch-opencode.sh
+bash scripts/dev/fetch-uv.sh
+pnpm --filter @ai4s/desktop tauri dev
+```
+
+General Research starts the app-private OpenCode sidecar and works without
+Docker, `science-core`, PaperQA, or `science-runtime`.
+
+## Run optional Verified Workflows
+
+Verified Workflows additionally require Docker Desktop or OrbStack:
+
+```bash
 pnpm mvp:dev
 ```
 
-`mvp:dev` performs the internal preflight, builds the two isolated services,
+`mvp:dev` performs the Verified Workflow preflight, builds the two isolated services,
 applies verified Alembic migrations, allocates an available loopback port, creates
 an ephemeral 256-bit Bearer credential, waits for both services to become healthy,
 and injects the URL and credential into the desktop web client. The credential is
@@ -112,7 +163,7 @@ inside `science-core`. An inherited `OPENAI_API_KEY` causes startup to fail rath
 than leaking the key to Vite or another child process; run `unset OPENAI_API_KEY`
 before `pnpm mvp:dev` if an existing shell profile exports it.
 
-Without a model key, the default deterministic workflow, PDF import, CSV analysis,
+Without a model key, deterministic Verified workflows, PDF import, CSV analysis,
 and Jupyter execution remain available. A stored key also enables optional
 remote-model-assisted planning and synthesis as well as PaperQA answering. Remote
 workflows require approval of the research goal before planning and a second
@@ -153,9 +204,9 @@ for every supported OpenCode and uv sidecar. Rust lint and test use a compile-on
 Tauri override that omits packaged sidecars; release builds fetch pinned binaries
 and verify their committed SHA-256 digests before unpacking them.
 
-## Internal MVP boundary
+## Optional Verified Workflow boundary
 
-- The durable orchestrator supports two coherent workflow types:
+- The optional durable orchestrator supports two coherent workflow types:
   `literature-synthesis` (inspect sources → extract local evidence → synthesize
   extractive claims → deterministic review) and `dataset-analysis` (profile an
   immutable CSV → prepare and approve exact Python → execute in science-runtime
@@ -174,12 +225,25 @@ and verify their committed SHA-256 digests before unpacking them.
   standalone editable analyses retain their separate explicit-approval container policy.
 - Workflow activity uses authenticated cursor polling (1.5 seconds while active),
   not SSE yet.
-- This remains a source-run internal build. Tauri-managed packaging of the Python
+- These constraints do not apply to an ordinary General Research session. This
+  remains a source-run build; Tauri-managed packaging of the optional Python
   services is a later release step.
 
 ## Safety defaults
 
-- Project-scoped file access and explicit approval for high-risk operations.
+- General Research requires manual approval before every workspace write/edit,
+  Shell command, MCP action, and OpenCode web fetch/search request. Unknown
+  concrete tool IDs ask, and file tools deny access outside the current
+  workspace. Approval is not an OS sandbox: once approved, arbitrary code still
+  runs with the signed-in user's authority, so hard isolation remains open.
+- The Composer does not offer Full Access. A legacy Full Access or external
+  custom OpenCode policy is shown as such and can be replaced with Spark's
+  manual-approval default; effective project and agent rules are checked before
+  each turn so they cannot silently weaken the runtime floor. Verified Workflows
+  independently keep strict plan, execution, and remote-data approvals.
+- OpenCode's config loader can still install config-directory dependencies
+  outside the tool-permission flow. Gating or disabling that path until explicit
+  approval is a release blocker.
 - A generated Bearer credential on every internal launch, a dynamically allocated
   loopback-only service port, and an allowlisted CORS boundary.
 - No arbitrary direct shell mode in the product UI.
@@ -202,19 +266,23 @@ reviewed before publication or consequential use.
 ## Upstream and maintenance model
 
 This GitHub repository is independent and is not registered as a GitHub Fork.
-Its source history is nevertheless derived from Open Science Desktop v0.1.9.
-The `upstream` Git remote is retained so selected upstream releases can be
-merged intentionally. Product-specific services and features are kept separate
-where practical to reduce merge conflicts.
+Its source history is nevertheless derived from Open Science Desktop v0.1.9,
+and selected research-agent behavior and content are adapted from OpenScience.
+Upstreams are tracked by pinned revision so updates can be audited and integrated
+module by module. Spark does not import the OpenScience runtime or UI monorepo.
+Product-specific services and features stay separate where practical.
 
 Internal `@ai4s/*` and Rust crate names are temporarily retained for source
 compatibility. They are implementation details, not the Spark Agent brand.
 
 ## License and attribution
 
-The inherited Open Science Desktop code is available under the MIT License; the
-required original notice is retained in [LICENSE](./LICENSE). See
-[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for major reused components.
+Inherited Open Science Desktop code is available under the MIT License; its
+required original notice is retained in [LICENSE](./LICENSE). Adapted
+OpenScience material is used under Apache-2.0 with its copyright and NOTICE
+requirements retained alongside the affected source. See
+[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) and
+[docs/OPENSCIENCE_PARITY.md](./docs/OPENSCIENCE_PARITY.md) for the reuse map.
 
 Spark Agent is maintained and distributed independently from Open Science
-Desktop and its maintainers.
+Desktop, OpenScience, and their maintainers.

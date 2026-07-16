@@ -56,8 +56,8 @@
   "skills": {
     "title": "스킬 & 에이전트",
     "description": {
-      "prefix": "OpenCode 런타임에서 실시간으로 로드됩니다 — 내장된 ai4s-skills 팩과 워크스페이스의 ",
-      "suffix": " 아래에 있는 모든 항목."
+      "prefix": "OpenCode에서 실시간 로드 — Spark 과학 스킬과 프로젝트/사용자 OpenCode 스킬(예: ",
+      "suffix": ")."
     },
     "install": {
       "sectionTitle": "스킬 설치",
@@ -89,10 +89,36 @@
       "source": {
         "builtin": "기본 제공",
         "project": "프로젝트",
-        "user": "사용자"
+        "global": "전역 / 번들",
+        "unknown": "출처 알 수 없음"
       }
     },
     "disconnected": "런타임을 연결하면 로드된 스킬과 에이전트 목록을 볼 수 있습니다."
+  },
+  "research": {
+    "title": "구조화 / 검증 워크플로",
+    "refreshAria": "검증 워크플로 작업공간 새로고침",
+    "libraryTitle": "검증 워크플로 라이브러리",
+    "newProjectAria": "검증 워크플로 프로젝트 만들기",
+    "workflows": {
+      "heading": "검증 워크플로",
+      "newAria": "새 검증 워크플로 시작",
+      "empty": "저장된 검증 워크플로가 없습니다."
+    },
+    "workflow": {
+      "composerLabel": "Spark Agent에 구조화된 연구 목표 입력",
+      "modeLabel": "워크플로 보증 모드",
+      "typeLabel": "검증 워크플로 유형",
+      "typeLiterature": "검증 문헌 종합",
+      "typeDataset": "검증 데이터세트 분석",
+      "listAutoType": " · 검증 자동 라우팅",
+      "listDatasetType": " · 검증 데이터세트 분석 · 로컬 격리 런타임",
+      "listLiteratureRemoteType": " · 검증 문헌 종합 · 모델 지원",
+      "listLiteratureLocalType": " · 검증 문헌 종합 · 로컬",
+      "goal": "검증 연구 목표",
+      "startAuto": "검증 워크플로 시작",
+      "start": "검증 계획 만들기"
+    }
   },
   "notFound": {
     "title": "404 — 찾을 수 없음",

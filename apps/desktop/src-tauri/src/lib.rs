@@ -2,6 +2,7 @@
 // bundled OpenCode sidecar (isolated config/data + dedicated port; killed on exit).
 mod artifact_file;
 mod compute;
+mod credential;
 mod debug_log;
 mod examples;
 mod git_snapshot;
@@ -58,10 +59,14 @@ pub fn run() {
             runtime::set_workspace_base,
             runtime::open_workspace_base,
             runtime::set_workspace,
+            runtime::validate_runtime_permissions,
             runtime::mark_session,
             runtime::new_dated_workspace,
             runtime::pick_folder,
             runtime::import_opencode_login,
+            runtime::save_provider_api_key,
+            runtime::remove_provider_api_key,
+            runtime::finalize_provider_login,
             runtime::remove_config_entry,
             jupyter::jupyter_status,
             jupyter::setup_jupyter,

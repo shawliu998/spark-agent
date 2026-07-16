@@ -48,6 +48,12 @@ jobs:
       - name: Test desktop
         run: pnpm test:desktop
 
+      - name: Fetch pinned OpenCode sidecar for Foundation live smoke
+        run: bash scripts/dev/fetch-opencode.sh x86_64-unknown-linux-gnu
+
+      - name: Test Foundation profile, runtime contracts, and live agent/tool slice
+        run: pnpm test:foundation:live
+
   rust:
     name: Rust desktop
     runs-on: ubuntu-22.04

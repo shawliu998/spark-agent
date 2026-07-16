@@ -278,10 +278,41 @@ describe("approval mode switch", () => {
     expect(screen.queryByLabelText("Approval mode")).toBeNull();
   });
 
-  it("stays absent even when a legacy surface provides the mode switch", () => {
+  it("offers only the manual-approval preset", () => {
     const onChange = vi.fn();
     render(<Composer onSend={vi.fn()} approvalMode="approve" onApprovalModeChange={onChange} />);
-    expect(screen.queryByLabelText("Approval mode")).toBeNull();
+    fireEvent.click(screen.getByLabelText("Approval mode"));
+    const options = screen.getAllByRole("menuitemradio");
+    expect(options).toHaveLength(1);
+    expect(options[0]).toHaveTextContent("Manual approval");
+    expect(screen.queryByText("Legacy Full Access")).toBeNull();
+    fireEvent.mouseDown(options[0]!);
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("shows legacy Full Access only as a warning with manual remediation", () => {
+    const onChange = vi.fn();
+    render(<Composer onSend={vi.fn()} approvalMode="full" onApprovalModeChange={onChange} />);
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Legacy Full Access");
+    fireEvent.click(screen.getByLabelText("Approval mode"));
+    expect(screen.getByText("Unsafe legacy mode; switch to Manual approval")).toBeInTheDocument();
+    const options = screen.getAllByRole("menuitemradio");
+    expect(options).toHaveLength(1);
+    fireEvent.mouseDown(options[0]!);
+    expect(onChange).toHaveBeenCalledWith("approve");
+  });
+
+  it("shows an external custom policy without offering it as a Spark preset", () => {
+    const onChange = vi.fn();
+    render(<Composer onSend={vi.fn()} approvalMode="custom" onApprovalModeChange={onChange} />);
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("External custom policy");
+    fireEvent.click(screen.getByLabelText("Approval mode"));
+    expect(
+      screen.getByText("Not managed by Spark; switch to Manual approval to restore the safe default"),
+    ).toBeInTheDocument();
+    const options = screen.getAllByRole("menuitemradio");
+    expect(options).toHaveLength(1);
+    fireEvent.mouseDown(options[0]!);
+    expect(onChange).toHaveBeenCalledWith("approve");
   });
 });

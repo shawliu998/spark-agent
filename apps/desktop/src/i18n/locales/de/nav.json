@@ -9,7 +9,7 @@
   },
   "items": {
     "new": "Neu",
-    "research": "Forschung",
+    "research": "Verifizierte Workflows",
     "analysis": "Datenanalyse",
     "notebooks": "Notebooks",
     "files": "Dateien",
@@ -47,7 +47,7 @@
     "noResults": "Keine Ergebnisse.",
     "actions": {
       "newSession": "Neue Sitzung",
-      "analyzeData": "Meine Daten analysieren (neuer Workflow)",
+      "analyzeData": "Verifizierte Datensatzanalyse starten",
       "auditReport": "Bericht prüfen (Nachvollziehbarkeitsprüfung)",
       "openNotebooks": "Notebooks öffnen",
       "manageSkills": "Skills verwalten",

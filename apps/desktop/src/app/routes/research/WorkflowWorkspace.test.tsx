@@ -244,10 +244,10 @@ describe("WorkflowWorkspace", () => {
     ).toHaveAttribute("aria-pressed", "true");
     const source = screen.getByRole("checkbox", { name: "Use Ready paper" });
     expect(source).not.toBeChecked();
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a structured research goal"), {
       target: { value: "Compare this paper with the available evidence" },
     });
-    const start = screen.getByRole("button", { name: "Start research" });
+    const start = screen.getByRole("button", { name: "Start verified workflow" });
     expect(start).toBeDisabled();
     fireEvent.click(source);
     expect(start).toBeEnabled();
@@ -317,7 +317,7 @@ describe("WorkflowWorkspace", () => {
     );
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Use Ready paper" }));
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a structured research goal"), {
       target: { value: "Route this research goal" },
     });
     fireEvent.click(
@@ -336,7 +336,7 @@ describe("WorkflowWorkspace", () => {
       name: /I approve sending this goal and the listed source metadata/i,
     });
     fireEvent.click(metadataOnlyApproval);
-    expect(screen.getByRole("button", { name: "Start research" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Start verified workflow" })).toBeEnabled();
 
     fireEvent.click(
       screen.getByRole("checkbox", { name: "Use Ready dataset" }),
@@ -356,7 +356,7 @@ describe("WorkflowWorkspace", () => {
       screen.getByText(/source-ready-dataset · dataset · ready/i),
     ).toBeInTheDocument();
 
-    const start = screen.getByRole("button", { name: "Start research" });
+    const start = screen.getByRole("button", { name: "Start verified workflow" });
     expect(start).toBeDisabled();
     const profileApproval = screen.getByRole("checkbox", {
       name: /I approve sending this goal, the listed source metadata, and the bounded Dataset Profile fields/i,
@@ -390,10 +390,10 @@ describe("WorkflowWorkspace", () => {
     expect(
       screen.getByText(/Choose at least one ready PDF or CSV source/i),
     ).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a structured research goal"), {
       target: { value: "Help me investigate this research question" },
     });
-    const start = screen.getByRole("button", { name: "Start research" });
+    const start = screen.getByRole("button", { name: "Start verified workflow" });
     expect(start).toBeDisabled();
     fireEvent.click(start);
 
@@ -609,14 +609,14 @@ describe("WorkflowWorkspace", () => {
     expect(
       screen.getByRole("button", { name: /Local deterministic/i }),
     ).toHaveAttribute("aria-pressed", "true");
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a structured research goal"), {
       target: { value: "Compare the imported studies" },
     });
     fireEvent.click(
       screen.getByRole("button", { name: /Model-assisted remote/i }),
     );
 
-    const start = screen.getByRole("button", { name: "Create plan" });
+    const start = screen.getByRole("button", { name: "Create verified plan" });
     expect(start).toBeDisabled();
     expect(
       screen.getByText(/No PDF passage is sent at this step/i),
@@ -632,7 +632,7 @@ describe("WorkflowWorkspace", () => {
     );
     expect(start).toBeEnabled();
 
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a structured research goal"), {
       target: { value: "Compare the imported studies and private notes" },
     });
     expect(start).toBeDisabled();
@@ -705,7 +705,7 @@ describe("WorkflowWorkspace", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: /Advanced/i }));
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a structured research goal"), {
       target: { value: "Compare the imported studies" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Model-assisted remote/i }));
@@ -714,7 +714,7 @@ describe("WorkflowWorkspace", () => {
         name: /I approve sending this research goal/i,
       }),
     );
-    expect(screen.getByRole("button", { name: "Create plan" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Create verified plan" })).toBeEnabled();
 
     rerender(
       <WorkflowWorkspace
@@ -740,7 +740,7 @@ describe("WorkflowWorkspace", () => {
         name: /I approve sending this research goal/i,
       }),
     ).not.toBeChecked();
-    expect(screen.getByRole("button", { name: "Create plan" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Create verified plan" })).toBeDisabled();
   });
 
   it("shows model provenance and the exact affected-resource approval scope", () => {

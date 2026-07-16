@@ -152,7 +152,7 @@
       "workspaceFiles": "Los archivos de tu espacio de trabajo y los datos sin procesar",
       "codeExecution": "Ejecución de código — el kernel de Python y Jupyter se ejecutan localmente; los conjuntos de datos se procesan aquí y nunca se suben en bloque.",
       "sessionHistory": "Historial de sesiones y registros de procedencia, en la carpeta de datos privada de la app.",
-      "providerKeys": "Claves de proveedores y tokens de inicio de sesión — un archivo privado de la app legible solo por tu cuenta; nunca se escribe en el espacio de trabajo, la procedencia, los registros ni las exportaciones."
+      "providerKeys": "Claves API de proveedores — protegidas en reposo por el gestor de credenciales del sistema. Los registros OAuth, las claves de conectores y el token de Jupyter aún usan archivos privados de la app, legibles solo por tu cuenta. Las herramientas locales aprobadas pueden heredar secretos de ejecución; el aislamiento sigue en desarrollo."
     },
     "remote": {
       "heading": "Enviado a tu proveedor de modelos",

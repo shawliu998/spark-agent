@@ -19,7 +19,7 @@ export interface ScienceConnector {
   /** Fallback: Python `-m` module the server runs as, plus any args. */
   module?: string;
   args?: string[];
-  /** Env var the server reads its API key from (free keys; never logged). */
+  /** Env var the server reads its API key from (free keys; custody is partial). */
   apiKeyEnv?: string;
   /** Where the user gets a free key. */
   apiKeyUrl?: string;
@@ -118,7 +118,8 @@ function scriptBeside(python: string, bin: string): string {
 }
 
 /** Local-MCP config for a connector, given the managed interpreter path and an
- *  optional API key (passed via env, never written to provenance/logs). */
+ * optional API key. The current OpenCode config persists that environment value
+ * in an owner-only file; OS credential-manager migration remains required. */
 export function connectorConfig(
   c: ScienceConnector,
   python: string,

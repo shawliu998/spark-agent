@@ -40,14 +40,18 @@
       "aria": "Modo de aprobación",
       "title": "Cómo se aprueban las acciones del agente",
       "menuAria": "Modos de aprobación",
-      "menuTitle": "¿Cómo deben aprobarse las acciones del agente?",
+      "menuTitle": "Las acciones de Spark requieren aprobación manual",
       "approve": {
-        "label": "Aprobar por mí",
-        "description": "Pregunta antes de eliminar, instalar o conectarse de forma remota"
+        "label": "Aprobación manual",
+        "description": "Pregunta antes de cada comando de shell, aplicación de parches y solicitud web"
       },
       "full": {
-        "label": "Acceso completo",
-        "description": "Ejecuta todos los comandos sin preguntar"
+        "label": "Acceso completo heredado",
+        "description": "Modo heredado inseguro; cambia a Aprobación manual"
+      },
+      "custom": {
+        "label": "Política personalizada externa",
+        "description": "Spark no la administra; cambia a Aprobación manual para restaurar el valor seguro"
       }
     },
     "error": {
@@ -59,6 +63,16 @@
     "newDescription": "Borrar el contexto del chat en esta carpeta",
     "clearDescription": "Igual que /new; los archivos permanecen aquí",
     "cleared": "Contexto del chat borrado. Los archivos permanecen en la misma carpeta."
+  },
+  "researchControls": {
+    "mode": { "aria": "Modo de ejecución", "general": "Investigación general", "sandbox": "Investigación en sandbox", "verified": "Flujos verificados" },
+    "agent": { "aria": "Agente de investigación", "empty": "No hay agentes disponibles", "primaryGroup": "Agentes principales", "subagentGroup": "Subagentes", "otherGroup": "Otros agentes" },
+    "model": { "aria": "Modelo", "empty": "No hay modelos disponibles" },
+    "skills": { "aria": "Abrir habilidades de investigación", "title": "Ver habilidades reportadas por OpenCode", "count": "{{count}} habilidades" }
+  },
+  "workspaceArtifacts": {
+    "heading": "Artefactos del espacio", "count": "{{count}} encontrados", "refreshAria": "Actualizar artefactos del espacio",
+    "sandboxTitle": "La investigación en sandbox aún no está configurada.", "sandboxBody": "Elige Investigación general para usar OpenCode o Flujos verificados para un proceso estructurado."
   },
   "starters": {
     "newSession": "Nueva sesión",

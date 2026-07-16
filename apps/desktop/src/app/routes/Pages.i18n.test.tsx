@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderAt } from "@/test/render";
 import { useUiStore } from "@/lib/store";
 import { useRuntimeStore } from "@/lib/runtime";
+import { sourceOf } from "./SkillsPage";
 
 // COPYCAT RULE: useUiStore is module-global; reset the locale after each test
 // so this suite never bleeds a non-English locale into other test files.
@@ -13,6 +14,7 @@ afterEach(() => useUiStore.getState().setLocale("en"));
 const RUNTIME_DEFAULTS = {
   status: useRuntimeStore.getState().status,
   agents: useRuntimeStore.getState().agents,
+  skills: useRuntimeStore.getState().skills,
   switching: useRuntimeStore.getState().switching,
   installSkill: useRuntimeStore.getState().installSkill,
 };
@@ -36,9 +38,20 @@ describe("FilesPage strings (i18n)", () => {
 });
 
 describe("SkillsPage strings (i18n)", () => {
+  it("classifies runtime skill locations without guessing unknown entries as user-authored", () => {
+    expect(sourceOf("<built-in>/customize-opencode/SKILL.md")).toBe("builtin");
+    expect(sourceOf("C:\\work\\.opencode\\skills\\lab\\SKILL.md")).toBe("project");
+    expect(sourceOf("/private/runtime/xdg-config/opencode/skills/matplotlib/SKILL.md")).toBe("global");
+    expect(sourceOf("/some/unrecognized/catalog/skill.md")).toBe("unknown");
+  });
+
   it("renders the page heading and the disconnected-runtime prompts in English", async () => {
     renderAt("/skills");
-    expect(await screen.findByRole("heading", { level: 1, name: "Skills & Agents" })).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { level: 1, name: "Skills & Agents" });
+    expect(heading).toBeInTheDocument();
+    expect(heading.parentElement).toHaveTextContent(
+      "bundled Spark scientific skills plus project and user OpenCode skills",
+    );
     expect(screen.getByText("Environment detection runs in the desktop app.")).toBeInTheDocument();
     expect(
       screen.getByText("Connect the runtime to list the skills and agents it has loaded."),
@@ -58,6 +71,31 @@ describe("SkillsPage strings (i18n)", () => {
     expect(screen.getByText("primary")).toBeInTheDocument();
     // Unknown mode values (outside the closed set OpenCode emits) render raw, unmodified.
     expect(screen.getByText("future-mode")).toBeInTheDocument();
+  });
+
+  it("renders the exact skills and source labels reported by the connected runtime", async () => {
+    useRuntimeStore.setState({
+      status: "ready",
+      skills: [
+        {
+          name: "runtime-statistics",
+          description: "Loaded from the active project",
+          location: "/workspace/.opencode/skills/runtime-statistics/SKILL.md",
+        },
+        {
+          name: "runtime-visualization",
+          description: "Loaded from the app-private global profile",
+          location: "/private/runtime/xdg-config/opencode/skills/runtime-visualization/SKILL.md",
+        },
+      ],
+    });
+
+    renderAt("/skills");
+
+    expect(await screen.findByText("runtime-statistics")).toBeInTheDocument();
+    expect(screen.getByText("runtime-visualization")).toBeInTheDocument();
+    expect(screen.getByText("project")).toBeInTheDocument();
+    expect(screen.getByText("global / bundled")).toBeInTheDocument();
   });
 
   it("does not navigate back to a late install after the Skills page unmounts", async () => {

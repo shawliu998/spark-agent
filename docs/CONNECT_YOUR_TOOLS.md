@@ -77,5 +77,8 @@ app also bundles first-party skills (e.g. `traceability-review`) and the
   entries are your responsibility.
 - Command execution, file deletion, dependency installs, and remote connections
   still go through the agent's approval flow.
-- Provider keys and tokens live in an app-private file, never in the workspace,
-  provenance, logs, or exports.
+- Simple provider API keys use the OS credential manager at rest. OAuth records,
+  connector API keys, and the persistent Jupyter token still use owner-only
+  app-private files; migrating those remaining secrets is release-blocking work.
+  Approved local tools may inherit runtime secrets, so this is not yet an
+  execution-isolation guarantee.

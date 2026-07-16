@@ -113,8 +113,10 @@ export function SkillsPage() {
                     ? t("skills.skillsListSection.source.builtin")
                     : source === "project"
                       ? t("skills.skillsListSection.source.project")
-                      : source === "user"
-                        ? t("skills.skillsListSection.source.user")
+                      : source === "global"
+                        ? t("skills.skillsListSection.source.global")
+                        : source === "unknown"
+                          ? t("skills.skillsListSection.source.unknown")
                         : undefined;
                 return <RowItem key={s.name} name={s.name} desc={s.description} tag={sourceLabel} />;
               })}
@@ -130,13 +132,15 @@ export function SkillsPage() {
   );
 }
 
-type SkillSource = "builtin" | "project" | "user";
+type SkillSource = "builtin" | "project" | "global" | "unknown";
 
-function sourceOf(location?: string): SkillSource | undefined {
+export function sourceOf(location?: string): SkillSource | undefined {
   if (!location) return undefined;
-  if (location.includes("/builtin/")) return "builtin";
-  if (location.includes("/.opencode/")) return "project";
-  return "user";
+  const normalized = location.replace(/\\/g, "/");
+  if (normalized.includes("<built-in>") || normalized.includes("/builtin/")) return "builtin";
+  if (normalized.includes("/.opencode/")) return "project";
+  if (/\/opencode\/skills?\//.test(normalized)) return "global";
+  return "unknown";
 }
 
 // AgentInfo.mode is typed `string` (external SDK), but OpenCode only ever

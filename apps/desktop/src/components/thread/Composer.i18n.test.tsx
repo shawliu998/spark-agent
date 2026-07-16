@@ -19,10 +19,10 @@ const RUNTIME_DEFAULTS = {
 afterEach(() => useRuntimeStore.setState(RUNTIME_DEFAULTS));
 
 describe("Composer strings (i18n)", () => {
-  it("renders the default placeholder without the unsafe approval-mode switch", () => {
+  it("renders the default placeholder with the manual-approval control", () => {
     render(<Composer onSend={() => {}} approvalMode="approve" onApprovalModeChange={() => {}} />);
     expect(screen.getByPlaceholderText("Ask anything")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Approval mode")).toBeNull();
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Manual approval");
   });
 });
 

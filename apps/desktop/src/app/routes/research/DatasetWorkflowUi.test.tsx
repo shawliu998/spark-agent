@@ -111,10 +111,10 @@ describe("dataset workflow UI", () => {
     expect(screen.getByLabelText("Dataset")).toHaveValue("dataset-1");
     expect(screen.getByText(DATASET_HASH)).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Give Spark Agent a structured research goal"), {
       target: { value: "Summarize outcomes by group" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Create plan" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create verified plan" }));
 
     await waitFor(() =>
       expect(handlers.onCreate).toHaveBeenCalledWith(

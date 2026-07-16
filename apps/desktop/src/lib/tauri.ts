@@ -74,22 +74,28 @@ export async function importOpenCodeLogin(): Promise<ImportOpenCodeLoginResult> 
   return invoke<ImportOpenCodeLoginResult>("import_opencode_login");
 }
 
-/** Legacy approval-mode shape kept for config migration compatibility.
- *  Internal builds accept only "approve"; "full" is rejected by JS and Rust. */
-export type ApprovalMode = "approve" | "full";
+/** Persisted approval state reported by the bundled OpenCode runtime. Custom
+ * means a user-authored policy that Spark preserves but cannot summarize as a
+ * built-in preset. Full and custom are report-only; only approve is writable. */
+export type ApprovalMode = "approve" | "full" | "custom";
 
 /** The approval mode OpenCode's config currently holds ("approve" until changed). */
 export async function getApprovalMode(): Promise<ApprovalMode> {
   if (!isTauri) return "approve";
   const { invoke } = await import("@tauri-apps/api/core");
   const mode = await invoke<string>("get_approval_mode");
-  return mode === "full" ? "full" : "approve";
+  if (mode === "approve" || mode === "full" || mode === "custom") return mode;
+  throw new Error(`Unsupported approval mode returned by the runtime: ${mode}`);
 }
 
 /** Switch the approval mode; the sidecar restarts — the caller must reconnect. */
 export async function setApprovalMode(mode: ApprovalMode): Promise<RuntimeRestartResult> {
   if (mode !== "approve") {
-    throw new Error("Full access is disabled by the internal safety policy.");
+    throw new Error(
+      mode === "full"
+        ? "Full Access is a legacy unsafe mode; switch to Manual approval."
+        : "Custom approval policies are report-only and cannot be selected in Spark Agent.",
+    );
   }
   if (!isTauri) return { runtimeUrl: null };
   const { invoke } = await import("@tauri-apps/api/core");
@@ -128,6 +134,41 @@ export async function removeConfigEntry(
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<RuntimeRestartResult>("remove_config_entry", { section, key });
+}
+
+/** Save a provider API key in the OS credential manager and reconnect the
+ * bundled runtime with only an environment placeholder in OpenCode config. */
+export async function saveProviderApiKey(
+  providerId: string,
+  apiKey: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("save_provider_api_key", { providerId, apiKey });
+}
+
+/** Remove a provider's keychain item and every live file-backed API-key
+ * reference. Custom endpoints may request removal of their entire config. */
+export async function removeProviderApiKey(
+  providerId: string,
+  removeProviderConfig: boolean,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("remove_provider_api_key", {
+    providerId,
+    removeProviderConfig,
+  });
+}
+
+/** Finalize a login written by OpenCode: API keys move to the keychain while
+ * OAuth records remain OpenCode-owned in its app-private auth file. */
+export async function finalizeProviderLogin(
+  providerId: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("finalize_provider_login", { providerId });
 }
 
 export interface JupyterStatus {
@@ -328,6 +369,16 @@ export async function setWorkspace(path: string): Promise<string> {
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("set_workspace", { path });
+}
+
+/** Fail closed unless the pinned runtime's resolved agents retain Spark's
+ *  effective permission floor for the active workspace. Called immediately
+ *  before every desktop turn; browser development has no native sidecar gate. */
+export async function validateRuntimePermissions(path: string | null): Promise<void> {
+  if (!isTauri) return;
+  if (!path) throw new Error("The active workspace is unavailable for permission validation.");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("validate_runtime_permissions", { path });
 }
 
 /** Record which session owns the active workspace (written to
@@ -533,7 +584,8 @@ export async function watchFullscreen(cb: (fullscreen: boolean) => void): Promis
   return win.onResized(() => void sync());
 }
 
-/** Write the provider key/model into OpenCode's config via the Rust command. */
+/** Legacy onboarding bridge. Rust stores the key in the OS credential manager
+ * and writes only its env placeholder alongside non-secret model settings. */
 export async function configureOpenCode(
   creds: OpenCodeCredentials,
 ): Promise<ConfigureResult> {

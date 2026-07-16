@@ -9,7 +9,7 @@
   },
   "items": {
     "new": "새로 만들기",
-    "research": "리서치",
+    "research": "검증 워크플로",
     "analysis": "데이터 분석",
     "notebooks": "노트북",
     "files": "파일",
@@ -47,7 +47,7 @@
     "noResults": "결과가 없습니다.",
     "actions": {
       "newSession": "새 세션",
-      "analyzeData": "내 데이터 분석 (새 워크플로)",
+      "analyzeData": "검증 데이터세트 분석 시작",
       "auditReport": "리포트 감사 (추적성 검토)",
       "openNotebooks": "노트북 열기",
       "manageSkills": "스킬 관리",

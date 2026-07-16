@@ -8,6 +8,7 @@ import {
   type OpenCodeEvent,
   type PermissionAskedEvent,
   type PermissionReply,
+  type ProviderInfo,
   type QuestionAskedEvent,
   type SessionMeta,
   type SkillInfo,
@@ -17,17 +18,22 @@ import type { ArtifactBlock, RuntimeStatus, ThreadBlock, ToolVerb } from "@ai4s/
 import {
   detectTools as probeTools,
   commitWorkspaceSnapshot,
+  finalizeProviderLogin as persistFinalizedProviderLogin,
+  getApprovalMode as loadApprovalMode,
   importOpenCodeLogin as persistOpenCodeLogin,
   isTauri,
   logDebug,
   markSession,
   newDatedWorkspace,
   removeConfigEntry as persistConfigRemoval,
+  removeProviderApiKey as persistProviderApiKeyRemoval,
   runtimePassword,
+  saveProviderApiKey as persistProviderApiKey,
   setApprovalMode as persistApprovalMode,
   setProxySetting as persistProxySetting,
   setWorkspace,
   startRuntime,
+  validateRuntimePermissions,
   workspacePath,
   type ApprovalMode,
   type ProxyMode,
@@ -45,6 +51,7 @@ import i18n from "@/i18n";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const URL_KEY = "ai4s.opencodeUrl";
 const HIDDEN_KEY = "ai4s.hiddenExamples";
+const SELECTED_AGENT_KEY = "spark.selectedResearchAgent";
 
 function initialUrl(): string {
   if (typeof window === "undefined") return DEFAULT_OPENCODE_URL;
@@ -57,6 +64,25 @@ function initialHidden(): string[] {
   } catch {
     return [];
   }
+}
+
+function savedAgent(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(SELECTED_AGENT_KEY);
+}
+
+/** Pick only an agent actually reported by the current OpenCode instance. */
+export function resolveResearchAgent(
+  agents: AgentInfo[],
+  preferred: string | null,
+): string | null {
+  if (preferred && agents.some((agent) => agent.name === preferred)) return preferred;
+  return (
+    agents.find((agent) => agent.name === "research")?.name ??
+    agents.find((agent) => agent.mode === "primary")?.name ??
+    agents[0]?.name ??
+    null
+  );
 }
 
 export interface Thread {
@@ -81,6 +107,11 @@ interface RuntimeState {
   threads: Record<string, Thread>;
   skills: SkillInfo[];
   agents: AgentInfo[];
+  /** Providers/models reported by the current OpenCode runtime. */
+  providers: ProviderInfo[];
+  /** Agent attached to General Research prompt turns. Always comes from /agent. */
+  selectedAgent: string | null;
+  setSelectedAgent: (agent: string) => void;
   /** Slash commands the runtime can run ("/" palette): config commands,
    *  skills and MCP prompts, one merged list from GET /command. */
   commands: CommandInfo[];
@@ -88,16 +119,25 @@ interface RuntimeState {
   defaultModel: string | null;
   /** Apply a new default model and transparently reconnect (see impl). */
   setDefaultModel: (model: string) => Promise<void>;
-  /** The composer's approval switch: "approve" (dangerous commands prompt)
-   *  or "full" (everything in-workspace runs). Loaded from OpenCode config. */
+  /** Native approval state. `full` and `custom` are report-only legacy/user
+   *  states; only the safe `approve` policy can be selected and persisted. */
   approvalMode: ApprovalMode;
-  /** Persist a new approval mode (restarts the sidecar) and reconnect. */
+  /** Persist the safe manual-approval policy (restarts and reconnects). */
   setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   /** Persist the network-proxy setting (restarts the sidecar) and reconnect. */
   setProxySetting: (mode: ProxyMode, url: string) => Promise<void>;
   /** Remove a file-backed provider/MCP config entry and reconnect to the
    *  authoritative post-restart endpoint. */
   removeConfigEntry: (section: "provider" | "mcp", key: string) => Promise<void>;
+  /** Persist a provider API key in the OS credential manager and reconnect. */
+  saveProviderApiKey: (providerId: string, apiKey: string) => Promise<void>;
+  /** Remove a provider key and optionally its full custom-provider config. */
+  removeProviderApiKey: (
+    providerId: string,
+    removeProviderConfig: boolean,
+  ) => Promise<void>;
+  /** Secure an OpenCode-owned API login after its callback completes. */
+  finalizeProviderLogin: (providerId: string) => Promise<void>;
   /** Import the user's CLI login and reconnect when the runtime restarts. */
   importOpenCodeLogin: () => Promise<boolean>;
   tools: ToolStatus[];
@@ -139,6 +179,10 @@ interface RuntimeState {
   /** True when the user explicitly picked the active folder for the next new
    *  session; false means a new session gets its own fresh dated folder. */
   workspacePinned: boolean;
+  /** A fresh draft's automatic dated folder already exists. Attachments and
+   *  large pastes materialize it before the first turn so file writes and the
+   *  lazily-created OpenCode session share one directory. */
+  draftWorkspaceMaterialized: boolean;
   /** A deliberate workspace move is in flight (event-stream reconnect into the
    *  new folder). The UI must not present it as a disconnection — no status
    *  flip, no Connect button, no help card. Real failures surface after the
@@ -155,6 +199,9 @@ interface RuntimeState {
   shellTurns: Record<string, true>;
   /** Switch to an existing folder, or (with `dated`) create a new dated one. */
   switchWorkspace: (target: { path: string } | { dated: string }) => Promise<void>;
+  /** Materialize and reconnect to the automatic dated folder for a fresh,
+   *  unpinned draft. Concurrent callers share one transition. */
+  prepareDraftWorkspace: () => Promise<string | null>;
   openSession: (id: string) => Promise<void>;
   /** Internal resume does not count as user navigation and therefore cannot
    *  cancel an in-flight turn's ownership of its origin thread. */
@@ -286,6 +333,9 @@ let runtimeMutationQueue: Promise<void> = Promise.resolve();
  *  setter commits, while the older transition correctly declines to reconnect
  *  because Disconnect superseded it. */
 let workspaceMutationQueue: Promise<void> = Promise.resolve();
+/** Attachment and oversized-paste handlers can race on the same fresh draft.
+ * They must await one dated-folder transition rather than create one each. */
+let draftWorkspacePreparation: Promise<string | null> | null = null;
 
 /** Runtime restarts, workspace setters, and session-scoped reconnects can
  * overlap. Each operation owns a token so one finally block cannot re-enable
@@ -737,6 +787,7 @@ function clearEndpointNamespace(): void {
   recordedProvenance.clear();
   recordedRuns.clear();
   clearAllLiveFolds();
+  draftWorkspacePreparation = null;
   useRuntimeStore.setState({
     status: "offline",
     sessions: [],
@@ -744,6 +795,8 @@ function clearEndpointNamespace(): void {
     threads: {},
     skills: [],
     agents: [],
+    providers: [],
+    selectedAgent: null,
     commands: [],
     defaultModel: null,
     approvalMode: "approve",
@@ -752,6 +805,7 @@ function clearEndpointNamespace(): void {
     permissions: [],
     sessionParents: {},
     panes: {},
+    draftWorkspaceMaterialized: false,
     sending: false,
     runningSessions: {},
     shellTurns: {},
@@ -847,23 +901,12 @@ async function performTurn(
     let id = initialSessionId;
     if (!id) {
       // Lazy-create the session on the first message (#3). Unless the user
-      // pinned a folder via the workspace switcher, a new session gets its
-      // own fresh dated folder (~/Documents/OpenScience/<date-time>) first,
-      // so its files never pile up in the bare base folder.
+      // pinned a folder via the workspace switcher, materialize (or reuse) the
+      // draft's dated folder first. Attachment/paste handlers use this same
+      // transition before writing, so files and the first session cannot split
+      // across two workspaces.
       if (isTauri && !get().workspacePinned) {
-        const disconnectAtWorkspaceChange = disconnectGeneration;
-        const workspaceIntent = ++workspaceTransitionGeneration;
-        const finishSwitching = beginSwitchingOperation();
-        try {
-          await enqueueWorkspaceMutation(() => newDatedWorkspace(datedWorkspaceName()));
-          await kernelReset().catch(() => {});
-          if (workspaceIntent !== workspaceTransitionGeneration) {
-            throw new Error("The session folder change was superseded by a newer workspace choice.");
-          }
-          if (disconnectGeneration === disconnectAtWorkspaceChange) await get().connectRetry();
-        } finally {
-          finishSwitching();
-        }
+        await get().prepareDraftWorkspace();
         if (get().status !== "ready" || !client) {
           throw new Error("Runtime did not reconnect after creating the session folder.");
         }
@@ -923,6 +966,7 @@ async function performTurn(
       runtimeEndpointGeneration === runtimeEndpointAtStart
         ? sid
         : null;
+    await validateRuntimePermissions(get().workspace);
     assertStillConnected();
     runningSessionOwners.set(sid, turnOwner);
     latestSessionTurnOwners.set(sid, turnOwner);
@@ -1073,6 +1117,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   threads: {},
   skills: [],
   agents: [],
+  providers: [],
+  selectedAgent: savedAgent(),
   commands: [],
   defaultModel: null,
   approvalMode: "approve",
@@ -1085,10 +1131,19 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   panes: {},
   workspace: null,
   workspacePinned: false,
+  draftWorkspaceMaterialized: false,
   switching: false,
   sending: false,
   runningSessions: {},
   shellTurns: {},
+
+  setSelectedAgent: (selectedAgent) => {
+    if (!get().agents.some((agent) => agent.name === selectedAgent)) return;
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(SELECTED_AGENT_KEY, selectedAgent);
+    }
+    set({ selectedAgent });
+  },
 
   // These write the CURRENT session's pane (DRAFT_KEY on a draft), keeping the
   // artifact inspector, the Files browser, and the Runs pane mutually exclusive
@@ -1158,15 +1213,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     const p = get().permissions.find((x) => x.requestId === requestId);
     const requestClient = client;
     if (!p || !requestClient) return;
-    // Identical pending asks (same session, action and resources — e.g. three
-    // parallel reads into one folder) are ONE question to the user: answer
-    // them all with one click instead of re-asking for each tool call.
-    const sig = (x: PermissionAskedEvent) =>
-      JSON.stringify([x.sessionId, x.action, x.resources]);
-    const batch = get().permissions.filter((x) => sig(x) === sig(p));
-    set((s) => ({ permissions: s.permissions.filter((x) => sig(x) !== sig(p)) }));
+    // "Allow once" and "Deny" apply to exactly the request whose card the
+    // user answered. OpenCode request ids are the authorization boundary;
+    // visually identical concurrent tool calls must remain separate asks.
+    set((s) => ({
+      permissions: s.permissions.filter((x) => x.requestId !== requestId),
+    }));
     try {
-      await Promise.all(batch.map((x) => requestClient.replyPermission(x.requestId, reply)));
+      await requestClient.replyPermission(requestId, reply);
     } catch (err) {
       if (client === requestClient)
         set({ error: err instanceof Error ? err.message : String(err) });
@@ -1193,16 +1247,23 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     const catalogClient = client;
     if (!catalogClient) return;
     try {
-      const [firstSkills, agents, defaultModel, commands] = await Promise.all([
+      const [firstSkills, agents, defaultModel, commands, providers] = await Promise.all([
         catalogClient.listSkills(),
         catalogClient.listAgents(),
         catalogClient.getDefaultModel().catch(() => null),
         catalogClient.listCommands().catch(() => []),
+        typeof catalogClient.listProviders === "function"
+          ? catalogClient.listProviders().catch(() => [])
+          : Promise.resolve([]),
       ]);
       if (client !== catalogClient) return;
-      set({ agents, defaultModel, commands });
+      const selectedAgent = resolveResearchAgent(agents, get().selectedAgent ?? savedAgent());
+      if (selectedAgent && typeof window !== "undefined") {
+        window.localStorage.setItem(SELECTED_AGENT_KEY, selectedAgent);
+      }
+      set({ agents, providers, defaultModel, commands, selectedAgent });
       let skills = firstSkills;
-      // The first workspace-scoped /api/skill call triggers OpenCode's lazy
+      // The first workspace-scoped /skill call triggers OpenCode's lazy
       // instance init and can answer before the scan finishes — poll briefly.
       for (let i = 0; skills.length === 0 && i < 4; i++) {
         await sleep(400);
@@ -1225,12 +1286,21 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   },
 
   setApprovalMode: async (mode) => {
-    if (!RUNTIME_POLICY.allowApprovalModeChanges || mode !== "approve") {
+    if (!RUNTIME_POLICY.allowApprovalModeChanges) {
       set({
         approvalMode: "approve",
-        error: "Full access is disabled by the internal safety policy.",
+        error: "Approval mode changes are disabled by the runtime policy.",
       });
       return;
+    }
+    if (mode !== "approve") {
+      const error = new Error(
+        mode === "full"
+          ? "Full Access is a legacy unsafe mode; switch to Manual approval."
+          : "Custom approval policies are report-only and cannot be selected in Spark Agent.",
+      );
+      set({ error: error.message });
+      throw error;
     }
     await runMaskedRuntimeMutation(() => persistApprovalMode(mode));
     set({ approvalMode: mode });
@@ -1242,6 +1312,20 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   removeConfigEntry: async (section, key) => {
     await runMaskedRuntimeMutation(() => persistConfigRemoval(section, key));
+  },
+
+  saveProviderApiKey: async (providerId, apiKey) => {
+    await runMaskedRuntimeMutation(() => persistProviderApiKey(providerId, apiKey));
+  },
+
+  removeProviderApiKey: async (providerId, removeProviderConfig) => {
+    await runMaskedRuntimeMutation(() =>
+      persistProviderApiKeyRemoval(providerId, removeProviderConfig),
+    );
+  },
+
+  finalizeProviderLogin: async (providerId) => {
+    await runMaskedRuntimeMutation(() => persistFinalizedProviderLogin(providerId));
   },
 
   importOpenCodeLogin: async () => {
@@ -1300,9 +1384,15 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // runs for minutes (macOS TCC) and each flip repaints the whole page.
     teardownClient();
     // Scope skill discovery to the sidecar's workspace (null in browser dev).
-    const directory = await workspacePath();
+    const [directory, configuredApprovalMode] = await Promise.all([
+      workspacePath(),
+      loadApprovalMode().catch(() => "approve" as const),
+    ]);
     if (activeOperation !== connectionGeneration) return;
-    set({ workspace: directory, approvalMode: "approve" });
+    set({
+      workspace: directory,
+      approvalMode: configuredApprovalMode,
+    });
     // The bundled sidecar requires per-run Basic auth; browser dev (no Tauri)
     // gets null and connects to a user-run passwordless server.
     const password = await runtimePassword();
@@ -1700,16 +1790,83 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     }
   },
 
+  prepareDraftWorkspace: async () => {
+    if (!isTauri || get().currentId || get().workspacePinned) return get().workspace;
+    if (draftWorkspacePreparation) return draftWorkspacePreparation;
+
+    const preparation = (async (): Promise<string | null> => {
+      const finishSwitching = beginSwitchingOperation();
+      try {
+        // A prior create/session attempt may have failed after committing the
+        // folder. Reuse it and repair only the scoped connection.
+        if (get().draftWorkspaceMaterialized) {
+          if (get().status !== "ready" || !client) await get().connectRetry();
+          if (get().status !== "ready" || !client) {
+            throw new Error("Runtime did not reconnect to the prepared session folder.");
+          }
+          return get().workspace;
+        }
+
+        const navigationAtStart = conversationNavigationGeneration;
+        const disconnectAtStart = disconnectGeneration;
+        const workspaceIntent = ++workspaceTransitionGeneration;
+        const directory = await enqueueWorkspaceMutation(() =>
+          newDatedWorkspace(datedWorkspaceName()),
+        );
+        if (
+          navigationAtStart !== conversationNavigationGeneration ||
+          workspaceIntent !== workspaceTransitionGeneration ||
+          disconnectAtStart !== disconnectGeneration
+        ) {
+          throw new Error("The session folder change was superseded by a newer choice.");
+        }
+
+        // Publish the committed destination before reconnecting. If reconnect
+        // fails, a retry repairs this same folder instead of creating another.
+        set({ workspace: directory, draftWorkspaceMaterialized: true });
+        await kernelReset().catch(() => {});
+        if (
+          navigationAtStart !== conversationNavigationGeneration ||
+          workspaceIntent !== workspaceTransitionGeneration ||
+          disconnectAtStart !== disconnectGeneration
+        ) {
+          throw new Error("The session folder change was superseded by a newer choice.");
+        }
+        await get().connectRetry();
+        if (get().status !== "ready" || !client) {
+          throw new Error("Runtime did not reconnect after creating the session folder.");
+        }
+        return get().workspace ?? directory;
+      } finally {
+        finishSwitching();
+      }
+    })();
+
+    draftWorkspacePreparation = preparation;
+    try {
+      return await preparation;
+    } finally {
+      if (draftWorkspacePreparation === preparation) draftWorkspacePreparation = null;
+    }
+  },
+
   // "New" opens a blank draft — no session is created until the first message (#3).
   // A fresh draft also drops any pinned folder: back to the dated-folder default.
   startDraft: () => {
     conversationNavigationGeneration++;
+    draftWorkspacePreparation = null;
     set((s) => {
       const threads = { ...s.threads };
       delete threads[DRAFT_KEY]; // leftovers from an aborted first message
       const panes = { ...s.panes };
       delete panes[DRAFT_KEY]; // a fresh draft starts with a closed pane
-      return { currentId: null, workspacePinned: false, threads, panes };
+      return {
+        currentId: null,
+        workspacePinned: false,
+        draftWorkspaceMaterialized: false,
+        threads,
+        panes,
+      };
     });
   },
 
@@ -1718,6 +1875,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   // folder; no session, database row, or file is deleted here.
   startDraftInCurrentWorkspace: () => {
     conversationNavigationGeneration++;
+    draftWorkspacePreparation = null;
     set((s) => {
       const threads = { ...s.threads };
       threads[DRAFT_KEY] = {
@@ -1734,7 +1892,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       };
       const panes = { ...s.panes };
       delete panes[DRAFT_KEY];
-      return { currentId: null, workspacePinned: true, threads, panes };
+      return {
+        currentId: null,
+        workspacePinned: true,
+        draftWorkspaceMaterialized: false,
+        threads,
+        panes,
+      };
     });
   },
 
@@ -1759,7 +1923,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         // files from the previous folder. Session panes keep their memory.
         const panes = { ...s.panes };
         delete panes[DRAFT_KEY];
-        return { currentId: null, panes, workspacePinned: true };
+        return {
+          currentId: null,
+          panes,
+          workspacePinned: true,
+          draftWorkspaceMaterialized: false,
+        };
       });
       if (disconnectGeneration !== disconnectAtStart) return;
       await get().connectRetry();
@@ -1946,8 +2115,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   // The send lifecycle (new → input → send → response) is shared by plain
   // prompts, "!" shell commands and "/" slash commands — see performTurn.
-  sendPrompt: (text) =>
-    performTurn(
+  sendPrompt: (text) => {
+    // Capture the user's choices before performTurn may materialize a draft
+    // workspace and reconnect. That reconnect refreshes the catalog and must
+    // not silently replace the selections for the turn already submitted.
+    const agent = get().selectedAgent ?? undefined;
+    const model = get().defaultModel ?? undefined;
+    return performTurn(
       set,
       get,
       text,
@@ -1955,12 +2129,16 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         withRetry(
           () => {
             assertStillConnected();
-            return turnClient.sendPrompt(sid, text);
+            return turnClient.sendPrompt(sid, text, {
+              agent,
+              model,
+            });
           },
           assertStillConnected,
         ),
       false,
-    ),
+    );
+  },
 
   // No retry for shell/command: re-POSTing would run the command twice.
   runShell: (command) => {
@@ -1968,7 +2146,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       set({ error: "Direct shell mode is disabled by the internal safety policy." });
       return Promise.resolve(null);
     }
-    const agent = get().agents.find((a) => a.mode === "primary")?.name ?? "build";
+    const agent =
+      get().selectedAgent ?? get().agents.find((a) => a.mode === "primary")?.name ?? "build";
     return performTurn(
       set,
       get,
@@ -1984,11 +2163,20 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       get().startDraftInCurrentWorkspace();
       return null;
     }
+    // Capture the user's runtime selections before performTurn may materialize
+    // a workspace and reconnect. Catalog refresh during that transition must
+    // not silently drop the agent/model chosen for this command.
+    const agent = get().selectedAgent ?? undefined;
+    const model = get().defaultModel ?? undefined;
+    const options = agent || model ? { agent, model } : undefined;
     return performTurn(
       set,
       get,
       args ? `/${name} ${args}` : `/${name}`,
-      (turnClient, sid) => turnClient.runCommand(sid, name, args),
+      (turnClient, sid) =>
+        options
+          ? turnClient.runCommand(sid, name, args, options)
+          : turnClient.runCommand(sid, name, args),
       true,
     );
   },
@@ -2232,6 +2420,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         "customize-opencode skill. If it is a URL, fetch it; if it is Markdown, save it as " +
         "a skill file under .opencode/skills/<name>/SKILL.md. Then reply with the installed skill's name.\n\n---\n" +
         text;
+      await validateRuntimePermissions(get().workspace);
+      if (
+        disconnectGeneration !== disconnectAtStart ||
+        runtimeEndpointGeneration !== runtimeEndpointAtStart
+      )
+        return null;
       runningSessionOwners.set(id, installOwner);
       latestSessionTurnOwners.set(id, installOwner);
       set((s) => {

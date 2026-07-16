@@ -52,7 +52,18 @@ const REF_EXTS = [
   "bed", "bedgraph", "bdg", "gff", "gff3", "gtf", "vcf",
   "stl", "obj", "ply", "gltf", "glb",
 ];
+const REF_EXT_SET = new Set(REF_EXTS);
 const REF_RE = new RegExp(`[\\w./-]+\\.(?:${REF_EXTS.join("|")})\\b`, "gi");
+
+/** One source of truth for files worth reconstructing into the workspace
+ * artifact shelf after restart. It includes every explicit artifact kind and
+ * every rich preview/reference format, plus extensionless scientific outputs. */
+export function isDiscoverableArtifactName(filename: string): boolean {
+  const ext = extOf(filename);
+  if (REF_EXT_SET.has(ext) || Object.prototype.hasOwnProperty.call(EXT_KIND, ext)) return true;
+  const base = (filename.split(/[\\/]/).pop() ?? filename).toLowerCase();
+  return base === "doscar" || base === "eigenval";
+}
 
 /**
  * Extract workspace file paths mentioned in an agent message so a file produced by

@@ -1,19 +1,19 @@
 # Spark Agent Desktop — Product Requirements
 
-> **Status (v0.1, 2026-07-02).** The runtime is **OpenCode**, bundled as an isolated
-> sidecar (one-click, auto-started, does not touch a user's own OpenCode). Built: the
-> three-column workbench UI, real multi-session chat with history, a real Skills/Agents
-> view, BYOK key config, and a macOS installer. Literature search, provenance/reviewer,
-> code-execution backends, and Science Packs below are the target scope, not all shipped.
+> **Status (Foundation, 2026-07-16).** The only general agent runtime is
+> **OpenCode**, bundled as an isolated sidecar that does not touch a user's own
+> OpenCode. General Research is the default product surface. The existing strict
+> literature and dataset pipelines remain available as optional Structured /
+> Verified Workflows. Connector and viewer parity described below is not all shipped.
 
 ## 1. Positioning
 
-**Spark Agent Desktop** is a local-first AI research workbench with macOS /
-Windows installers, positioned as an **open-source alternative to Claude Science
-style products**.
+**Spark Agent Desktop** is an open-source, local-first AI workbench for scientific
+research with macOS / Windows installers.
 
-It is not an ordinary paper-summarization tool. It is a local-first, model-agnostic,
-reproducible, auditable research agent workbench that helps researchers do:
+Give it a research goal. It can read the literature, form hypotheses, write and
+run code, execute experiments, analyze results, and write up what it finds. It is
+not an ordinary paper-summarization tool or a fixed workflow router. It supports:
 
 - Literature search
 - Paper parsing
@@ -22,12 +22,12 @@ reproducible, auditable research agent workbench that helps researchers do:
 - Figure generation
 - Report writing
 - Citation checking
-- Artifact provenance
-- Reusable research workflows
+- Research artifacts and iterative methodology
+- Optional reproducible and verified workflows
 
 Slogan:
 
-> Open-source AI research workbench for reproducible science.
+> The open-source AI workbench for scientific research.
 
 ## 2. Goals
 
@@ -91,9 +91,13 @@ No lock-in to Claude, OpenAI, or any single local model. Users can choose OpenRo
 OpenAI-compatible APIs, the Anthropic API, or local models; Ollama / vLLM / LM Studio
 support follows.
 
-### 4.3 Reproducibility-first
+### 4.3 Open-ended by default, reproducible when chosen
 
-Every important artifact must be traceable:
+General Research lets the agent revise its plan, methods, code, and dependencies
+as evidence arrives. It must not be forced through `science-core` intent routing,
+a deterministic compiler, or an approval object for each step.
+
+When users select a Verified Workflow, every important artifact must be traceable:
 
 | Artifact | Must trace to |
 | --- | --- |
@@ -105,10 +109,25 @@ Every important artifact must be traceable:
 
 ### 4.4 Human-in-the-loop
 
-High-risk actions — file writes, command execution, dependency installs, network
-access, file deletion, remote compute — require user approval. The bundled OpenCode runtime provides
-dangerous-command approval, container isolation, MCP credential filtering, and
-cross-session isolation.
+General Research uses a Spark-managed OpenCode manual-approval profile. Ordinary
+workspace reads may proceed, but every write/edit, Shell command, web request,
+and MCP action asks first; unknown concrete tool IDs default to ask and file-tool
+access outside the workspace is denied. The Composer does not offer Full Access
+or persistent grants. Verified Workflows retain their existing plan, execution,
+and remote-data approvals. Manual approval is not a process-isolation boundary,
+so arbitrary-code confinement remains a separate Sandbox requirement.
+
+### 4.5 Execution modes
+
+| Mode | Product behavior | Runtime owner |
+| --- | --- | --- |
+| General Research (default) | Open-ended files, Python, Shell, skills, MCP, and iterative research; no Docker dependency | OpenCode |
+| Sandbox Research | General capabilities executed in a constrained runtime with configurable network and resource limits | OpenCode plus an optional sandbox backend |
+| Verified Workflow | Typed plans, explicit approvals, hash-bound inputs, deterministic compiler, isolated execution, and deterministic review | `science-core` and `science-runtime` |
+
+OpenCode is canonical for General Research sessions, turns, tools, agents,
+skills, permissions, providers, MCP, and sub-agents. `science-core` is canonical
+only for Structured / Verified Workflows and reusable scientific services.
 
 ## 5. MVP scope
 
@@ -125,9 +144,10 @@ After downloading and first opening, the user enters onboarding:
 5. Use the bundled OpenCode runtime (auto-started; no separate install).
 6. Create the first research project.
 
-First launch must clearly tell the user: data is stored locally by default; the agent
-requests authorization before running commands; the user must supply their own model
-API key; research results need human verification and are not final conclusions.
+First launch must clearly tell the user: data is stored locally by default; the
+selected OpenCode permission profile controls tool authorization; the user must
+supply their own model API key; research results need human verification and are
+not final conclusions.
 
 #### 5.1.2 Home
 
@@ -147,13 +167,16 @@ Middle: agent chat + plan + execution progress
 Right:  artifacts / citations / review / run logs
 ```
 
-Core interaction: user submits a task → agent produces a plan → user confirms →
-agent runs tools → each step shows status → artifacts land in the Artifact panel →
-reviewer checks automatically → user exports the report.
+Default interaction: user submits a goal → Research Agent scopes the task → loads
+relevant skills → reads literature and files → writes and runs code → inspects the
+results → revises the method when needed → produces artifacts and a synthesis.
+OpenCode owns this loop; it does not create a parallel `science-core` workflow.
 
 #### 5.1.4 Plan confirmation
 
-For multi-step tasks the agent must produce a plan before executing.
+General Research may plan inline or use the read-only `plan` agent, but does not
+require product-level plan approval. The following strict plan confirmation
+belongs to Structured / Verified Workflows:
 
 ```text
 Goal:
@@ -181,9 +204,10 @@ The Skills page lists the **real** skills and agents the OpenCode runtime has lo
 sources, layered:
 
 1. **OpenCode built-in** skills/agents (shipped with the runtime).
-2. **Self-authored AI4S skills** — planned: `literature-review`, `reproducible-analysis`,
-   `citation-reviewer`, `figure-provenance`, `paper-to-report` (Markdown skills under
-   `runtime/skills/core`, loaded from the workspace `.opencode/skill/`).
+2. **Bundled Spark skills** — the Foundation pack includes `literature-review`,
+   `citation-management`, `hypothesis-generation`, `scientific-critical-thinking`,
+   `exploratory-data-analysis`, `statistical-analysis`, `scientific-writing`, and
+   `matplotlib` as OpenCode-compatible `SKILL.md` bundles.
 3. **Third-party scientific skills** — e.g. K-Dense `scientific-agent-skills` (curated
    install, a later feature).
 
@@ -217,7 +241,9 @@ generating code, review status, and export / copy / open actions.
 
 #### 5.1.9 Provenance
 
-Each project auto-generates `provenance.jsonl`, `manifest.json`, and `review.md`.
+Verified projects generate `provenance.jsonl`, `manifest.json`, and `review.md`.
+General Research may create these artifacts when requested, but discovery in the
+artifact dock does not depend on prior database registration.
 
 `provenance.jsonl` records each step, append-only:
 
@@ -314,9 +340,13 @@ Success · Warning · Failed.
 
 ### 7.3 Approval dialog
 
-For dangerous actions — delete file, overwrite file, install package, run shell,
-network access, connect remote server, upload file — a dialog must confirm. Options:
-Allow Once · Always Allow for This Project · Deny · View Details.
+OpenCode's Spark-managed profile asks before every workspace write/edit, Shell
+command, web fetch/search, MCP action, or patch operation; unknown tool IDs ask
+and file-tool access outside the workspace is denied. Ordinary bounded workspace
+reads do not require a second Spark approval. General Research is not an OS
+sandbox; Sandbox and Verified execution provide stronger isolation. Prompt
+options are Allow Once · Deny · View Details; persistent grants and Full Access
+are not offered.
 
 ### 7.4 Command palette
 
@@ -337,15 +367,16 @@ Outputs: `plan.md`, `data/corpus.csv`, `scripts/analyze.py`, `figures/year_trend
 
 ## 9. Roadmap
 
-- **v0.1 Desktop MVP** — macOS / Windows installers, local workspace, bundled OpenCode runtime,
-  model config, agent chat, plan approval, literature search, Python analysis, artifact
-  panel, `provenance.jsonl`, basic reviewer, BCI demo.
-- **v0.2 Research Workflows** — K-Dense skills installer, PDF parsing, citation checker,
-  Markdown report export, workflow template library, fuller review panel.
-- **v0.3 Notebook Runtime** — Jupyter Kernel Gateway, persistent Python kernel, notebook
-  preview, R support, Quarto / PDF / DOCX export.
-- **v0.4 Advanced Science** — BioMCP; PubMed / GEO / ChEMBL / UniProt connectors;
-  RDKit / py3Dmol; single-cell and molecular-screening templates; HPC / SSH / Modal runner.
+- **Foundation** — General Research as the default, OpenCode ownership, Research
+  Agent and foundation skills, runtime-backed selectors, workspace artifact
+  discovery, and relabeled Verified Workflows.
+- **Agent and skill parity** — complete domain/sub-agent roster, skill inspection,
+  authoring, precedence, and audited Git installation.
+- **Scientific search and sandbox** — unified literature connectors, persistent
+  notebook kernel, general container execution, Python environment management,
+  R, and configurable network access.
+- **Scientific workspace and extensibility** — scientific viewers, terminal/editor,
+  custom agents and commands, MCP marketplace, cloud/HPC backends, and plugin hooks.
 
 ## 10. Non-functional requirements
 
@@ -357,9 +388,14 @@ figures; virtualized log lists.
 
 ### 10.2 Security
 
-API keys encrypted locally; workspace sandbox isolation; dangerous-command approval;
-no file upload by default; no full-disk access for the agent by default; access limited
-to the current project directory; all network access auditable.
+No silent permission escalation; every General write/edit/Shell/web/MCP operation
+prompts, unknown concrete tools ask, and outside-workspace file-tool access is
+denied. Stricter isolation and immutable approvals apply in Verified mode; remote
+connections are auditable. Verified-workflow model keys and simple General
+provider API keys use the OS credential manager; unsupported structured provider
+records fail closed rather than being silently weakened or corrupted. OAuth,
+scientific-connector, and Jupyter secret migration plus execution-time secret
+isolation remain release-blocking work.
 
 ### 10.3 Maintainability
 
@@ -374,7 +410,6 @@ complete example results; clear license; separate note for third-party skill lic
 
 ## 11. One-liner
 
-**Spark Agent Desktop is a research agent workbench with macOS and
-Windows installers that uses OpenCode, MCP, scientific skills, and a reproducible
-artifact system to weave literature, code, figures, reports, and review into one
-local-first scientific workflow.**
+**Spark Agent Desktop is the open-source, local-first AI workbench for scientific
+research: OpenCode powers open-ended research sessions, and optional Verified
+Workflows add strict reproducibility and review when required.**

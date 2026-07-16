@@ -40,14 +40,18 @@
       "aria": "承認モード",
       "title": "エージェントの操作をどのように承認するか",
       "menuAria": "承認モード",
-      "menuTitle": "エージェントの操作をどのように承認しますか？",
+      "menuTitle": "Spark の操作には手動承認が必要です",
       "approve": {
-        "label": "都度確認する",
-        "description": "削除・インストール・リモート接続の前に確認します"
+        "label": "手動承認",
+        "description": "すべてのシェルコマンド、パッチ適用、ウェブ要求の前に確認します"
       },
       "full": {
-        "label": "フルアクセス",
-        "description": "確認せずにすべてのコマンドを実行します"
+        "label": "旧フルアクセス",
+        "description": "安全でない旧モードです。手動承認に切り替えてください"
+      },
+      "custom": {
+        "label": "外部カスタムポリシー",
+        "description": "Spark の管理外です。安全な既定値へ戻すには手動承認に切り替えてください"
       }
     },
     "error": {
@@ -59,6 +63,16 @@
     "newDescription": "このフォルダでチャット文脈を消去",
     "clearDescription": "/new と同じ。ファイルはこのフォルダに残ります",
     "cleared": "チャット文脈を消去しました。ファイルは同じフォルダに残ります。"
+  },
+  "researchControls": {
+    "mode": { "aria": "実行モード", "general": "一般研究", "sandbox": "サンドボックス研究", "verified": "検証済みワークフロー" },
+    "agent": { "aria": "研究エージェント", "empty": "利用可能なエージェントがありません", "primaryGroup": "主要エージェント", "subagentGroup": "サブエージェント", "otherGroup": "その他のエージェント" },
+    "model": { "aria": "モデル", "empty": "利用可能なモデルがありません" },
+    "skills": { "aria": "研究スキルを開く", "title": "OpenCode が報告したスキルを表示", "count": "{{count}} スキル" }
+  },
+  "workspaceArtifacts": {
+    "heading": "ワークスペース成果物", "count": "{{count}} 件を検出", "refreshAria": "成果物を更新",
+    "sandboxTitle": "サンドボックス研究は未設定です。", "sandboxBody": "OpenCode を使う場合は一般研究、構造化プロセスには検証済みワークフローを選択してください。"
   },
   "starters": {
     "newSession": "新規セッション",

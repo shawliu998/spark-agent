@@ -9,7 +9,7 @@
   },
   "items": {
     "new": "Nuevo",
-    "research": "Investigación",
+    "research": "Flujos verificados",
     "analysis": "Análisis de datos",
     "notebooks": "Cuadernos",
     "files": "Archivos",
@@ -47,7 +47,7 @@
     "noResults": "Sin resultados.",
     "actions": {
       "newSession": "Nueva sesión",
-      "analyzeData": "Analizar mis datos (nuevo flujo de trabajo)",
+      "analyzeData": "Iniciar análisis verificado de datos",
       "auditReport": "Auditar un informe (revisión de trazabilidad)",
       "openNotebooks": "Abrir cuadernos",
       "manageSkills": "Gestionar habilidades",

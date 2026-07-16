@@ -56,8 +56,8 @@
   "skills": {
     "title": "Habilidades y agentes",
     "description": {
-      "prefix": "Cargado en vivo desde el entorno de ejecución de OpenCode — el paquete ai4s-skills incluido, más todo lo que haya bajo ",
-      "suffix": " en tu espacio de trabajo."
+      "prefix": "Cargado en vivo desde OpenCode: habilidades científicas de Spark incluidas y habilidades de OpenCode del proyecto y del usuario, como ",
+      "suffix": "."
     },
     "install": {
       "sectionTitle": "Instalar una habilidad",
@@ -89,10 +89,36 @@
       "source": {
         "builtin": "incluida",
         "project": "proyecto",
-        "user": "usuario"
+        "global": "global / incluida",
+        "unknown": "origen desconocido"
       }
     },
     "disconnected": "Conecta el entorno de ejecución para listar las habilidades y agentes que ha cargado."
+  },
+  "research": {
+    "title": "Flujos estructurados / verificados",
+    "refreshAria": "Actualizar el espacio de flujos verificados",
+    "libraryTitle": "Biblioteca de flujos verificados",
+    "newProjectAria": "Crear un proyecto de flujos verificados",
+    "workflows": {
+      "heading": "Flujos verificados",
+      "newAria": "Iniciar un nuevo flujo verificado",
+      "empty": "Aún no hay flujos verificados guardados."
+    },
+    "workflow": {
+      "composerLabel": "Da a Spark Agent un objetivo de investigación estructurado",
+      "modeLabel": "Modo de garantía del flujo",
+      "typeLabel": "Tipo de flujo verificado",
+      "typeLiterature": "Síntesis bibliográfica verificada",
+      "typeDataset": "Análisis verificado de datos",
+      "listAutoType": " · enrutamiento automático verificado",
+      "listDatasetType": " · análisis verificado de datos · entorno local aislado",
+      "listLiteratureRemoteType": " · síntesis bibliográfica verificada · asistida por modelo",
+      "listLiteratureLocalType": " · síntesis bibliográfica verificada · local",
+      "goal": "Objetivo de investigación verificado",
+      "startAuto": "Iniciar flujo verificado",
+      "start": "Crear plan verificado"
+    }
   },
   "notFound": {
     "title": "404 — No encontrado",

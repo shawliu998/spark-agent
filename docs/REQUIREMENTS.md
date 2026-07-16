@@ -45,8 +45,10 @@ Spark Agent must win on those four axes — plus two things competitors are
 criticized for lacking: **multi-discipline breadth** and **Windows support**.
 
 Do **not** market as "open-source Claude Science" or "zero hallucination."
-Market as: *"Spark Agent — local-first, evidence-first AI research
-workbench for macOS, Windows & Linux."* Sell **traceable / verifiable**, not **perfect**.
+Market as: *"Spark Agent — the open-source, local-first AI workbench for
+scientific research."* Lead with the whole General Research loop; present
+traceable / verifiable execution as an optional Structured Workflow strength,
+never as a claim of perfect correctness.
 
 ---
 
@@ -271,16 +273,15 @@ competitors.
 
   **Critical — safety defaults (AGENTS.md non-negotiable):**
   - [x] **Approval mode is not configured anywhere.** ~~The bundled OpenCode
-    1.17.13 binary's embedded default is `{"*":"allow"}`, so bash / file edits /
-    dependency installs run unprompted.~~ **Fixed (2026-07-05):** a Codex-style
-    two-mode switch in the composer — **Approve for me** (default; deletion /
-    installs / remote / privilege commands and webfetch prompt first, via ask
-    rules seeded into the app-private config before sidecar start) and **Full
-    access** (`"permission": {}` = OpenCode builtin defaults, an explicit user
-    choice that survives restarts). Verified against the running bundled
-    binary: rules land in the build agent's resolved ruleset after the builtin
-    `*: allow` (last-match-wins), and a 22-case simulation using OpenCode's
-    verbatim wildcard/evaluate algorithm behaves as designed.
+    1.17.13 binary's embedded default is `{"*":"allow"}`, so bash and edits run
+    unprompted.~~ **Replaced by the Foundation manual-only policy:** the product
+    no longer offers Full Access or persistent grants. The runtime floor defaults
+    unknown concrete tool IDs to ask, allows bounded workspace reads, asks for
+    every write/edit, Shell, web, and MCP action, and denies external file-tool
+    access. Project and custom-agent rules are revalidated before a turn so a
+    later `allow` cannot silently weaken that floor. Exact legacy Spark defaults
+    migrate to Manual; arbitrary user policies are preserved at rest but cannot
+    bypass the effective runtime gate.
   - [x] **Sidecar runs with `--cors "*"` and no server auth.** ~~Any local
     webpage can scan loopback ports, drive agent turns, and `GET /global/config`
     to read stored API keys.~~ **Fixed (2026-07-06):** the sidecar now requires
@@ -297,20 +298,26 @@ competitors.
     HTML previews inherit it; sandboxed iframes need no cookies) and no longer
     sends `Access-Control-Allow-Origin: *` (previews render in iframe/img,
     never cross-origin fetch).
-  - [x] **Workspace confinement doesn't bind bash**: file tools prompt via
-    `external_directory`, but bash (default `allow`, real `$HOME`) escapes
-    freely. Covered by the permission fix above (in "Approve for me" mode;
-    "Full access" is an explicit user opt-out).
-  - [ ] **API keys are plaintext on disk** — provider keys, connector keys
-    (MP/FRED), and the Jupyter token all land in `opencode.json` (not only the
-    mode-600 `auth.json` P2-3 describes). The keychain revert (P2-3) was a
-    deliberate call for signed-release reasons; revisit for signed releases.
-    **Both interim minimums are now met (2026-07-06):** the `/global/config`
-    surface requires auth (see the CORS/auth fix above), and the config is no
-    longer world-readable — the app-private runtime root is chmod 700 and
-    `opencode.jsonc` 600 on every start and after every Rust-side write
-    (verified: the sidecar's own PATCH rewrite preserves the 600 mode).
-    (Verified clean: no keys in provenance/logs/localStorage/git.)
+  - [ ] **Workspace confinement does not bind arbitrary bash or Python**: file
+    tools prompt via `external_directory`, while general code still runs as the
+    signed-in user and can express operations that command-glob rules cannot
+    classify. The managed profile asks before every write/edit, Shell, web, and
+    MCP operation and denies outside-workspace file-tool access; this is a useful
+    approval layer, not an OS sandbox. Use Sandbox or Verified execution when
+    confinement is required.
+  - [ ] **Secret custody is only partially migrated.** Simple provider API keys
+    now move transactionally to the OS credential manager and leave environment
+    references in config; unsupported structured API records fail closed. OAuth
+    records, MP/FRED connector keys, and the persistent Jupyter token still use
+    owner-only app-private files. Provider keys are also injected into the
+    sidecar environment, which an approved local tool can inherit. The runtime
+    root/config/auth modes and authenticated loopback API remain defense in depth,
+    not substitutes for completing custody and execution-time isolation.
+  - [ ] **OpenCode config dependency installation bypasses product approval.**
+    The pinned loader may install config-directory packages (with lifecycle
+    scripts disabled) before the tool-permission layer, including for project
+    `.opencode` configuration. Spark must gate or disable this network/write path
+    until the user explicitly approves it.
 
   **Critical — Rust defects:**
   - [x] **Windows command injection** in `open_url`/`os_open`. ~~`cmd /C
@@ -431,8 +438,9 @@ competitors.
   **Space weather** (`spaceweather-mcp` — NOAA SWPC/NASA DONKI/USGS, physics),
   **Open-Meteo weather/climate** (`mcp-weather-server`, earth), and **USGS water**
   (`usgs-mcp`, earth). The catalog carries a discipline chip, a per-connector
-  free-API-key field (passed via the MCP `environment`, never into
-  provenance/logs), and console-script *or* `-m module` launch (resolved next to
+  free-API-key field (currently persisted in the owner-only MCP config and
+  passed via its `environment`; OS credential custody remains open), and
+  console-script *or* `-m module` launch (resolved next to
   the managed interpreter, cross-platform). **Every connector is verified by a
   real MCP `initialize`/`tools/list` stdio handshake in the bundled-uv env
   before shipping** (spaceweather → 15 tools, open-meteo → 8, usgs → 10; the
@@ -625,7 +633,7 @@ competitors.
   run needs the user's own account (detection verified; the app never handles
   Modal tokens).
 
-### P2-3 · Privacy posture, stated plainly — ✅ Done
+### P2-3 · Privacy posture, stated plainly — 🟡 Partial
 
 - **Evidence.** Users ask whether handing whole-genome/clinical data to a
   commercial company is safe; the strong requirement is that unpublished/PHI data
@@ -635,13 +643,13 @@ competitors.
   in provenance/logs/exports (a non-negotiable safety default).
 - **Acceptance.** A user can read, in the app, exactly what leaves the machine for
   their provider; audit confirms keys/data never enter provenance, logs, exports.
-- **Status.** ✅ Workspace sandbox + approval mode + plain-language data-flow card;
-  credentials never enter provenance/logs/exports and live in an app-private
-  `auth.json` (mode 600, owned by OpenCode). An OS-keychain-at-rest variant was
-  built and verified but reverted: on unsigned/self-built copies a signature
-  change makes macOS prompt for the login-keychain password every launch — worse
-  first-run UX for a marginal at-rest gain. Kept simple per "如无必要,勿增实体".
-  (Revisit for signed releases.)
+- **Status.** 🟡 The plain-language data-flow card, workspace file boundary, and
+  manual approval policy ship. Verified-workflow model keys use macOS Keychain;
+  simple General provider API keys now migrate transactionally to the OS
+  credential manager. The item remains partial because OAuth records,
+  scientific-connector keys, and the Jupyter token remain in owner-only files,
+  and an approved local tool can inherit provider keys from the sidecar process
+  environment. Execution-time redaction and hard confinement are not yet proven.
 
 ### P2-4 · Beta stability & guardrails — 🟡 Partial
 
@@ -678,7 +686,7 @@ competitors.
 | P0-4 | Reviewer: traceable claims (3 checks) | P0 | 🟡 Partial — 3 checks + PDF-manuscript extractor shipped; weak-model robustness pending |
 | **P0-5** | **Domain-correctness gates ("runs" ≠ "right")** | **P0** | 🟡 **Partial — 5 gates ship (physics/earth/biology/chemistry/social science), deterministic + pluggable; chemistry now uses real RDKit round-trip when installed; only POSCAR→pymatgen round-trip pending** |
 | P0-6 | Large files: reference, don't load | P0 | ✅ Done — memory-pointer probe (table/parquet/hdf5/fits/netcdf/log + genomics FASTQ/FASTA/VCF/BAM, GRIB, ROOT) + one-click "Inspect without loading" in the too-large-preview card |
-| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — ALL critical items addressed (approval modes, sidecar/preview auth, kernel deadlock, Windows injection, owner-only key files); keychain-at-rest deferred to signed releases (P2-3); moderate/cleanup backlog remains** |
+| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — manual-only permission floor, sidecar/preview auth, simple provider-key credential custody, kernel deadlock, and Windows injection are addressed; hard confinement, remaining secret classes, execution-time isolation, and config dependency-install approval remain open** |
 | P1-1 | Multi-discipline from day one | P1 | 🟡 Partial — pluggable + climate example; non-bio depth pending |
 | P1-2 | Domain + literature connectors | P1 | 🟡 Partial — literature/bio + non-bio across ALL 5 disciplines (materials, economics, physics space-weather, earth Open-Meteo + USGS) shipped, each MCP-handshake verified; astronomy catalogs (no PyPI MCP) + more chem/social DBs pending |
 | P1-3 | Scientific renderers | P1 | 🟡 Partial — base + 3D structure + genome + FITS + DOS + band + phase + qualitative-coding + anomaly map (all 4 disciplines; materials trio complete); ternary/coastlines next |
@@ -687,7 +695,7 @@ competitors.
 | **P1-6** | **Social-science analysis integrity** | **P1** | 🟡 **Partial — stats-integrity skill: interpretation/prereg/seed checks + verified .dta→R round-trip** |
 | P2-1 | Notebook + larger-project handling | P2 | ✅ Done — notebook + workspace Files explorer |
 | P2-2 | HPC / SSH / Slurm / Modal | P2 | 🟡 Partial — SSH+Slurm + Modal (detection + skill) shipped; multi-env mgmt pending |
-| P2-3 | Plain-language privacy posture | P2 | ✅ Done — disclosure + creds in mode-600 file |
+| P2-3 | Plain-language privacy posture | P2 | 🟡 Partial — disclosure and simple provider-key custody ship; remaining secrets and execution-time isolation remain open |
 | P2-4 | Beta stability & guardrails | P2 | 🟡 Partial — prompts + exit-cleanup + large-file-preview OOM guard fixed; broader first-run pass pending |
 
 **What's done vs. what's next.** The shared 80% (the moat) is largely ✅: workflow

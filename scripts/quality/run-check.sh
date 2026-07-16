@@ -72,6 +72,34 @@ prepare_python_check() {
   fi
 }
 
+run_core_tests() {
+  local data_dir status source_path
+  data_dir="$(mktemp -d "${TMPDIR:-/tmp}/spark-agent-core-tests.XXXXXX")"
+  source_path="$ROOT/services/science-core/src:$ROOT/services/science-runtime/src"
+  if [[ -n "${PYTHONPATH:-}" ]]; then
+    source_path="$source_path:$PYTHONPATH"
+  fi
+  if run_in_directory "science-core / pytest" "$ROOT/services/science-core" \
+    env PYTHONPATH="$source_path" SPARK_AGENT_CORE_DATA_DIR="$data_dir" \
+    "$PYTHON_PATH" -m pytest; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -rf -- "$data_dir"
+  return "$status"
+}
+
+run_runtime_tests() {
+  local source_path
+  source_path="$ROOT/services/science-core/src:$ROOT/services/science-runtime/src"
+  if [[ -n "${PYTHONPATH:-}" ]]; then
+    source_path="$source_path:$PYTHONPATH"
+  fi
+  run_in_directory "science-runtime / pytest" "$ROOT/services/science-runtime" \
+    env PYTHONPATH="$source_path" "$PYTHON_PATH" -m pytest
+}
+
 if [[ $# -ne 2 ]]; then
   usage
   exit 64
@@ -117,8 +145,7 @@ case "$module:$check" in
     ;;
   core:test)
     prepare_python_check
-    run_in_directory "science-core / pytest" "$ROOT/services/science-core" \
-      "$PYTHON_PATH" -m pytest
+    run_core_tests
     ;;
   runtime:lint)
     prepare_python_check
@@ -132,8 +159,7 @@ case "$module:$check" in
     ;;
   runtime:test)
     prepare_python_check
-    run_in_directory "science-runtime / pytest" "$ROOT/services/science-runtime" \
-      "$PYTHON_PATH" -m pytest
+    run_runtime_tests
     ;;
   *)
     printf 'Unknown quality check: %s / %s\n' "$module" "$check" >&2

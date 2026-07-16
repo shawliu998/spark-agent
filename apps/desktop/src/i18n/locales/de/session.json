@@ -40,14 +40,18 @@
       "aria": "Genehmigungsmodus",
       "title": "Wie Agentenaktionen genehmigt werden",
       "menuAria": "Genehmigungsmodi",
-      "menuTitle": "Wie sollen Agentenaktionen genehmigt werden?",
+      "menuTitle": "Spark-Aktionen erfordern manuelle Genehmigung",
       "approve": {
-        "label": "Für mich genehmigen",
-        "description": "Fragt vor dem Löschen, Installieren oder Herstellen von Remote-Verbindungen nach"
+        "label": "Manuelle Genehmigung",
+        "description": "Fragt vor jedem Shell-Befehl, jeder Patch-Anwendung und jeder Webanfrage nach"
       },
       "full": {
-        "label": "Vollzugriff",
-        "description": "Führt jeden Befehl ohne Rückfrage aus"
+        "label": "Veralteter Vollzugriff",
+        "description": "Unsicherer Altmodus; zur manuellen Genehmigung wechseln"
+      },
+      "custom": {
+        "label": "Externe benutzerdefinierte Richtlinie",
+        "description": "Nicht von Spark verwaltet; für den sicheren Standard zur manuellen Genehmigung wechseln"
       }
     },
     "error": {
@@ -59,6 +63,16 @@
     "newDescription": "Chat-Kontext in diesem Ordner leeren",
     "clearDescription": "Wie /new; Dateien bleiben in diesem Ordner",
     "cleared": "Chat-Kontext geleert. Dateien bleiben im selben Ordner."
+  },
+  "researchControls": {
+    "mode": { "aria": "Ausführungsmodus", "general": "Allgemeine Forschung", "sandbox": "Sandbox-Forschung", "verified": "Verifizierte Workflows" },
+    "agent": { "aria": "Forschungsagent", "empty": "Keine Agenten verfügbar", "primaryGroup": "Primäre Agenten", "subagentGroup": "Unteragenten", "otherGroup": "Weitere Agenten" },
+    "model": { "aria": "Modell", "empty": "Keine Modelle verfügbar" },
+    "skills": { "aria": "Forschungsskills öffnen", "title": "Von OpenCode gemeldete Skills anzeigen", "count": "{{count}} Skills" }
+  },
+  "workspaceArtifacts": {
+    "heading": "Arbeitsbereichsartefakte", "count": "{{count}} gefunden", "refreshAria": "Arbeitsbereichsartefakte aktualisieren",
+    "sandboxTitle": "Sandbox-Forschung ist noch nicht konfiguriert.", "sandboxBody": "Wählen Sie Allgemeine Forschung für OpenCode oder Verifizierte Workflows für einen strukturierten Ablauf."
   },
   "starters": {
     "newSession": "Neue Sitzung",

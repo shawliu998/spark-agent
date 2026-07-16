@@ -1,6 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Composer } from "./Composer";
+import { addFilesToWorkspace, addTextToWorkspace } from "@/lib/tauri";
+import { useRuntimeStore } from "@/lib/runtime";
 
 // Desktop-only attach behaviors, with the Tauri bridge mocked out.
 vi.mock("@/lib/tauri", () => ({
@@ -9,13 +11,29 @@ vi.mock("@/lib/tauri", () => ({
   addTextToWorkspace: vi.fn(async () => "pasted.txt"),
 }));
 
+const originalPrepareDraftWorkspace = useRuntimeStore.getState().prepareDraftWorkspace;
+const prepareDraftWorkspace = vi.fn(async () => "/ws/2026-07-16-1200");
+
 describe("Composer attachments (desktop)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useRuntimeStore.setState({ prepareDraftWorkspace });
+  });
+
+  afterAll(() => {
+    useRuntimeStore.setState({ prepareDraftWorkspace: originalPrepareDraftWorkspace });
+  });
+
   it("adds picked files as removable chips and sends them as a file note", async () => {
     const onSend = vi.fn();
     render(<Composer onSend={onSend} />);
 
     fireEvent.click(screen.getByLabelText("Add files"));
     await waitFor(() => expect(screen.getByText("data.csv")).toBeTruthy());
+    expect(prepareDraftWorkspace).toHaveBeenCalledTimes(1);
+    expect(prepareDraftWorkspace.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(addFilesToWorkspace).mock.invocationCallOrder[0],
+    );
 
     // Chip is outside the textarea — typing text is independent of the file.
     const input = screen.getByLabelText("Ask anything");
@@ -38,6 +56,21 @@ describe("Composer attachments (desktop)", () => {
     expect(screen.queryByText("data.csv")).toBeNull();
   });
 
+  it("accepts a paper and dataset together as ordinary General Research context", async () => {
+    vi.mocked(addFilesToWorkspace).mockResolvedValueOnce(["paper.pdf", "observations.csv"]);
+    const onSend = vi.fn();
+    render(<Composer onSend={onSend} />);
+
+    fireEvent.click(screen.getByLabelText("Add files"));
+    await waitFor(() => expect(screen.getByText("paper.pdf")).toBeInTheDocument());
+    expect(screen.getByText("observations.csv")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Send"));
+    expect(onSend).toHaveBeenCalledWith(
+      "Files added to the workspace: paper.pdf, observations.csv",
+    );
+  });
+
   it("turns an oversized paste into a workspace file chip, keeping the box clean", async () => {
     render(<Composer onSend={vi.fn()} />);
     const input = screen.getByLabelText("Ask anything") as HTMLTextAreaElement;
@@ -47,6 +80,10 @@ describe("Composer attachments (desktop)", () => {
     });
     await waitFor(() => expect(screen.getByText("pasted.txt")).toBeTruthy());
     expect(input.value).toBe("");
+    expect(prepareDraftWorkspace).toHaveBeenCalledTimes(1);
+    expect(prepareDraftWorkspace.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(addTextToWorkspace).mock.invocationCallOrder[0],
+    );
 
     // A short paste stays a normal paste (no new chip).
     fireEvent.paste(input, { clipboardData: { getData: () => "short text" } });

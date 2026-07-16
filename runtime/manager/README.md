@@ -15,12 +15,19 @@ Responsibilities:
 ## Runtime directory (per OS)
 
 ```text
-macOS:   ~/Library/Application Support/Spark Agent/
-Windows: %APPDATA%/Spark Agent/
-generic: ~/.ai4s-workbench/
-  config/  runtime/{opencode,python,node}/  profiles/ai4s-workbench/
-  workspaces/  logs/  cache/  secrets/
+macOS app data:
+  ~/Library/Application Support/io.github.shawliu998.sparkagent/runtime/
+
+Windows app data:
+  Tauri per-user app-data/io.github.shawliu998.sparkagent/runtime/
+
+default workspaces:
+  ~/Documents/SparkAgent/<dated-session>/
 ```
+
+The runtime root contains the isolated OpenCode XDG config, data, cache, and
+state directories. The workspace base is user-selectable and is not a secrets
+directory.
 
 ## Startup order
 
