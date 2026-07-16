@@ -743,6 +743,41 @@ class DatasetWorkflowSchemaTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             WorkflowEventOut.model_validate(negative_elapsed)
 
+    def test_interaction_events_are_discriminated_by_lifecycle_stage(self) -> None:
+        requested = {
+            "id": "event-interaction-requested",
+            "sequence": 1,
+            "type": "interaction.requested",
+            "taskId": None,
+            "jobId": None,
+            "data": {
+                "interactionId": "interaction-1",
+                "requestType": "single-choice",
+                "required": True,
+                "responseId": None,
+                "responseRevision": None,
+                "expectedWorkflowRevision": 2,
+            },
+            "createdAt": "2026-07-16T00:00:00Z",
+        }
+        WorkflowEventOut.model_validate(requested)
+
+        requested_with_response = deepcopy(requested)
+        assert isinstance(requested_with_response["data"], dict)
+        requested_with_response["data"]["responseId"] = "response-1"
+        requested_with_response["data"]["responseRevision"] = 1
+        with self.assertRaises(ValidationError):
+            WorkflowEventOut.model_validate(requested_with_response)
+
+        answered_without_response = deepcopy(requested)
+        answered_without_response["type"] = "interaction.answered"
+        with self.assertRaises(ValidationError):
+            WorkflowEventOut.model_validate(answered_without_response)
+
+        answered = deepcopy(requested_with_response)
+        answered["type"] = "interaction.answered"
+        WorkflowEventOut.model_validate(answered)
+
     def test_dataset_approvals_cannot_fall_back_to_the_literature_envelope(self) -> None:
         common = {
             "id": "approval-1",

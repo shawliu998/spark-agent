@@ -18,6 +18,7 @@ from ...models import (
     WorkflowRecord,
 )
 from ..schemas import (
+    AUTONOMOUS_REMOTE_DATA_CATEGORIES,
     ApprovalEventData,
     CollectArtifactsPlanStep,
     CollectArtifactsStepInput,
@@ -359,7 +360,14 @@ def handle_generate_plan(
         finish_job(session, job, "succeeded")
         transition_workflow(session, workflow, "waiting-plan-approval")
         return
-    version = (existing.version + 1) if existing is not None else 1
+    version = _reserved_agent_plan_version(workflow, job)
+    if version is None:
+        version = (existing.version + 1) if existing is not None else 1
+    elif existing is not None and version <= existing.version:
+        raise WorkflowFailure(
+            "agent-plan-version-conflict",
+            "The reserved autonomous plan version is not newer than plan history.",
+        )
     if workflow.workflow_type == "dataset-analysis":
         if workflow.generation_mode != "local-deterministic":
             raise WorkflowFailure(
@@ -538,6 +546,28 @@ def handle_generate_plan(
     )
 
 
+def _reserved_agent_plan_version(
+    workflow: WorkflowRecord,
+    job: JobRecord,
+) -> int | None:
+    if workflow.creation_mode != "autonomous":
+        return None
+    prefix = f"workflow:{workflow.id}:plan:"
+    suffix = job.operation_key.removeprefix(prefix)
+    if not job.operation_key.startswith(prefix) or not suffix.isdigit():
+        raise WorkflowFailure(
+            "agent-plan-operation-key-invalid",
+            "The autonomous planning job has no valid reserved plan version.",
+        )
+    version = int(suffix)
+    if version < 1:
+        raise WorkflowFailure(
+            "agent-plan-operation-key-invalid",
+            "The autonomous planning job has no valid reserved plan version.",
+        )
+    return version
+
+
 def assert_remote_gateway_matches_creation(
     session: Session,
     workflow: WorkflowRecord,
@@ -552,13 +582,18 @@ def assert_remote_gateway_matches_creation(
         .order_by(EventRecord.sequence)
     )
     payload = approval_event.payload if approval_event is not None else {}
+    approved_categories = (
+        list(AUTONOMOUS_REMOTE_DATA_CATEGORIES)
+        if workflow.creation_mode == "autonomous"
+        else ["user-goal"]
+    )
     if (
         not gateway.configured
         or payload.get("provider") != "openai-compatible"
         or payload.get("endpointHost") != gateway.endpoint_host
         or payload.get("endpointIdentity") != gateway.endpoint_identity
         or payload.get("model") != gateway.default_model
-        or payload.get("dataCategories") != ["user-goal"]
+        or payload.get("dataCategories") != approved_categories
     ):
         raise WorkflowFailure(
             "remote-gateway-approval-mismatch",

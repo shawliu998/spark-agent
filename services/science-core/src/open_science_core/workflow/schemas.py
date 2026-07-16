@@ -16,11 +16,14 @@ from pydantic import (
 from ..schemas import ApiModel, BoundingBoxOut
 
 WorkflowStatus = Literal[
+    "routing",
+    "waiting-clarification",
     "planning",
     "waiting-plan-approval",
     "running",
     "reviewing",
     "completed",
+    "unsupported",
     "blocked",
     "failed",
     "cancelled",
@@ -84,6 +87,17 @@ ClaimSupportStatus = Literal[
     "not-applicable",
 ]
 GenerationMode = Literal["local-deterministic", "remote-model-assisted"]
+RemoteDataCategory = Literal[
+    "user-goal",
+    "dataset-profile",
+    "source-metadata",
+    "user-answer",
+]
+AUTONOMOUS_REMOTE_DATA_CATEGORIES: tuple[RemoteDataCategory, ...] = (
+    "user-goal",
+    "source-metadata",
+    "user-answer",
+)
 WorkflowRiskLevel = Literal["low", "medium", "high"]
 
 DatasetAnalysisStepKey = Literal[
@@ -1540,18 +1554,21 @@ class RemoteDataApprovalEventData(StrictApiModel):
     endpoint_host: str = Field(min_length=1, max_length=253)
     endpoint_identity: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     model: str | None = Field(default=None, max_length=200)
-    data_categories: list[Literal["user-goal", "dataset-profile"]]
+    data_categories: list[RemoteDataCategory]
 
     @field_validator("data_categories")
     @classmethod
     def validate_disclosure_categories(
         cls,
-        value: list[Literal["user-goal", "dataset-profile"]],
-    ) -> list[Literal["user-goal", "dataset-profile"]]:
-        if value not in (["user-goal"], ["user-goal", "dataset-profile"]):
+        value: list[RemoteDataCategory],
+    ) -> list[RemoteDataCategory]:
+        if value not in (
+            ["user-goal"],
+            ["user-goal", "dataset-profile"],
+            list(AUTONOMOUS_REMOTE_DATA_CATEGORIES),
+        ):
             raise ValueError(
-                "data_categories must be exactly user-goal, with dataset-profile "
-                "added only for dataset-assisted planning"
+                "data_categories must match a registered remote disclosure profile"
             )
         return value
 
@@ -1665,6 +1682,52 @@ class DatasetReviewWarningsAcceptedEventData(StrictApiModel):
     decision: Literal["accepted"]
 
 
+class AgentRunCreatedEventData(StrictApiModel):
+    goal_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_ids: list[str] = Field(max_length=100)
+    mode: Literal["autonomous"]
+    generation_mode: GenerationMode
+
+
+class IntentDecisionEventData(StrictApiModel):
+    intent_decision_id: str = Field(min_length=1, max_length=36)
+    intent: Literal[
+        "literature-synthesis",
+        "dataset-analysis",
+        "mixed-research",
+        "clarification-required",
+        "unsupported",
+    ]
+    confidence: float = Field(ge=0, le=1)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class _InteractionEventData(StrictApiModel):
+    interaction_id: str = Field(min_length=1, max_length=36)
+    request_type: Literal[
+        "single-choice",
+        "multi-choice",
+        "text",
+        "number",
+        "boolean",
+        "column-selection",
+        "method-confirmation",
+        "assumption-confirmation",
+    ]
+    required: bool
+    expected_workflow_revision: int = Field(ge=1)
+
+
+class InteractionRequestedEventData(_InteractionEventData):
+    response_id: None = None
+    response_revision: None = None
+
+
+class InteractionAnsweredEventData(_InteractionEventData):
+    response_id: str = Field(min_length=1, max_length=36)
+    response_revision: int = Field(ge=1)
+
+
 WorkflowEventData = (
     CreatedEventData
     | RemoteDataApprovalEventData
@@ -1681,9 +1744,17 @@ WorkflowEventData = (
     | AnalysisRunProgressEventData
     | AnalysisArtifactCreatedEventData
     | DatasetReviewWarningsAcceptedEventData
+    | AgentRunCreatedEventData
+    | IntentDecisionEventData
+    | InteractionRequestedEventData
+    | InteractionAnsweredEventData
 )
 
 WorkflowEventType = Literal[
+    "agent-run.created",
+    "intent.decision-recorded",
+    "interaction.requested",
+    "interaction.answered",
     "workflow.created",
     "remote-data.approved",
     "workflow.status-changed",
@@ -1711,6 +1782,10 @@ WorkflowEventType = Literal[
 ]
 
 _WORKFLOW_EVENT_DATA_TYPES: dict[str, type[StrictApiModel]] = {
+    "agent-run.created": AgentRunCreatedEventData,
+    "intent.decision-recorded": IntentDecisionEventData,
+    "interaction.requested": InteractionRequestedEventData,
+    "interaction.answered": InteractionAnsweredEventData,
     "workflow.created": CreatedEventData,
     "remote-data.approved": RemoteDataApprovalEventData,
     "workflow.status-changed": StatusChangedEventData,

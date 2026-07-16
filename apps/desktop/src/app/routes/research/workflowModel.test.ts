@@ -21,6 +21,7 @@ function snapshot(
       id: "workflow-1",
       projectId: "project-1",
       goal: "Compare studies",
+      mode: "advanced" as const,
       workflowType: "literature-synthesis",
       status: "running",
       revision,
@@ -157,6 +158,7 @@ describe("workflow model", () => {
     const intent = {
       projectId: "project-1",
       goal: "Compare studies",
+      mode: "advanced" as const,
       workflowType: "literature-synthesis" as const,
       datasetSourceId: null,
       generationMode: "remote-model-assisted" as const,

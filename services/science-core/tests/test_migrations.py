@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from open_science_core import migration
+from open_science_core.db import Base
 from open_science_core.models import (
     ApprovalRecord,
     EventRecord,
@@ -38,6 +39,10 @@ from open_science_core.workflow.worker import WorkflowWorker
 
 LEGACY_TABLES = tuple(sorted(migration.LEGACY_COLUMNS))
 CONTROL_PLANE_TABLES = {
+    "intent_decisions",
+    "interaction_requests",
+    "model_invocations",
+    "user_responses",
     "workflow_jobs",
     "workflow_plans",
     "workflow_reviews",
@@ -523,6 +528,715 @@ class DatabaseMigrationTest(unittest.TestCase):
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
+    def test_autonomous_intake_schema_enforces_versions_hashes_and_idempotency(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "autonomous-intake.sqlite3"
+            migration.ensure_database(database_path)
+
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                workflow_columns = {
+                    str(row[1]): (str(row[2]), int(row[3]), row[4])
+                    for row in connection.execute("PRAGMA table_info(workflows)")
+                }
+                self.assertEqual(workflow_columns["workflow_type"][1], 0)
+                self.assertEqual(
+                    workflow_columns["creation_mode"],
+                    ("VARCHAR(32)", 1, "'fixed-workflow'"),
+                )
+                self.assertEqual(workflow_columns["selected_source_ids"][1], 1)
+                self.assertIn("current_intent_decision_id", workflow_columns)
+
+                workflow_sql = str(
+                    connection.execute(
+                        "SELECT sql FROM sqlite_master "
+                        "WHERE type = 'table' AND name = 'workflows'"
+                    ).fetchone()[0]
+                )
+                job_sql = str(
+                    connection.execute(
+                        "SELECT sql FROM sqlite_master "
+                        "WHERE type = 'table' AND name = 'workflow_jobs'"
+                    ).fetchone()[0]
+                )
+                self.assertIn("ck_workflow_creation_mode", workflow_sql)
+                self.assertIn("ck_workflow_intake_state", workflow_sql)
+                self.assertIn("ck_workflow_selected_source_ids", workflow_sql)
+                self.assertIn("route-intent", job_sql)
+
+                connection.execute(
+                    """
+                    INSERT INTO projects (
+                        id, title, description, project_path, research_domain,
+                        execution_mode, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "agent-project",
+                        "Autonomous intake",
+                        "Persistence fixture",
+                        "/tmp/agent-project",
+                        "quality",
+                        "safe",
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO sources (
+                        id, project_id, title, source_kind, authors, local_path,
+                        ingestion_status, content_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "agent-source",
+                        "agent-project",
+                        "Agent dataset",
+                        "csv",
+                        "[]",
+                        "/tmp/agent-project/dataset.csv",
+                        "ready",
+                        "a" * 64,
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                        id, project_id, create_idempotency_key,
+                        create_payload_sha256, creation_mode, selected_source_ids,
+                        workflow_type, goal, generation_mode, status, row_version,
+                        event_sequence, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "agent-workflow",
+                        "agent-project",
+                        "agent-create-key",
+                        "b" * 64,
+                        "autonomous",
+                        '["agent-source"]',
+                        None,
+                        "Determine the appropriate research workflow",
+                        "remote-model-assisted",
+                        "routing",
+                        1,
+                        0,
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflow_jobs (
+                        id, workflow_id, kind, operation_key, attempt,
+                        input_sha256, handler_version, status, available_at,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "route-job",
+                        "agent-workflow",
+                        "route-intent",
+                        "workflow:agent-workflow:intent:1",
+                        1,
+                        "c" * 64,
+                        "intent-router-v1",
+                        "succeeded",
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:01",
+                    ),
+                )
+                connection.commit()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO workflows (
+                            id, project_id, create_idempotency_key,
+                            create_payload_sha256, creation_mode,
+                            selected_source_ids, workflow_type, goal,
+                            generation_mode, status, row_version,
+                            event_sequence, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "invalid-routing-workflow",
+                            "agent-project",
+                            "invalid-routing-key",
+                            "d" * 64,
+                            "fixed-workflow",
+                            "[]",
+                            "literature-synthesis",
+                            "A fixed workflow cannot remain in routing",
+                            "local-deterministic",
+                            "routing",
+                            1,
+                            0,
+                            "2026-07-16 00:00:00",
+                            "2026-07-16 00:00:00",
+                        ),
+                    )
+                connection.rollback()
+
+                connection.execute(
+                    """
+                    INSERT INTO model_invocations (
+                        id, workflow_id, schema_version, operation_type,
+                        operation_key, attempt, generator, model,
+                        endpoint_identity, prompt_version, input_sha256,
+                        output_sha256, token_usage, validation_errors,
+                        request_idempotency_key, request_payload_sha256,
+                        status, created_at, finished_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "router-invocation",
+                        "agent-workflow",
+                        "1",
+                        "intent-routing",
+                        "workflow:agent-workflow:intent:1",
+                        1,
+                        "remote-model-assisted-v1",
+                        "test-model",
+                        "https://model.invalid/v1",
+                        "intent-router-v1",
+                        "e" * 64,
+                        "f" * 64,
+                        '{"inputTokens":10,"outputTokens":5}',
+                        "[]",
+                        "router-request-key",
+                        "1" * 64,
+                        "succeeded",
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:01",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO intent_decisions (
+                        id, workflow_id, revision, intent, confidence,
+                        reasoning_summary, selected_source_ids, missing_inputs,
+                        proposed_workflow_type, generator, used_model, model,
+                        prompt_version, parse_result, model_invocation_id,
+                        input_sha256, output_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "intent-decision-1",
+                        "agent-workflow",
+                        1,
+                        "clarification-required",
+                        0.61,
+                        "The selected CSV could support more than one requested method.",
+                        '["agent-source"]',
+                        '["analysis-method"]',
+                        None,
+                        "remote-model-assisted-v1",
+                        1,
+                        "test-model",
+                        "intent-router-v1",
+                        "valid",
+                        "router-invocation",
+                        "e" * 64,
+                        "2" * 64,
+                        "2026-07-16 00:00:01",
+                    ),
+                )
+                connection.execute(
+                    "UPDATE workflows SET status = 'waiting-clarification', "
+                    "current_intent_decision_id = 'intent-decision-1', row_version = 2 "
+                    "WHERE id = 'agent-workflow'"
+                )
+                connection.execute(
+                    """
+                    INSERT INTO interaction_requests (
+                        id, workflow_id, step_id, request_key, revision,
+                        workflow_revision, request_type, question, options,
+                        required, status, response_schema, request_sha256,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "interaction-1",
+                        "agent-workflow",
+                        None,
+                        "intent.analysis-method",
+                        1,
+                        2,
+                        "single-choice",
+                        "Which analysis should be performed?",
+                        '[{"value":"descriptive"},{"value":"two-group"}]',
+                        1,
+                        "pending",
+                        '{"type":"string"}',
+                        "3" * 64,
+                        "2026-07-16 00:00:02",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO user_responses (
+                        id, interaction_id, revision,
+                        expected_workflow_revision, response_json,
+                        response_sha256, idempotency_key,
+                        request_payload_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "response-1",
+                        "interaction-1",
+                        1,
+                        2,
+                        '"two-group"',
+                        "4" * 64,
+                        "response-idempotency-1",
+                        "5" * 64,
+                        "2026-07-16 00:00:03",
+                    ),
+                )
+                connection.execute(
+                    "UPDATE interaction_requests SET status = 'answered', "
+                    "answered_at = '2026-07-16 00:00:03' WHERE id = 'interaction-1'"
+                )
+                connection.commit()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO user_responses (
+                            id, interaction_id, revision,
+                            expected_workflow_revision, response_json,
+                            response_sha256, idempotency_key,
+                            request_payload_sha256, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "response-idempotency-conflict",
+                            "interaction-1",
+                            2,
+                            3,
+                            '"descriptive"',
+                            "6" * 64,
+                            "response-idempotency-1",
+                            "7" * 64,
+                            "2026-07-16 00:00:04",
+                        ),
+                    )
+                connection.rollback()
+
+                connection.execute(
+                    """
+                    INSERT INTO user_responses (
+                        id, interaction_id, revision,
+                        expected_workflow_revision, response_json,
+                        response_sha256, idempotency_key,
+                        request_payload_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "response-2",
+                        "interaction-1",
+                        2,
+                        3,
+                        '"descriptive"',
+                        "6" * 64,
+                        "response-idempotency-2",
+                        "7" * 64,
+                        "2026-07-16 00:00:04",
+                    ),
+                )
+                connection.commit()
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT revision, response_json FROM user_responses "
+                        "WHERE interaction_id = 'interaction-1' ORDER BY revision"
+                    ).fetchall(),
+                    [(1, '"two-group"'), (2, '"descriptive"')],
+                )
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO intent_decisions (
+                            id, workflow_id, revision, intent, confidence,
+                            reasoning_summary, selected_source_ids, missing_inputs,
+                            proposed_workflow_type, generator, used_model,
+                            prompt_version, parse_result, input_sha256,
+                            output_sha256, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "invalid-intent-decision",
+                            "agent-workflow",
+                            2,
+                            "dataset-analysis",
+                            1.1,
+                            "Invalid confidence and resolution",
+                            '["agent-source"]',
+                            "[]",
+                            "literature-synthesis",
+                            "deterministic-intent-router-v1",
+                            0,
+                            "intent-router-v1",
+                            "deterministic-capability-guard",
+                            "8" * 64,
+                            "9" * 64,
+                            "2026-07-16 00:00:05",
+                        ),
+                    )
+                connection.rollback()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE model_invocations SET status = 'pending' "
+                        "WHERE id = 'router-invocation'"
+                    )
+                connection.rollback()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE model_invocations SET output_sha256 = NULL "
+                        "WHERE id = 'router-invocation'"
+                    )
+                connection.rollback()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO intent_decisions (
+                            id, workflow_id, revision, intent, confidence,
+                            reasoning_summary, selected_source_ids, missing_inputs,
+                            proposed_workflow_type, generator, used_model, model,
+                            prompt_version, parse_result, model_invocation_id,
+                            input_sha256, output_sha256, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "duplicate-invocation-decision",
+                            "agent-workflow",
+                            2,
+                            "clarification-required",
+                            0.75,
+                            "A second decision cannot bind to the same invocation.",
+                            '["agent-source"]',
+                            '["analysis-method"]',
+                            None,
+                            "remote-model-assisted-v1",
+                            1,
+                            "test-model",
+                            "intent-router-v1",
+                            "valid",
+                            "router-invocation",
+                            "e" * 64,
+                            "3" * 64,
+                            "2026-07-16 00:00:06",
+                        ),
+                    )
+                connection.rollback()
+
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                        id, project_id, create_idempotency_key,
+                        create_payload_sha256, creation_mode, selected_source_ids,
+                        workflow_type, goal, generation_mode, status, row_version,
+                        event_sequence, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "agent-workflow-2",
+                        "agent-project",
+                        "agent-create-key-2",
+                        "a" * 64,
+                        "autonomous",
+                        '["agent-source"]',
+                        None,
+                        "Route a second autonomous workflow",
+                        "remote-model-assisted",
+                        "routing",
+                        1,
+                        0,
+                        "2026-07-16 00:00:07",
+                        "2026-07-16 00:00:07",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO model_invocations (
+                        id, workflow_id, schema_version, operation_type,
+                        operation_key, attempt, generator, model,
+                        endpoint_identity, prompt_version, input_sha256,
+                        output_sha256, token_usage, validation_errors,
+                        request_idempotency_key, request_payload_sha256,
+                        status, created_at, finished_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "cross-workflow-invocation",
+                        "agent-workflow",
+                        "1",
+                        "intent-routing",
+                        "workflow:agent-workflow:intent:2",
+                        1,
+                        "remote-model-assisted-v1",
+                        "test-model",
+                        "https://model.invalid/v1",
+                        "intent-router-v1",
+                        "4" * 64,
+                        "5" * 64,
+                        "{}",
+                        "[]",
+                        "cross-workflow-request-key",
+                        "6" * 64,
+                        "succeeded",
+                        "2026-07-16 00:00:07",
+                        "2026-07-16 00:00:08",
+                    ),
+                )
+                connection.commit()
+
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO model_invocations (
+                            id, workflow_id, schema_version, operation_type,
+                            operation_key, attempt, generator, model,
+                            endpoint_identity, prompt_version, input_sha256,
+                            output_sha256, token_usage, validation_errors,
+                            request_idempotency_key, request_payload_sha256,
+                            status, error_message, created_at, finished_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "invalid-succeeded-invocation",
+                            "agent-workflow-2",
+                            "1",
+                            "intent-routing",
+                            "workflow:agent-workflow-2:intent:1",
+                            1,
+                            "remote-model-assisted-v1",
+                            "test-model",
+                            "https://model.invalid/v1",
+                            "intent-router-v1",
+                            "7" * 64,
+                            "8" * 64,
+                            "{}",
+                            "[]",
+                            "invalid-succeeded-request-key",
+                            "9" * 64,
+                            "succeeded",
+                            "A succeeded invocation cannot retain an error.",
+                            "2026-07-16 00:00:08",
+                            "2026-07-16 00:00:09",
+                        ),
+                    )
+                connection.rollback()
+
+                connection.execute(
+                    """
+                    INSERT INTO intent_decisions (
+                        id, workflow_id, revision, intent, confidence,
+                        reasoning_summary, selected_source_ids, missing_inputs,
+                        proposed_workflow_type, generator, used_model, model,
+                        prompt_version, parse_result, model_invocation_id,
+                        input_sha256, output_sha256, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "cross-workflow-decision",
+                        "agent-workflow-2",
+                        1,
+                        "clarification-required",
+                        0.7,
+                        "A decision cannot bind an invocation from another workflow.",
+                        '["agent-source"]',
+                        '["analysis-method"]',
+                        None,
+                        "remote-model-assisted-v1",
+                        1,
+                        "test-model",
+                        "intent-router-v1",
+                        "valid",
+                        "cross-workflow-invocation",
+                        "4" * 64,
+                        "a" * 64,
+                        "2026-07-16 00:00:09",
+                    ),
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.commit()
+                connection.rollback()
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT id FROM intent_decisions "
+                        "WHERE id = 'cross-workflow-decision'"
+                    ).fetchone()
+                )
+
+                connection.execute(
+                    "UPDATE workflows SET current_intent_decision_id = ? WHERE id = ?",
+                    ("intent-decision-1", "agent-workflow-2"),
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.commit()
+                connection.rollback()
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT current_intent_decision_id FROM workflows "
+                        "WHERE id = 'agent-workflow-2'"
+                    ).fetchone()[0]
+                )
+
+                connection.execute(
+                    "DELETE FROM model_invocations WHERE id = 'router-invocation'"
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.commit()
+                connection.rollback()
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM model_invocations "
+                        "WHERE id = 'router-invocation'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM intent_decisions "
+                        "WHERE id = 'intent-decision-1'"
+                    ).fetchone()[0],
+                    1,
+                )
+
+                connection.execute(
+                    "DELETE FROM intent_decisions WHERE id = 'intent-decision-1'"
+                )
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.commit()
+                connection.rollback()
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM intent_decisions "
+                        "WHERE id = 'intent-decision-1'"
+                    ).fetchone()[0],
+                    1,
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT current_intent_decision_id FROM workflows "
+                        "WHERE id = 'agent-workflow'"
+                    ).fetchone()[0],
+                    "intent-decision-1",
+                )
+
+                connection.execute("DELETE FROM workflows WHERE id = 'agent-workflow'")
+                connection.commit()
+                for table, record_id in (
+                    ("workflows", "agent-workflow"),
+                    ("workflow_jobs", "route-job"),
+                    ("model_invocations", "router-invocation"),
+                    ("model_invocations", "cross-workflow-invocation"),
+                    ("intent_decisions", "intent-decision-1"),
+                    ("interaction_requests", "interaction-1"),
+                    ("user_responses", "response-1"),
+                    ("user_responses", "response-2"),
+                ):
+                    self.assertEqual(
+                        connection.execute(
+                            f'SELECT COUNT(*) FROM "{table}" WHERE id = ?',
+                            (record_id,),
+                        ).fetchone()[0],
+                        0,
+                    )
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_orm_metadata_declares_autonomous_composite_bindings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "autonomous-metadata.sqlite3"
+            engine = create_engine(f"sqlite:///{database_path}")
+            Base.metadata.create_all(engine)
+            engine.dispose()
+
+            with sqlite3.connect(database_path) as connection:
+                def foreign_keys(
+                    table: str,
+                ) -> set[tuple[str, tuple[tuple[str, str], ...]]]:
+                    grouped: dict[int, tuple[str, list[tuple[int, str, str]]]] = {}
+                    for row in connection.execute(f'PRAGMA foreign_key_list("{table}")'):
+                        constraint_id = int(row[0])
+                        target_table = str(row[2])
+                        grouped.setdefault(constraint_id, (target_table, []))[1].append(
+                            (int(row[1]), str(row[3]), str(row[4]))
+                        )
+                    return {
+                        (
+                            target_table,
+                            tuple(
+                                (source_column, target_column)
+                                for _, source_column, target_column in sorted(columns)
+                            ),
+                        )
+                        for target_table, columns in grouped.values()
+                    }
+
+                self.assertIn(
+                    (
+                        "model_invocations",
+                        (
+                            ("workflow_id", "workflow_id"),
+                            ("model_invocation_id", "id"),
+                        ),
+                    ),
+                    foreign_keys("intent_decisions"),
+                )
+                self.assertIn(
+                    (
+                        "intent_decisions",
+                        (
+                            ("id", "workflow_id"),
+                            ("current_intent_decision_id", "id"),
+                        ),
+                    ),
+                    foreign_keys("workflows"),
+                )
+
+    def test_autonomous_workflow_orm_keeps_unresolved_workflow_type_null(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "autonomous-orm.sqlite3"
+            migration.ensure_database(database_path)
+            engine = create_engine(f"sqlite:///{database_path}")
+            with Session(engine) as session:
+                project = ProjectRecord(
+                    id="autonomous-orm-project",
+                    title="Autonomous ORM",
+                    description="",
+                    project_path="/tmp/autonomous-orm-project",
+                    execution_mode="safe",
+                )
+                session.add(project)
+                session.flush()
+                workflow = WorkflowRecord(
+                    id="autonomous-orm-workflow",
+                    project_id=project.id,
+                    create_idempotency_key="autonomous-orm-key",
+                    create_payload_sha256="a" * 64,
+                    creation_mode="autonomous",
+                    selected_source_ids=[],
+                    workflow_type=None,
+                    goal="Route this research goal",
+                    generation_mode="local-deterministic",
+                    status="routing",
+                    row_version=1,
+                    event_sequence=0,
+                )
+                session.add(workflow)
+                session.commit()
+                self.assertIsNone(workflow.workflow_type)
+            engine.dispose()
+
     def test_dataset_analysis_schema_enforces_lineage_and_active_uniqueness(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "dataset-schema.sqlite3"
@@ -929,6 +1643,148 @@ class DatabaseMigrationTest(unittest.TestCase):
             migration.ensure_database(database_path)
 
             self.assertEqual(_revision(database_path), expected_head)
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+    def test_autonomous_intake_migration_round_trip_preserves_fixed_workflow_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "autonomous-round-trip.sqlite3"
+            config = migration.alembic_config(database_path)
+            prior_revision = "0005_workflow_mutation_replay"
+            command.upgrade(config, prior_revision)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute(
+                    """
+                    INSERT INTO projects (
+                        id, title, description, project_path, research_domain,
+                        execution_mode, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "round-trip-agent-project",
+                        "Fixed workflow",
+                        "Autonomous migration round-trip fixture",
+                        "/tmp/round-trip-agent-project",
+                        None,
+                        "safe",
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                        id, project_id, create_idempotency_key,
+                        create_payload_sha256, workflow_type, goal,
+                        generation_mode, status, row_version, event_sequence,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "round-trip-fixed-workflow",
+                        "round-trip-agent-project",
+                        "round-trip-fixed-key",
+                        "a" * 64,
+                        "literature-synthesis",
+                        "Preserve the fixed workflow",
+                        "local-deterministic",
+                        "planning",
+                        1,
+                        0,
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.commit()
+            before_data = _data_snapshot(database_path)
+
+            command.upgrade(config, "head")
+            with sqlite3.connect(database_path) as connection:
+                workflow = connection.execute(
+                    "SELECT creation_mode, selected_source_ids, "
+                    "current_intent_decision_id FROM workflows "
+                    "WHERE id = 'round-trip-fixed-workflow'"
+                ).fetchone()
+                self.assertEqual(workflow, ("fixed-workflow", "[]", None))
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+            command.downgrade(config, prior_revision)
+
+            self.assertEqual(_revision(database_path), prior_revision)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+            with sqlite3.connect(database_path) as connection:
+                workflow_columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(workflows)")
+                }
+                self.assertNotIn("creation_mode", workflow_columns)
+                self.assertNotIn("selected_source_ids", workflow_columns)
+                self.assertNotIn("current_intent_decision_id", workflow_columns)
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_autonomous_intake_downgrade_refuses_new_provenance_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "autonomous-downgrade.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            head = migration.single_head(config)
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                connection.execute(
+                    """
+                    INSERT INTO projects (
+                        id, title, description, project_path, research_domain,
+                        execution_mode, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "autonomous-downgrade-project",
+                        "Autonomous workflow",
+                        "Downgrade refusal fixture",
+                        "/tmp/autonomous-downgrade-project",
+                        None,
+                        "safe",
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                        id, project_id, create_idempotency_key,
+                        create_payload_sha256, creation_mode, selected_source_ids,
+                        workflow_type, goal, generation_mode, status, row_version,
+                        event_sequence, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "autonomous-downgrade-workflow",
+                        "autonomous-downgrade-project",
+                        "autonomous-downgrade-key",
+                        "b" * 64,
+                        "autonomous",
+                        "[]",
+                        None,
+                        "Keep autonomous intake provenance",
+                        "local-deterministic",
+                        "routing",
+                        1,
+                        0,
+                        "2026-07-16 00:00:00",
+                        "2026-07-16 00:00:00",
+                    ),
+                )
+                connection.commit()
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "autonomous workflow intake provenance exists",
+            ):
+                command.downgrade(config, "0005_workflow_mutation_replay")
+
+            self.assertEqual(_revision(database_path), head)
             self.assertEqual(_schema_snapshot(database_path), before_schema)
             self.assertEqual(_data_snapshot(database_path), before_data)
 

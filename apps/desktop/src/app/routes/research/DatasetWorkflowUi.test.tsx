@@ -100,6 +100,7 @@ describe("dataset workflow UI", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /Advanced/i }));
     fireEvent.click(
       screen.getByRole("button", { name: /Dataset Analysis/i }),
     );
@@ -115,6 +116,7 @@ describe("dataset workflow UI", () => {
       expect(handlers.onCreate).toHaveBeenCalledWith(
         "Summarize outcomes by group",
         {
+          mode: "advanced",
           workflowType: "dataset-analysis",
           datasetSourceId: "dataset-1",
           generationMode: "local-deterministic",

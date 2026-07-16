@@ -3,13 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 WORKFLOW_TRANSITIONS: dict[str, frozenset[str]] = {
-    "planning": frozenset({"waiting-plan-approval", "blocked", "failed", "cancelled"}),
-    "waiting-plan-approval": frozenset({"running", "blocked", "cancelled"}),
+    "routing": frozenset(
+        {"waiting-clarification", "planning", "unsupported", "failed", "cancelled"}
+    ),
+    "waiting-clarification": frozenset({"routing", "unsupported", "cancelled"}),
+    "planning": frozenset(
+        {"routing", "waiting-plan-approval", "blocked", "failed", "cancelled"}
+    ),
+    "waiting-plan-approval": frozenset({"routing", "running", "blocked", "cancelled"}),
     "running": frozenset({"reviewing", "blocked", "failed", "cancelled"}),
     "reviewing": frozenset({"completed", "blocked", "failed", "cancelled"}),
     "blocked": frozenset({"planning", "running", "cancelled"}),
-    "failed": frozenset({"planning", "running", "reviewing", "cancelled"}),
+    "failed": frozenset({"routing", "planning", "running", "reviewing", "cancelled"}),
     "completed": frozenset(),
+    "unsupported": frozenset(),
     "cancelled": frozenset(),
 }
 

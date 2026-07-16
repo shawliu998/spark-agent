@@ -167,6 +167,7 @@ from ._handlers.text import (
 from ._handlers.text import (
     terms as terms,
 )
+from .agent_service import handle_route_intent as _handle_route_intent_impl
 from .schemas import (
     AnalysisApprovalEventData,
     AnalysisIntentCreatedEventData,
@@ -203,6 +204,19 @@ def handle_generate_plan(
         job,
         model_gateway,
         legacy_handler=legacy_handler,
+    )
+
+
+def handle_route_intent(
+    session: Session,
+    workflow: WorkflowRecord,
+    job: JobRecord,
+) -> None:
+    _handle_route_intent_impl(
+        session,
+        workflow,
+        job,
+        gateway=model_gateway,
     )
 
 
@@ -390,6 +404,7 @@ def execute_leased_job(session: Session, job_id: str, lease_token: str) -> None:
         session,
         job_id,
         lease_token,
+        handle_route_intent=handle_route_intent,
         handle_generate_plan=handle_generate_plan,
         handle_task=_handle_task,
         handle_review=handle_review,

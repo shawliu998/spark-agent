@@ -2,6 +2,8 @@ import type { ChangeEvent, ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle } from "lucide-react";
 import type {
+  InteractionRequest,
+  InteractionResponseValue,
   ResearchSource,
   DatasetAnalysisWorkflowSnapshot,
   ResearchWorkflowSnapshot,
@@ -13,6 +15,7 @@ import type {
   WorkflowConnectionState,
 } from "./useResearchWorkflow";
 import { DatasetWorkflowDetails } from "./DatasetWorkflowDetails";
+import { ClarificationCard } from "./ClarificationCard";
 import {
   WorkflowNeedsAttention,
   WorkflowProgress,
@@ -31,8 +34,10 @@ export { WorkflowReviewSummary } from "./WorkflowReviewSummary";
 
 export interface WorkflowWorkspaceProps {
   snapshot: ResearchWorkflowSnapshot | null;
+  interactions?: InteractionRequest[];
   sources: ResearchSource[];
   loading: boolean;
+  loadingInteractions?: boolean;
   mutating: boolean;
   connection: WorkflowConnectionState;
   error: string | null;
@@ -43,6 +48,10 @@ export interface WorkflowWorkspaceProps {
   onCreate: (
     goal: string,
     options: ResearchWorkflowCreateOptions,
+  ) => Promise<void>;
+  onRespondToInteraction?: (
+    interactionId: string,
+    response: InteractionResponseValue,
   ) => Promise<void>;
   onApprovePlan: () => Promise<void>;
   onDecideAnalysis: (decision: "approved" | "rejected") => Promise<void>;
@@ -60,8 +69,10 @@ export interface WorkflowWorkspaceProps {
 
 export function WorkflowWorkspace({
   snapshot,
+  interactions = [],
   sources,
   loading,
+  loadingInteractions = false,
   mutating,
   connection,
   error,
@@ -70,6 +81,7 @@ export function WorkflowWorkspace({
   remoteDestination,
   legacyContent,
   onCreate,
+  onRespondToInteraction = async () => {},
   onApprovePlan,
   onDecideAnalysis,
   onAcceptReviewWarnings,
@@ -105,6 +117,12 @@ export function WorkflowWorkspace({
 
   const { workflow, plan } = snapshot;
   const showAttention = workflowNeedsAttention(workflow.status);
+  const revisableInteraction =
+    workflow.status === "planning" || workflow.status === "waiting-plan-approval"
+      ? [...interactions]
+          .reverse()
+          .find((interaction) => interaction.status === "answered") ?? null
+      : null;
 
   return (
     <div className="space-y-4">
@@ -119,11 +137,89 @@ export function WorkflowWorkspace({
 
       {error && <WorkflowError message={error} onRefresh={onRefresh} />}
 
-      {loading && !plan && (
+      {loading &&
+        !plan &&
+        workflow.status !== "routing" &&
+        workflow.status !== "waiting-clarification" &&
+        workflow.status !== "unsupported" && (
         <WorkflowWaiting
           label={t("research.workflow.loading", {
             defaultValue: "Loading workflow state…",
           })}
+        />
+      )}
+
+      {workflow.status === "routing" && (
+        <WorkflowWaiting
+          label={t("research.workflow.routing", {
+            defaultValue: "Understanding the goal and validating selected sources…",
+          })}
+        />
+      )}
+
+      {workflow.status === "waiting-clarification" &&
+        interactions
+          .filter((interaction) => interaction.status === "pending")
+          .map((interaction) => (
+            <ClarificationCard
+              key={interaction.id}
+              interaction={interaction}
+              mutating={mutating}
+              onRespond={onRespondToInteraction}
+            />
+          ))}
+
+      {workflow.status === "waiting-clarification" &&
+        loadingInteractions &&
+        !interactions.some((interaction) => interaction.status === "pending") && (
+          <WorkflowWaiting
+            label={t("research.workflow.loadingClarification", {
+              defaultValue: "Loading the saved clarification request…",
+            })}
+          />
+        )}
+
+      {workflow.status === "waiting-clarification" &&
+        !loadingInteractions &&
+        !interactions.some((interaction) => interaction.status === "pending") && (
+          <div className="flex items-start gap-2 rounded-card border border-warn/30 bg-warn/5 p-4 text-xs text-muted">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warn" />
+            {t("research.workflow.clarificationMissing", {
+              defaultValue:
+                "This workflow is waiting for clarification, but no pending request was returned. Refresh the task.",
+            })}
+          </div>
+        )}
+
+      {workflow.status === "unsupported" && (
+        <div className="flex items-start gap-2 rounded-card border border-warn/30 bg-warn/5 p-4 text-xs text-muted">
+          <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warn" />
+          <div>
+            <p className="font-medium text-text">
+              {t("research.workflow.unsupportedTitle", {
+                defaultValue: "This goal is outside the supported research scope",
+              })}
+            </p>
+            <p className="mt-1 leading-relaxed">
+              {"statusReason" in workflow && workflow.statusReason?.userMessage
+                ? workflow.statusReason.userMessage
+                : "intentDecision" in snapshot &&
+                  snapshot.intentDecision?.reasoningSummary
+                ? snapshot.intentDecision.reasoningSummary
+                : t("research.workflow.unsupportedFallback", {
+                    defaultValue:
+                      "Spark cannot safely route this goal with the selected sources.",
+                  })}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {revisableInteraction && (
+        <ClarificationCard
+          interaction={revisableInteraction}
+          mutating={mutating}
+          onRespond={onRespondToInteraction}
         />
       )}
 

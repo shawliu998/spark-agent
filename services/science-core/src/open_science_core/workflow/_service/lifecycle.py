@@ -26,6 +26,7 @@ from ...models import (
     AnalysisIntentRecord,
     ApprovalRecord,
     EventRecord,
+    InteractionRequestRecord,
     JobRecord,
     PlanRecord,
     ProjectRecord,
@@ -87,7 +88,7 @@ def start_workflow(
         return existing
     dataset: SourceRecord | None = None
     if payload.workflow_type == "dataset-analysis":
-        dataset = _verified_dataset_for_workflow(session, project, payload.dataset_source_id)
+        dataset = verified_dataset_for_workflow(session, project, payload.dataset_source_id)
     if payload.generation_mode == "remote-model-assisted" and not gateway.configured:
         raise WorkflowConflict(
             "model-gateway-not-configured",
@@ -187,7 +188,7 @@ def _workflow_create_replay(
     return existing
 
 
-def _verified_dataset_for_workflow(
+def verified_dataset_for_workflow(
     session: Session,
     project: ProjectRecord,
     dataset_source_id: str,
@@ -881,10 +882,22 @@ def request_cancel(
             )
             .values(status="cancelled", finished_at=now, updated_at=now)
         )
+        cancel_pending_interactions(session, workflow.id)
         transition_workflow(session, workflow, "cancelled")
     session.commit()
     session.refresh(workflow)
     return workflow
+
+
+def cancel_pending_interactions(session: Session, workflow_id: str) -> None:
+    session.execute(
+        update(InteractionRequestRecord)
+        .where(
+            InteractionRequestRecord.workflow_id == workflow_id,
+            InteractionRequestRecord.status == "pending",
+        )
+        .values(status="cancelled")
+    )
 
 
 def accept_review_warnings(
@@ -1156,7 +1169,9 @@ def _retry_workflow_once(
     failed_jobs = select(JobRecord).where(
         JobRecord.workflow_id == workflow.id,
         JobRecord.status == "failed",
-        JobRecord.kind.in_(["generate-plan", "execute-task", "review-workflow"]),
+        JobRecord.kind.in_(
+            ["route-intent", "generate-plan", "execute-task", "review-workflow"]
+        ),
     )
     if task_id is not None:
         failed_jobs = failed_jobs.where(JobRecord.task_id == task_id)
@@ -1189,7 +1204,10 @@ def _retry_workflow_once(
         transition_task(session, task, "queued")
         target = "running"
     else:
-        target = "reviewing" if kind == "review-workflow" else "planning"
+        if kind == "route-intent":
+            target = "routing"
+        else:
+            target = "reviewing" if kind == "review-workflow" else "planning"
     enqueue_job(
         session,
         workflow,

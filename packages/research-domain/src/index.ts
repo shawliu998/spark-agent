@@ -14,11 +14,14 @@ export type ResearchTaskStatus =
 
 /** Canonical workflow states owned by science-core. */
 export type ResearchWorkflowStatus =
+  | "routing"
+  | "waiting-clarification"
   | "planning"
   | "waiting-plan-approval"
   | "running"
   | "reviewing"
   | "completed"
+  | "unsupported"
   | "blocked"
   | "failed"
   | "cancelled";
@@ -28,6 +31,7 @@ export type ResearchWorkflowAllowedAction =
   | "approve-plan"
   | "approve-analysis"
   | "reject-analysis"
+  | "respond-interaction"
   | "accept-review-warnings"
   | "cancel"
   | "retry"
@@ -42,6 +46,96 @@ export type LiteratureResearchWorkflowAllowedAction =
 export type ResearchWorkflowType =
   | "literature-synthesis"
   | "dataset-analysis";
+
+/** Strict autonomous-router decision vocabulary. */
+export type ResearchIntent =
+  | "literature-synthesis"
+  | "dataset-analysis"
+  | "mixed-research"
+  | "clarification-required"
+  | "unsupported";
+
+export type ProposedResearchWorkflowType =
+  | "literature-synthesis"
+  | "dataset-analysis"
+  | "mixed-research";
+
+export interface IntentDecision {
+  id: string;
+  workflowId: string;
+  intent: ResearchIntent;
+  confidence: number;
+  reasoningSummary: string;
+  selectedSourceIds: string[];
+  missingInputs: string[];
+  proposedWorkflowType: ProposedResearchWorkflowType | null;
+  promptVersion: string;
+  inputSha256: string;
+  outputSha256: string;
+  createdAt: string;
+}
+
+export interface CreateAgentRunInput {
+  goal: string;
+  sourceIds: string[];
+  mode: "autonomous";
+  remoteDataApproved?: boolean;
+}
+
+export type InteractionRequestType =
+  | "single-choice"
+  | "multi-choice"
+  | "text"
+  | "number"
+  | "boolean"
+  | "column-selection"
+  | "method-confirmation"
+  | "assumption-confirmation";
+
+export type InteractionRequestStatus =
+  | "pending"
+  | "answered"
+  | "superseded"
+  | "cancelled";
+
+export type InteractionResponseValue = string | number | boolean | string[];
+
+export interface InteractionOption {
+  value: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface InteractionUserResponse {
+  id: string;
+  interactionId: string;
+  revision: number;
+  response: InteractionResponseValue;
+  responseSha256: string;
+  createdAt: string;
+}
+
+/** Durable science-core request; it is never a skippable runtime prompt. */
+export interface InteractionRequest {
+  id: string;
+  workflowId: string;
+  stepId: string | null;
+  requestType: InteractionRequestType;
+  question: string;
+  options: InteractionOption[];
+  required: boolean;
+  status: InteractionRequestStatus;
+  responseSchema: Record<string, unknown>;
+  workflowRevision: number;
+  latestResponse: InteractionUserResponse | null;
+  createdAt: string;
+  answeredAt: string | null;
+}
+
+export interface RespondToInteractionInput {
+  response: InteractionResponseValue;
+  expectedWorkflowRevision: number;
+}
 
 export type WorkflowRiskLevel = "low" | "medium" | "high";
 
@@ -121,7 +215,35 @@ interface ResearchWorkflowBase {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /** Present for workflows created through the autonomous agent entry point. */
+  mode?: "autonomous" | "advanced";
+  sourceIds?: string[];
 }
+
+export interface AgentResearchWorkflow
+  extends Omit<ResearchWorkflowBase, "blockingReason"> {
+  mode: "autonomous";
+  sourceIds: string[];
+  workflowType: ProposedResearchWorkflowType | null;
+  generationMode: ResearchGenerationMode;
+  status: ResearchWorkflowStatus;
+  statusReason?: {
+    code: string;
+    userMessage: string;
+  } | null;
+  /** Legacy workflow snapshots use blockingReason; autonomous snapshots use statusReason. */
+  blockingReason?: null;
+  datasetSourceId?: null;
+  datasetContentHash?: null;
+}
+
+export type PendingAgentResearchWorkflow = Omit<
+  AgentResearchWorkflow,
+  "workflowType" | "status"
+> & {
+  workflowType: null;
+  status: "routing" | "waiting-clarification" | "unsupported";
+};
 
 export interface LiteratureResearchWorkflow extends ResearchWorkflowBase {
   workflowType: "literature-synthesis";
@@ -140,7 +262,8 @@ export interface DatasetAnalysisWorkflow extends ResearchWorkflowBase {
 
 export type ResearchWorkflow =
   | LiteratureResearchWorkflow
-  | DatasetAnalysisWorkflow;
+  | DatasetAnalysisWorkflow
+  | AgentResearchWorkflow;
 
 export type ResearchWorkflowPlanStatus =
   | "pending-approval"
@@ -1012,9 +1135,50 @@ export type DatasetAnalysisWorkflowSnapshot =
   | PassedDatasetAnalysisWorkflowSnapshot
   | WarningAcceptedDatasetAnalysisWorkflowSnapshot;
 
-export type ResearchWorkflowSnapshot =
+export interface AgentResearchWorkflowSnapshot
+  extends ResearchWorkflowSnapshotBase {
+  workflow: AgentResearchWorkflow;
+  intentDecision: IntentDecision | null;
+  interactions: InteractionRequest[];
+  plan: ResearchWorkflowPlan | null;
+  pendingApprovals: WorkflowPendingApproval[];
+  latestReview: ResearchWorkflowReview | DatasetAnalysisReview | null;
+  datasetProfile: DatasetProfile | null;
+  analysisIntent: WorkflowAnalysisIntent | null;
+  analysisRun: WorkflowAnalysisRun | null;
+  reviewWarningAcceptance: DatasetReviewWarningAcceptance | null;
+}
+
+export type PendingAgentResearchWorkflowSnapshot = Omit<
+  AgentResearchWorkflowSnapshot,
+  | "workflow"
+  | "plan"
+  | "pendingApprovals"
+  | "result"
+  | "latestReview"
+  | "datasetProfile"
+  | "analysisIntent"
+  | "analysisRun"
+  | "reviewWarningAcceptance"
+> & {
+  workflow: PendingAgentResearchWorkflow;
+  plan: null;
+  pendingApprovals: [];
+  result: null;
+  latestReview: null;
+  datasetProfile: null;
+  analysisIntent: null;
+  analysisRun: null;
+  reviewWarningAcceptance: null;
+};
+
+export type ResolvedResearchWorkflowSnapshot =
   | LiteratureResearchWorkflowSnapshot
   | DatasetAnalysisWorkflowSnapshot;
+
+export type ResearchWorkflowSnapshot =
+  | ResolvedResearchWorkflowSnapshot
+  | AgentResearchWorkflowSnapshot;
 
 export interface WorkflowCreatedEventData {
   workflowType: ResearchWorkflowType;
@@ -1040,9 +1204,15 @@ export interface DatasetRemoteDataApprovalEventData
   dataCategories: ["user-goal", "dataset-profile"];
 }
 
+export interface AgentRemoteDataApprovalEventData
+  extends WorkflowRemoteDataApprovalEventBase {
+  dataCategories: ["user-goal", "source-metadata", "user-answer"];
+}
+
 export type WorkflowRemoteDataApprovalEventData =
   | LiteratureRemoteDataApprovalEventData
-  | DatasetRemoteDataApprovalEventData;
+  | DatasetRemoteDataApprovalEventData
+  | AgentRemoteDataApprovalEventData;
 
 export interface WorkflowStatusChangedEventData {
   previousStatus: ResearchWorkflowStatus;
@@ -1174,6 +1344,43 @@ export interface DatasetReviewWarningsAcceptedEventData {
   decision: "accepted";
 }
 
+export interface AgentRunCreatedEventData {
+  goalSha256: string;
+  sourceIds: string[];
+  mode: "autonomous";
+  generationMode: ResearchGenerationMode;
+}
+
+export interface IntentDecisionEventData {
+  intentDecisionId: string;
+  intent: ResearchIntent;
+  confidence: number;
+  outputSha256: string;
+}
+
+interface InteractionEventDataBase {
+  interactionId: string;
+  requestType: InteractionRequestType;
+  required: boolean;
+  expectedWorkflowRevision: number;
+}
+
+export interface InteractionRequestedEventData
+  extends InteractionEventDataBase {
+  responseId: null;
+  responseRevision: null;
+}
+
+export interface InteractionAnsweredEventData
+  extends InteractionEventDataBase {
+  responseId: string;
+  responseRevision: number;
+}
+
+export type InteractionEventData =
+  | InteractionRequestedEventData
+  | InteractionAnsweredEventData;
+
 export type WorkflowEventData =
   | WorkflowCreatedEventData
   | WorkflowRemoteDataApprovalEventData
@@ -1189,7 +1396,10 @@ export type WorkflowEventData =
   | AnalysisRunEventData
   | AnalysisRunProgressEventData
   | AnalysisArtifactCreatedEventData
-  | DatasetReviewWarningsAcceptedEventData;
+  | DatasetReviewWarningsAcceptedEventData
+  | AgentRunCreatedEventData
+  | IntentDecisionEventData
+  | InteractionEventData;
 
 interface WorkflowEventEnvelope<Type extends string, Data extends WorkflowEventData> {
   id: string;
@@ -1202,6 +1412,19 @@ interface WorkflowEventEnvelope<Type extends string, Data extends WorkflowEventD
 }
 
 export type WorkflowEvent =
+  | WorkflowEventEnvelope<"agent-run.created", AgentRunCreatedEventData>
+  | WorkflowEventEnvelope<
+      "intent.decision-recorded",
+      IntentDecisionEventData
+    >
+  | WorkflowEventEnvelope<
+      "interaction.requested",
+      InteractionRequestedEventData
+    >
+  | WorkflowEventEnvelope<
+      "interaction.answered",
+      InteractionAnsweredEventData
+    >
   | WorkflowEventEnvelope<"workflow.created", WorkflowCreatedEventData>
   | WorkflowEventEnvelope<
       "remote-data.approved",

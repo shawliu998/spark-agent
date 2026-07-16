@@ -14,6 +14,7 @@ from ..service import (
     append_workflow_events,
     assert_plan_approval_integrity,
     assert_task_matches_approved_plan,
+    cancel_pending_interactions,
     enqueue_job,
     job_input_compatibility,
     retry_delay_seconds,
@@ -31,6 +32,15 @@ class _PlanHandler(Protocol):
         job: JobRecord,
         *,
         legacy_handler: bool,
+    ) -> None: ...
+
+
+class _RouteHandler(Protocol):
+    def __call__(
+        self,
+        session: Session,
+        workflow: WorkflowRecord,
+        job: JobRecord,
     ) -> None: ...
 
 
@@ -104,6 +114,7 @@ def execute_leased_job(
     job_id: str,
     lease_token: str,
     *,
+    handle_route_intent: _RouteHandler,
     handle_generate_plan: _PlanHandler,
     handle_task: _TaskHandler,
     handle_review: _ReviewHandler,
@@ -131,7 +142,9 @@ def execute_leased_job(
             outcome_unknown=False,
         )
 
-    if job.kind == "generate-plan":
+    if job.kind == "route-intent":
+        handle_route_intent(session, workflow, job)
+    elif job.kind == "generate-plan":
         handle_generate_plan(
             session,
             workflow,
@@ -376,6 +389,7 @@ def acknowledge_cancellation(
         )
         .values(status="cancelled", finished_at=now, updated_at=now)
     )
+    cancel_pending_interactions(session, workflow.id)
     if workflow.status != "cancelled":
         transition_workflow(session, workflow, "cancelled")
 

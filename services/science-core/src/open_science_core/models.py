@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -225,24 +226,53 @@ class WorkflowRecord(Base):
         UniqueConstraint(
             "project_id", "create_idempotency_key", name="uq_workflow_project_create_key"
         ),
+        ForeignKeyConstraint(
+            ["id", "current_intent_decision_id"],
+            ["intent_decisions.workflow_id", "intent_decisions.id"],
+            name="fk_workflows_current_intent_decision",
+            ondelete="NO ACTION",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
         CheckConstraint(
-            "status IN ('planning','waiting-plan-approval','running','reviewing',"
-            "'completed','blocked','failed','cancelled')",
+            "status IN ('routing','waiting-clarification','planning',"
+            "'waiting-plan-approval','running','reviewing','completed','unsupported',"
+            "'blocked','failed','cancelled')",
             name="ck_workflow_status",
+        ),
+        CheckConstraint(
+            "creation_mode IN ('fixed-workflow','autonomous')",
+            name="ck_workflow_creation_mode",
         ),
         CheckConstraint(
             "generation_mode IN ('local-deterministic','remote-model-assisted')",
             name="ck_workflow_generation_mode",
         ),
         CheckConstraint(
+            "workflow_type IS NULL OR "
             "workflow_type IN ('literature-synthesis','dataset-analysis')",
             name="ck_workflow_type",
+        ),
+        CheckConstraint(
+            "(workflow_type IS NULL "
+            "AND creation_mode = 'autonomous' "
+            "AND status IN ('routing','waiting-clarification','unsupported',"
+            "'blocked','failed','cancelled')) OR "
+            "(workflow_type IS NOT NULL "
+            "AND status NOT IN ('routing','waiting-clarification','unsupported'))",
+            name="ck_workflow_intake_state",
+        ),
+        CheckConstraint(
+            "json_valid(selected_source_ids) "
+            "AND json_type(selected_source_ids) = 'array'",
+            name="ck_workflow_selected_source_ids",
         ),
         CheckConstraint(
             "(workflow_type = 'dataset-analysis' "
             "AND dataset_source_id IS NOT NULL "
             "AND dataset_content_hash IS NOT NULL) OR "
-            "(workflow_type != 'dataset-analysis' "
+            "((workflow_type IS NULL OR workflow_type != 'dataset-analysis') "
             "AND dataset_source_id IS NULL "
             "AND dataset_content_hash IS NULL)",
             name="ck_workflow_dataset_identity",
@@ -261,7 +291,12 @@ class WorkflowRecord(Base):
     )
     create_idempotency_key: Mapped[str] = mapped_column(String(200))
     create_payload_sha256: Mapped[str] = mapped_column(String(64))
-    workflow_type: Mapped[str] = mapped_column(String(64), default="literature-synthesis")
+    creation_mode: Mapped[str] = mapped_column(String(32), default="fixed-workflow")
+    selected_source_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    current_intent_decision_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    workflow_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     dataset_source_id: Mapped[str | None] = mapped_column(
         ForeignKey("sources.id", ondelete="RESTRICT"), nullable=True, index=True
     )
@@ -283,6 +318,302 @@ class WorkflowRecord(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ModelInvocationRecord(Base):
+    __tablename__ = "model_invocations"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id",
+            "operation_key",
+            "attempt",
+            name="uq_model_invocation_operation_attempt",
+        ),
+        UniqueConstraint(
+            "workflow_id", "id", name="uq_model_invocation_workflow_id"
+        ),
+        UniqueConstraint(
+            "request_idempotency_key",
+            name="uq_model_invocation_idempotency_key",
+        ),
+        CheckConstraint("schema_version = '1'", name="ck_model_invocation_schema_version"),
+        CheckConstraint("attempt >= 1", name="ck_model_invocation_attempt"),
+        CheckConstraint(
+            "status IN ('pending','succeeded','failed')",
+            name="ck_model_invocation_status",
+        ),
+        CheckConstraint(
+            "length(input_sha256) = 64 "
+            "AND input_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_model_invocation_input_sha256",
+        ),
+        CheckConstraint(
+            "output_sha256 IS NULL OR "
+            "(length(output_sha256) = 64 "
+            "AND output_sha256 NOT GLOB '*[^0-9a-f]*')",
+            name="ck_model_invocation_output_sha256",
+        ),
+        CheckConstraint(
+            "length(request_payload_sha256) = 64 "
+            "AND request_payload_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_model_invocation_request_payload_sha256",
+        ),
+        CheckConstraint(
+            "json_valid(token_usage) AND json_type(token_usage) = 'object'",
+            name="ck_model_invocation_token_usage",
+        ),
+        CheckConstraint(
+            "json_valid(validation_errors) "
+            "AND json_type(validation_errors) = 'array'",
+            name="ck_model_invocation_validation_errors",
+        ),
+        CheckConstraint(
+            "(status = 'pending' "
+            "AND output_sha256 IS NULL "
+            "AND error_code IS NULL "
+            "AND error_message IS NULL "
+            "AND finished_at IS NULL) OR "
+            "(status = 'succeeded' "
+            "AND output_sha256 IS NOT NULL "
+            "AND error_code IS NULL "
+            "AND error_message IS NULL "
+            "AND finished_at IS NOT NULL) OR "
+            "(status = 'failed' "
+            "AND error_code IS NOT NULL "
+            "AND finished_at IS NOT NULL)",
+            name="ck_model_invocation_terminal_result",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    schema_version: Mapped[str] = mapped_column(String(16), default="1")
+    operation_type: Mapped[str] = mapped_column(String(100), index=True)
+    operation_key: Mapped[str] = mapped_column(String(300))
+    attempt: Mapped[int] = mapped_column(Integer, default=1)
+    generator: Mapped[str] = mapped_column(String(100))
+    model: Mapped[str] = mapped_column(String(200))
+    endpoint_identity: Mapped[str] = mapped_column(String(500))
+    prompt_version: Mapped[str] = mapped_column(String(100))
+    input_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    output_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    token_usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    validation_errors: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    request_idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_payload_sha256: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32))
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class IntentDecisionRecord(Base):
+    __tablename__ = "intent_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id", "revision", name="uq_intent_decision_workflow_revision"
+        ),
+        UniqueConstraint(
+            "workflow_id", "id", name="uq_intent_decision_workflow_id"
+        ),
+        UniqueConstraint(
+            "model_invocation_id", name="uq_intent_decision_model_invocation"
+        ),
+        ForeignKeyConstraint(
+            ["workflow_id", "model_invocation_id"],
+            ["model_invocations.workflow_id", "model_invocations.id"],
+            name="fk_intent_decision_model_invocation",
+            ondelete="NO ACTION",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint("revision >= 1", name="ck_intent_decision_revision"),
+        CheckConstraint(
+            "intent IN ('literature-synthesis','dataset-analysis','mixed-research',"
+            "'clarification-required','unsupported')",
+            name="ck_intent_decision_intent",
+        ),
+        CheckConstraint(
+            "confidence >= 0.0 AND confidence <= 1.0",
+            name="ck_intent_decision_confidence",
+        ),
+        CheckConstraint(
+            "proposed_workflow_type IS NULL OR proposed_workflow_type IN "
+            "('literature-synthesis','dataset-analysis','mixed-research')",
+            name="ck_intent_decision_proposed_workflow_type",
+        ),
+        CheckConstraint(
+            "((intent IN ('literature-synthesis','dataset-analysis','mixed-research')) "
+            "AND proposed_workflow_type = intent) OR "
+            "(intent IN ('clarification-required','unsupported') "
+            "AND proposed_workflow_type IS NULL)",
+            name="ck_intent_decision_resolution",
+        ),
+        CheckConstraint(
+            "json_valid(selected_source_ids) "
+            "AND json_type(selected_source_ids) = 'array'",
+            name="ck_intent_decision_selected_source_ids",
+        ),
+        CheckConstraint(
+            "json_valid(missing_inputs) AND json_type(missing_inputs) = 'array'",
+            name="ck_intent_decision_missing_inputs",
+        ),
+        CheckConstraint(
+            "parse_result IN ('valid','model-not-configured','model-request-failed',"
+            "'model-request-outcome-unknown','model-output-invalid',"
+            "'deterministic-capability-guard')",
+            name="ck_intent_decision_parse_result",
+        ),
+        CheckConstraint(
+            "length(input_sha256) = 64 "
+            "AND input_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_intent_decision_input_sha256",
+        ),
+        CheckConstraint(
+            "length(output_sha256) = 64 "
+            "AND output_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_intent_decision_output_sha256",
+        ),
+        CheckConstraint(
+            "(used_model = 1 "
+            "AND model_invocation_id IS NOT NULL "
+            "AND model IS NOT NULL) OR "
+            "(used_model = 0 "
+            "AND model_invocation_id IS NULL "
+            "AND model IS NULL)",
+            name="ck_intent_decision_model_binding",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    intent: Mapped[str] = mapped_column(String(32), index=True)
+    confidence: Mapped[float] = mapped_column(Float)
+    reasoning_summary: Mapped[str] = mapped_column(Text)
+    selected_source_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    missing_inputs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    proposed_workflow_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generator: Mapped[str] = mapped_column(String(100))
+    used_model: Mapped[bool] = mapped_column(Boolean, default=False)
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(100))
+    parse_result: Mapped[str] = mapped_column(String(64))
+    model_invocation_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    input_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    output_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class InteractionRequestRecord(Base):
+    __tablename__ = "interaction_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id",
+            "request_key",
+            "revision",
+            name="uq_interaction_request_workflow_key_revision",
+        ),
+        CheckConstraint("revision >= 1", name="ck_interaction_request_revision"),
+        CheckConstraint(
+            "workflow_revision >= 1",
+            name="ck_interaction_request_workflow_revision",
+        ),
+        CheckConstraint(
+            "request_type IN ('single-choice','multi-choice','text','number','boolean',"
+            "'column-selection','method-confirmation','assumption-confirmation')",
+            name="ck_interaction_request_type",
+        ),
+        CheckConstraint(
+            "status IN ('pending','answered','superseded','cancelled')",
+            name="ck_interaction_request_status",
+        ),
+        CheckConstraint(
+            "json_valid(options) AND json_type(options) = 'array'",
+            name="ck_interaction_request_options",
+        ),
+        CheckConstraint(
+            "json_valid(response_schema) AND json_type(response_schema) = 'object'",
+            name="ck_interaction_request_response_schema",
+        ),
+        CheckConstraint(
+            "length(request_sha256) = 64 "
+            "AND request_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_interaction_request_sha256",
+        ),
+        CheckConstraint(
+            "(status = 'answered' AND answered_at IS NOT NULL) OR "
+            "(status != 'answered')",
+            name="ck_interaction_request_answered_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    step_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    request_key: Mapped[str] = mapped_column(String(200))
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    workflow_revision: Mapped[int] = mapped_column(Integer)
+    request_type: Mapped[str] = mapped_column(String(64))
+    question: Mapped[str] = mapped_column(Text)
+    options: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    required: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    response_schema: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    request_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserResponseRecord(Base):
+    __tablename__ = "user_responses"
+    __table_args__ = (
+        UniqueConstraint(
+            "interaction_id", "revision", name="uq_user_response_interaction_revision"
+        ),
+        UniqueConstraint(
+            "idempotency_key", name="uq_user_response_idempotency_key"
+        ),
+        CheckConstraint("revision >= 1", name="ck_user_response_revision"),
+        CheckConstraint(
+            "expected_workflow_revision >= 1",
+            name="ck_user_response_expected_workflow_revision",
+        ),
+        CheckConstraint("json_valid(response_json)", name="ck_user_response_json"),
+        CheckConstraint(
+            "length(response_sha256) = 64 "
+            "AND response_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_user_response_sha256",
+        ),
+        CheckConstraint(
+            "length(request_payload_sha256) = 64 "
+            "AND request_payload_sha256 NOT GLOB '*[^0-9a-f]*'",
+            name="ck_user_response_request_payload_sha256",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    interaction_id: Mapped[str] = mapped_column(
+        ForeignKey("interaction_requests.id", ondelete="CASCADE"), index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer)
+    expected_workflow_revision: Mapped[int] = mapped_column(Integer)
+    response_json: Mapped[Any] = mapped_column(JSON)
+    response_sha256: Mapped[str] = mapped_column(String(64), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_payload_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class PlanRecord(Base):
@@ -322,7 +653,7 @@ class JobRecord(Base):
     __table_args__ = (
         UniqueConstraint("operation_key", "attempt", name="uq_workflow_job_attempt"),
         CheckConstraint(
-            "kind IN ('generate-plan','execute-task','review-workflow')",
+            "kind IN ('route-intent','generate-plan','execute-task','review-workflow')",
             name="ck_workflow_job_kind",
         ),
         CheckConstraint(

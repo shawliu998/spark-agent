@@ -413,8 +413,10 @@ export function ResearchPage() {
 
           <WorkflowWorkspace
             snapshot={workflow.snapshot}
+            interactions={workflow.interactions}
             sources={sources}
             loading={workflow.loadingSnapshot}
+            loadingInteractions={workflow.loadingInteractions}
             mutating={workflow.mutating}
             connection={workflow.connection}
             error={workflow.error}
@@ -422,6 +424,7 @@ export function ResearchPage() {
             importingDataset={importingDataset}
             remoteDestination={health?.modelDestination ?? null}
             onCreate={workflow.create}
+            onRespondToInteraction={workflow.respondToInteraction}
             onApprovePlan={workflow.approvePlan}
             onDecideAnalysis={workflow.decideAnalysis}
             onAcceptReviewWarnings={workflow.acceptReviewWarnings}

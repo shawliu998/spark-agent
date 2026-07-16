@@ -5,6 +5,8 @@ import {
   ChevronRight,
   FileText,
   Loader2,
+  Route,
+  SlidersHorizontal,
   Sparkles,
   Upload,
 } from "lucide-react";
@@ -19,6 +21,9 @@ import type { ResearchWorkflowCreateOptions } from "./useResearchWorkflow";
 
 const LITERATURE_WORKFLOW: ResearchWorkflowType = "literature-synthesis";
 const DATASET_WORKFLOW: ResearchWorkflowType = "dataset-analysis";
+type ComposerMode = "autonomous" | "advanced";
+const AUTONOMOUS_MODE: ComposerMode = "autonomous";
+const ADVANCED_MODE: ComposerMode = "advanced";
 
 interface WorkflowGoalComposerProps {
   canStart: boolean;
@@ -45,6 +50,9 @@ export function WorkflowGoalComposer({
   const { t } = useTranslation("pages");
   const datasetInput = useRef<HTMLInputElement>(null);
   const [goal, setGoal] = useState("");
+  const [composerMode, setComposerMode] =
+    useState<ComposerMode>("autonomous");
+  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [workflowType, setWorkflowType] =
     useState<ResearchWorkflowType>("literature-synthesis");
   const [datasetSourceId, setDatasetSourceId] = useState<string | null>(null);
@@ -72,6 +80,7 @@ export function WorkflowGoalComposer({
   const selectedDataset =
     readyDatasets.find((source) => source.id === datasetSourceId) ?? null;
   const remoteAssisted =
+    composerMode === "advanced" &&
     workflowType === "literature-synthesis" &&
     generationMode === "remote-model-assisted";
   const remoteDestinationApprovalKey = remoteDestination
@@ -86,6 +95,21 @@ export function WorkflowGoalComposer({
     );
   }, [readyDatasets]);
 
+  const readySources = useMemo(
+    () => [...readyPdfs, ...readyDatasets],
+    [readyDatasets, readyPdfs],
+  );
+
+  useEffect(() => {
+    setSelectedSourceIds((current) => {
+      const readyIds = new Set(readySources.map((source) => source.id));
+      const retained = current.filter((sourceId) => readyIds.has(sourceId));
+      return current.length === 0
+        ? readySources.map((source) => source.id)
+        : retained;
+    });
+  }, [readySources]);
+
   useEffect(() => {
     setRemoteDataApproved(false);
     if (!remoteDestinationApprovalKey) setGenerationMode("local-deterministic");
@@ -99,7 +123,9 @@ export function WorkflowGoalComposer({
   }, [workflowType]);
 
   const sourceReady =
-    workflowType === "dataset-analysis"
+    composerMode === "autonomous"
+      ? selectedSourceIds.length > 0
+      : workflowType === "dataset-analysis"
       ? selectedDataset !== null
       : readyPdfs.length > 0;
   const canSubmit =
@@ -113,7 +139,15 @@ export function WorkflowGoalComposer({
     event.preventDefault();
     const next = goal.trim();
     if (!next || !canSubmit) return;
+    if (composerMode === "autonomous") {
+      await onCreate(next, {
+        mode: "autonomous",
+        sourceIds: selectedSourceIds,
+      });
+      return;
+    }
     await onCreate(next, {
+      mode: "advanced",
       workflowType,
       datasetSourceId:
         workflowType === "dataset-analysis" ? datasetSourceId : null,
@@ -145,6 +179,42 @@ export function WorkflowGoalComposer({
         </label>
       </div>
 
+      <div
+        className="mt-3"
+        role="group"
+        aria-label={t("research.workflow.modeLabel", {
+          defaultValue: "Research mode",
+        })}
+      >
+        <div className="grid gap-2 sm:grid-cols-2">
+          <WorkflowTypeButton
+            selected={composerMode === "autonomous"}
+            icon={<Route size={15} />}
+            title={t("research.workflow.modeAuto", {
+              defaultValue: "Auto",
+            })}
+            description={t("research.workflow.modeAutoHint", {
+              defaultValue:
+                "Spark inspects your goal and selected sources, then chooses the safe workflow.",
+            })}
+            onClick={() => setComposerMode(AUTONOMOUS_MODE)}
+          />
+          <WorkflowTypeButton
+            selected={composerMode === "advanced"}
+            icon={<SlidersHorizontal size={15} />}
+            title={t("research.workflow.modeAdvanced", {
+              defaultValue: "Advanced",
+            })}
+            description={t("research.workflow.modeAdvancedHint", {
+              defaultValue:
+                "Choose the existing fixed literature or dataset workflow explicitly.",
+            })}
+            onClick={() => setComposerMode(ADVANCED_MODE)}
+          />
+        </div>
+      </div>
+
+      {composerMode === "advanced" && (
       <div
         className="mt-3"
         role="group"
@@ -181,8 +251,111 @@ export function WorkflowGoalComposer({
           />
         </div>
       </div>
+      )}
 
-      {workflowType === "dataset-analysis" && (
+      {composerMode === "autonomous" && (
+        <div className="mt-3 rounded-input border border-border bg-bg p-3">
+          <div className="flex items-end gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted">
+                {t("research.workflow.autoSources", {
+                  defaultValue: "Sources for this research run",
+                })}
+              </p>
+              <p className="mt-1 text-[10px] leading-relaxed text-muted">
+                {t("research.workflow.autoSourcesHint", {
+                  defaultValue:
+                    "Select any ready PDFs and CSV datasets. Spark validates ownership before routing.",
+                })}
+              </p>
+            </div>
+            <input
+              ref={datasetInput}
+              type="file"
+              accept=".csv,text/csv"
+              onChange={onImportDataset}
+              className="hidden"
+            />
+            <button
+              type="button"
+              onClick={() => datasetInput.current?.click()}
+              disabled={!canStart || importingDataset || busy}
+              className="flex shrink-0 items-center gap-1.5 rounded-input border border-border bg-surface px-3 py-2 text-xs text-text hover:bg-surface-2 disabled:opacity-40"
+            >
+              {importingDataset ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <Upload size={13} />
+              )}
+              {importingDataset
+                ? t("research.workflow.importingDataset", {
+                    defaultValue: "Importing…",
+                  })
+                : t("research.workflow.importDataset", {
+                    defaultValue: "Import CSV",
+                  })}
+            </button>
+          </div>
+
+          <div className="mt-2 grid gap-2 sm:grid-cols-2">
+            {readySources.map((source) => {
+              const selected = selectedSourceIds.includes(source.id);
+              return (
+                <label
+                  key={source.id}
+                  className={cn(
+                    "flex cursor-pointer items-start gap-2 rounded-input border px-2.5 py-2 text-xs",
+                    selected
+                      ? "border-accent/40 bg-accent/5"
+                      : "border-border bg-surface",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() =>
+                      setSelectedSourceIds((current) =>
+                        current.includes(source.id)
+                          ? current.filter((sourceId) => sourceId !== source.id)
+                          : [...current, source.id],
+                      )
+                    }
+                    className="mt-0.5 accent-[var(--accent)]"
+                    aria-label={t("research.workflow.toggleSource", {
+                      defaultValue: "Use {{title}}",
+                      title: source.title,
+                    })}
+                  />
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium text-text">
+                      {source.title}
+                    </span>
+                    <span className="mt-0.5 block text-[10px] text-muted">
+                      {source.sourceKind === "dataset"
+                        ? t("research.workflow.sourceDataset", {
+                            defaultValue: "CSV dataset",
+                          })
+                        : t("research.workflow.sourcePdf", {
+                            defaultValue: "PDF",
+                          })}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {readySources.length === 0 && (
+            <p className="mt-2 text-[10px] leading-relaxed text-muted">
+              {t("research.workflow.autoSourceRequired", {
+                defaultValue:
+                  "Choose at least one ready PDF or CSV source before starting Auto research.",
+              })}
+            </p>
+          )}
+        </div>
+      )}
+
+      {composerMode === "advanced" && workflowType === "dataset-analysis" && (
         <div className="mt-3 rounded-input border border-border bg-bg p-3">
           <div className="flex items-end gap-2">
             <label className="min-w-0 flex-1 text-[10px] font-medium uppercase tracking-wider text-muted">
@@ -286,7 +459,12 @@ export function WorkflowGoalComposer({
         }}
         rows={4}
         placeholder={
-          workflowType === "dataset-analysis"
+          composerMode === "autonomous"
+            ? t("research.workflow.autoComposerPlaceholder", {
+                defaultValue:
+                  "Compare the evidence in these papers with the outcomes in the selected dataset…",
+              })
+            : workflowType === "dataset-analysis"
             ? t("research.workflow.datasetComposerPlaceholder", {
                 defaultValue:
                   "Summarize the primary outcome by experimental group and report missingness…",
@@ -299,7 +477,8 @@ export function WorkflowGoalComposer({
         className="mt-3 w-full resize-y rounded-input border border-border bg-bg px-3 py-2.5 text-sm leading-relaxed text-text outline-none placeholder:text-muted focus:border-accent"
       />
 
-      {workflowType === "literature-synthesis" && (
+      {composerMode === "advanced" &&
+        workflowType === "literature-synthesis" && (
         <LiteratureGenerationMode
           generationMode={generationMode}
           remoteDataApproved={remoteDataApproved}
@@ -316,7 +495,12 @@ export function WorkflowGoalComposer({
                 defaultValue: "Science core must be ready to create a workflow.",
               })
             : sourceReady
-              ? workflowType === "dataset-analysis"
+              ? composerMode === "autonomous"
+                ? t("research.workflow.autoComposerHint", {
+                    defaultValue:
+                      "Auto routes from the goal and selected source IDs. Ambiguity creates a durable clarification request.",
+                  })
+                : workflowType === "dataset-analysis"
                 ? t("research.workflow.datasetComposerHint", {
                     defaultValue:
                       "The selected dataset hash is frozen into the plan and every execution approval.",
@@ -325,7 +509,12 @@ export function WorkflowGoalComposer({
                     defaultValue:
                       "This workflow uses only indexed PDFs already in this project.",
                   })
-              : workflowType === "dataset-analysis"
+              : composerMode === "autonomous"
+                ? t("research.workflow.needsAutoSource", {
+                    defaultValue:
+                      "No source is selected. Spark will ask for the missing input before planning.",
+                  })
+                : workflowType === "dataset-analysis"
                 ? t("research.workflow.needsDataset", {
                     defaultValue: "Choose or import a ready CSV dataset.",
                   })
@@ -346,7 +535,9 @@ export function WorkflowGoalComposer({
           )}
           {busy
             ? t("research.workflow.starting", { defaultValue: "Starting…" })
-            : t("research.workflow.start", { defaultValue: "Create plan" })}
+            : composerMode === "autonomous"
+              ? t("research.workflow.startAuto", { defaultValue: "Start research" })
+              : t("research.workflow.start", { defaultValue: "Create plan" })}
         </button>
       </div>
     </form>

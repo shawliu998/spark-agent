@@ -269,6 +269,38 @@ class ModelGatewayTest(unittest.TestCase):
         )
         self.assertEqual(result, {"plan": ["read"]})
 
+    def test_returns_validated_token_usage_with_completion_metadata(self) -> None:
+        gateway = OpenAICompatibleModelGateway(
+            configured_settings(),
+            transport=httpx.MockTransport(
+                lambda _request: streaming_json_response(
+                    {
+                        "choices": [{"message": {"content": '{"intent":"ok"}'}}],
+                        "usage": {
+                            "prompt_tokens": 12,
+                            "completion_tokens": 7,
+                            "total_tokens": 19,
+                            "provider_detail": "not persisted",
+                        },
+                    }
+                )
+            ),
+        )
+
+        result, usage = asyncio.run(
+            gateway.complete_json_with_metadata("system", "user")
+        )
+
+        self.assertEqual(result, {"intent": "ok"})
+        self.assertEqual(
+            usage,
+            {
+                "prompt_tokens": 12,
+                "completion_tokens": 7,
+                "total_tokens": 19,
+            },
+        )
+
     def test_timeout_is_safe_and_typed(self) -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ReadTimeout("raw timeout details", request=request)

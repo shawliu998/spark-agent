@@ -79,7 +79,7 @@ def transition_workflow(
         "blocking_code": reason_code if target == "blocked" else None,
         "blocking_message": blocking_message if target == "blocked" else None,
     }
-    if target in {"completed", "cancelled"}:
+    if target in {"completed", "unsupported", "cancelled"}:
         values["finished_at"] = now
     elif current in {"failed", "blocked"}:
         values["finished_at"] = None

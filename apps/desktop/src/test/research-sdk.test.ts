@@ -6,8 +6,11 @@ import {
 } from "@spark/research-sdk";
 import type { WorkflowEvent } from "@spark/research-domain";
 
-function requestHeaders(fetchMock: ReturnType<typeof vi.fn>): Headers {
-  const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+function requestHeaders(
+  fetchMock: ReturnType<typeof vi.fn>,
+  callIndex = 0,
+): Headers {
+  const init = fetchMock.mock.calls[callIndex]?.[1] as RequestInit | undefined;
   return new Headers(init?.headers);
 }
 
@@ -49,6 +52,39 @@ describe("ScienceCoreClient authentication and workflow transport", () => {
     } satisfies WorkflowEvent;
 
     expect(event.type).toBe("analysis.rejected");
+  });
+
+  it("types requested and answered interactions as distinct event envelopes", () => {
+    const requested = {
+      id: "event-interaction-requested",
+      sequence: 1,
+      type: "interaction.requested",
+      taskId: null,
+      jobId: null,
+      data: {
+        interactionId: "interaction-1",
+        requestType: "text",
+        required: true,
+        responseId: null,
+        responseRevision: null,
+        expectedWorkflowRevision: 2,
+      },
+      createdAt: "2026-07-16T00:00:00Z",
+    } satisfies WorkflowEvent;
+    const answered = {
+      ...requested,
+      id: "event-interaction-answered",
+      sequence: 2,
+      type: "interaction.answered",
+      data: {
+        ...requested.data,
+        responseId: "response-1",
+        responseRevision: 1,
+      },
+    } satisfies WorkflowEvent;
+
+    expect(requested.data.responseId).toBeNull();
+    expect(answered.data.responseRevision).toBe(1);
   });
 
   it("uses the configured dynamic URL, Bearer token, and idempotency key", async () => {
@@ -125,6 +161,67 @@ describe("ScienceCoreClient authentication and workflow transport", () => {
     );
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
     expect(JSON.parse(String(request?.body))).toEqual(input);
+  });
+
+  it("transports autonomous agent runs and revision-bound clarification answers", async () => {
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    const client = new ScienceCoreClient({
+      baseUrl: "http://127.0.0.1:43129",
+      token: "agent-token",
+      fetchImpl: fetchMock,
+    });
+
+    await client.createAgentRun(
+      "project/one",
+      {
+        goal: "Compare the selected paper and dataset",
+        sourceIds: ["paper/one", "dataset/one"],
+        mode: "autonomous",
+      },
+      { idempotencyKey: "agent-create-1" },
+    );
+    await client.listAgentRuns("project/one", {
+      activeOnly: true,
+      limit: 100,
+    });
+    await client.getAgentRun("workflow/one");
+    await client.listWorkflowInteractions("workflow/one");
+    await client.respondToInteraction(
+      "interaction/one",
+      { response: ["outcome-a"], expectedWorkflowRevision: 7 },
+      { idempotencyKey: "interaction-response-1" },
+    );
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:43129/v1/projects/project%2Fone/agent-runs",
+      "http://127.0.0.1:43129/v1/projects/project%2Fone/agent-runs?activeOnly=true&limit=100",
+      "http://127.0.0.1:43129/v1/agent-runs/workflow%2Fone",
+      "http://127.0.0.1:43129/v1/workflows/workflow%2Fone/interactions",
+      "http://127.0.0.1:43129/v1/interactions/interaction%2Fone/respond",
+    ]);
+    expect(requestHeaders(fetchMock, 0).get("Idempotency-Key")).toBe(
+      "agent-create-1",
+    );
+    expect(requestHeaders(fetchMock, 4).get("Idempotency-Key")).toBe(
+      "interaction-response-1",
+    );
+    const createRequest = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(createRequest.body))).toEqual({
+      goal: "Compare the selected paper and dataset",
+      sourceIds: ["paper/one", "dataset/one"],
+      mode: "autonomous",
+    });
+    const responseRequest = fetchMock.mock.calls[4]?.[1] as RequestInit;
+    expect(JSON.parse(String(responseRequest.body))).toEqual({
+      response: ["outcome-a"],
+      expectedWorkflowRevision: 7,
+    });
   });
 
   it("binds workflow analysis decisions to the exact approval and intent", async () => {

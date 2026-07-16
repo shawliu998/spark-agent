@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ...analysis import sha256_file
 from ...models import (
+    IntentDecisionRecord,
     PlanRecord,
     ProjectRecord,
     SourcePageRecord,
@@ -77,16 +78,25 @@ def ready_source_descriptors(
     if project is None:
         raise WorkflowFailure("project-missing", "The workflow project is missing.")
     project_root = Path(project.project_path).resolve()
-    sources = list(
-        session.scalars(
-            select(SourceRecord)
-            .where(
-                SourceRecord.project_id == workflow.project_id,
-                SourceRecord.source_kind == "pdf",
-                SourceRecord.ingestion_status == "ready",
-            )
-            .order_by(SourceRecord.created_at, SourceRecord.id)
+    source_query = select(SourceRecord).where(
+        SourceRecord.project_id == workflow.project_id,
+        SourceRecord.source_kind == "pdf",
+        SourceRecord.ingestion_status == "ready",
+    )
+    if workflow.creation_mode == "autonomous":
+        decision = (
+            session.get(IntentDecisionRecord, workflow.current_intent_decision_id)
+            if workflow.current_intent_decision_id is not None
+            else None
         )
+        selected_source_ids = (
+            decision.selected_source_ids
+            if decision is not None and decision.intent == "literature-synthesis"
+            else []
+        )
+        source_query = source_query.where(SourceRecord.id.in_(selected_source_ids))
+    sources = list(
+        session.scalars(source_query.order_by(SourceRecord.created_at, SourceRecord.id))
     )
     descriptors: list[FrozenSourceDescriptor] = []
     for source in sources:

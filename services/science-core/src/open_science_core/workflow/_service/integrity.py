@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from ...models import ApprovalRecord, EventRecord, PlanRecord, TaskRecord, WorkflowRecord
 from ..schemas import (
+    AUTONOMOUS_REMOTE_DATA_CATEGORIES,
     DatasetAnalysisPlanSpec,
     ExecuteAnalysisPlanStep,
     InspectSourcesInput,
@@ -20,6 +21,9 @@ from ..schemas import (
 )
 
 PLAN_HANDLER_VERSION = "research-plan-v2"
+
+
+ROUTER_HANDLER_VERSION = "intent-router-v1"
 
 
 TASK_HANDLER_VERSION = "literature-synthesis-v2"
@@ -205,10 +209,15 @@ def expected_plan_approval_semantics(
         .order_by(EventRecord.sequence)
     )
     recorded_destination = approval_event.payload if approval_event is not None else {}
+    approved_categories = (
+        list(AUTONOMOUS_REMOTE_DATA_CATEGORIES)
+        if workflow.creation_mode == "autonomous"
+        else ["user-goal"]
+    )
     if (
         recorded_destination.get("provider") != "openai-compatible"
         or recorded_destination.get("model") != plan.model
-        or recorded_destination.get("dataCategories") != ["user-goal"]
+        or recorded_destination.get("dataCategories") != approved_categories
     ):
         raise WorkflowConflict(
             "remote-gateway-approval-mismatch",

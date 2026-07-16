@@ -35,7 +35,7 @@ from .handlers import (
     mark_leased_job_started,
     settle_leased_job_error,
 )
-from .service import transition_task, transition_workflow
+from .service import cancel_pending_interactions, transition_task, transition_workflow
 from .state import WorkflowBlockedError, WorkflowFailure
 
 SessionFactory = Callable[[], Session]
@@ -161,7 +161,9 @@ class WorkflowWorker:
                 session.scalars(
                     select(WorkflowRecord).where(
                         WorkflowRecord.cancel_requested_at.is_not(None),
-                        WorkflowRecord.status.not_in(["completed", "cancelled"]),
+                        WorkflowRecord.status.not_in(
+                            ["completed", "unsupported", "cancelled"]
+                        ),
                     )
                 )
             )
@@ -199,6 +201,7 @@ class WorkflowWorker:
                     )
                     .values(status="cancelled", finished_at=now, updated_at=now)
                 )
+                cancel_pending_interactions(session, workflow.id)
                 transition_workflow(session, workflow, "cancelled")
             session.commit()
 
@@ -212,7 +215,9 @@ class WorkflowWorker:
                 .where(
                     JobRecord.status == "queued",
                     JobRecord.available_at <= now,
-                    WorkflowRecord.status.not_in(["completed", "cancelled"]),
+                    WorkflowRecord.status.not_in(
+                        ["completed", "unsupported", "cancelled"]
+                    ),
                     WorkflowRecord.cancel_requested_at.is_(None),
                 )
                 .order_by(JobRecord.available_at, JobRecord.created_at)

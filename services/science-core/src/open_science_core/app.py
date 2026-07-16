@@ -33,6 +33,7 @@ from .analysis_service import (
     list_project_analysis_runs,
     recover_interrupted_analysis_state,
 )
+from .api.agent_runs import router as agent_run_router
 from .api.workflows import router as workflow_router
 from .config import canonical_model_api_endpoint, settings
 from .db import SessionLocal, database_session, engine, initialize_database
@@ -129,6 +130,7 @@ def _analysis_http_exception(error: AnalysisServiceError) -> HTTPException:
 
 
 app.include_router(workflow_router, dependencies=[Depends(require_token)])
+app.include_router(agent_run_router, dependencies=[Depends(require_token)])
 
 
 def _runtime_ready() -> bool:

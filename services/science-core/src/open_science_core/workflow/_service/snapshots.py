@@ -1454,7 +1454,8 @@ def list_workflows(
     limit: int,
 ) -> list[WorkflowRecord]:
     query: Select[tuple[WorkflowRecord]] = select(WorkflowRecord).where(
-        WorkflowRecord.project_id == project_id
+        WorkflowRecord.project_id == project_id,
+        WorkflowRecord.creation_mode == "fixed-workflow",
     )
     if active_only:
         query = query.where(WorkflowRecord.status.not_in(["completed", "cancelled"]))
