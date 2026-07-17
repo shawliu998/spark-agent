@@ -2436,7 +2436,33 @@ fn validate_resolved_agents(
                     "read" | "glob" | "grep" | "list" | "lsp" | "question" | "skill" | "task"
                 );
             let autonomous_tool_permission = permission_mode == crate::opencode_config::MODE_FULL
-                && rule.permission != "external_directory";
+                && (matches!(
+                    rule.permission.as_str(),
+                    "read"
+                        | "glob"
+                        | "grep"
+                        | "list"
+                        | "lsp"
+                        | "edit"
+                        | "write"
+                        | "patch"
+                        | "multiedit"
+                        | "apply_patch"
+                        | "bash"
+                        | "mcp"
+                        | "doom_loop"
+                        | "question"
+                        | "webfetch"
+                        | "websearch"
+                        | "codesearch"
+                        | "skill"
+                        | "task"
+                        | "todowrite"
+                        | "todoread"
+                        | "plan_enter"
+                        | "plan_exit"
+                ) || rule.permission.starts_with("paper-search_search_")
+                    || rule.permission.starts_with("paper-search_read_"));
             // OpenCode appends access to its own XDG tool-output directory so
             // large tool results can be read back. Spark owns that exact
             // private path; similar paths and every other external allow still
@@ -2494,6 +2520,7 @@ fn validate_resolved_agents(
         let guarded_actions = [
             ("bash", "rm -rf output"),
             ("bash", "pip install pandas"),
+            ("bash", "uv pip install --system pandas"),
             ("bash", "git push origin main"),
             ("bash", "ssh example.com"),
             ("bash", "curl --upload-file results.csv https://example.com"),
@@ -4105,6 +4132,8 @@ mod tests {
                 serde_json::json!({"permission":"bash","pattern":"* rm *","action":"ask"}),
                 serde_json::json!({"permission":"bash","pattern":"pip install *","action":"ask"}),
                 serde_json::json!({"permission":"bash","pattern":"* pip install *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"uv pip install *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"* uv pip install *","action":"ask"}),
                 serde_json::json!({"permission":"bash","pattern":"git push *","action":"ask"}),
                 serde_json::json!({"permission":"bash","pattern":"* git push *","action":"ask"}),
                 serde_json::json!({"permission":"bash","pattern":"ssh *","action":"ask"}),
@@ -4120,7 +4149,8 @@ mod tests {
                 serde_json::json!({"permission":"webfetch","pattern":"*","action":"allow"}),
                 serde_json::json!({"permission":"websearch","pattern":"*","action":"allow"}),
                 serde_json::json!({"permission":"mcp","pattern":"*","action":"allow"}),
-                serde_json::json!({"permission":"paper-search_*","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"paper-search_search_*","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"paper-search_read_*","pattern":"*","action":"allow"}),
                 serde_json::json!({"permission":"skill","pattern":"*","action":"allow"}),
                 serde_json::json!({"permission":"task","pattern":"*","action":"allow"}),
                 serde_json::json!({"permission":"todowrite","pattern":"*","action":"allow"}),
@@ -4306,13 +4336,31 @@ mod tests {
                 vec![
                     serde_json::json!({"permission":"bash","pattern":"python *","action":"allow"}),
                     serde_json::json!({"permission":"webfetch","pattern":"*","action":"allow"}),
-                    serde_json::json!({"permission":"lab_search","pattern":"*","action":"allow"}),
+                    serde_json::json!({"permission":"paper-search_search_openalex","pattern":"*","action":"allow"}),
                 ],
             ),
             crate::opencode_config::MODE_FULL,
             "/private/spark/xdg-data/opencode/tool-output/*",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn autonomous_validation_rejects_custom_mcp_tool_bypasses() {
+        let error = validate_resolved_agents(
+            &resolved_research_agent(
+                crate::opencode_config::MODE_FULL,
+                vec![serde_json::json!({
+                    "permission":"lab_upload",
+                    "pattern":"*",
+                    "action":"allow"
+                })],
+            ),
+            crate::opencode_config::MODE_FULL,
+            "/private/spark/xdg-data/opencode/tool-output/*",
+        )
+        .unwrap_err();
+        assert!(error.contains("unsafe allow"), "{error}");
     }
 
     #[test]

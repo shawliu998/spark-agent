@@ -147,6 +147,7 @@ const AUTONOMOUS_ASK_BASH: &[&str] = &[
     "pip3 install",
     "python -m pip install",
     "python3 -m pip install",
+    "uv pip install",
     "uv tool install",
     "uv python install",
     "conda install",
@@ -458,7 +459,9 @@ fn full_permission() -> Value {
         "bash": autonomous_bash_permission(),
         "external_directory": "deny",
         "mcp": "allow",
-        "paper-search_*": "allow",
+        "paper-search_search_*": "allow",
+        "paper-search_read_*": "allow",
+        "paper-search_download_*": "ask",
         "doom_loop": "ask",
         "question": "allow",
         "webfetch": "allow",
@@ -473,20 +476,12 @@ fn full_permission() -> Value {
     })
 }
 
-fn full_permission_with_mcp(mcp: Option<&Value>) -> Value {
-    let mut permission = full_permission()
-        .as_object()
-        .expect("Autonomous permission is an object")
-        .clone();
-    if let Some(servers) = mcp.and_then(Value::as_object) {
-        for server in servers.keys() {
-            // OpenCode exposes MCP permissions under the concrete tool id
-            // (`server_tool`). Seed every configured server prefix so custom
-            // credential-free research tools do not fall back to wildcard ask.
-            permission.insert(format!("{server}_*"), json!("allow"));
-        }
-    }
-    Value::Object(permission)
+fn full_permission_with_mcp(_mcp: Option<&Value>) -> Value {
+    // Custom and remote MCP servers may upload data, spend money, or mutate
+    // external systems. Only the curated credential-free literature read/search
+    // tools in `full_permission` bypass approval; every other concrete MCP tool
+    // falls through to the wildcard ask rule.
+    full_permission()
 }
 
 fn is_full_permission(permission: &Value, mcp: Option<&Value>) -> bool {
@@ -743,7 +738,9 @@ mod tests {
         assert_eq!(v["permission"]["webfetch"], "allow");
         assert_eq!(v["permission"]["websearch"], "allow");
         assert_eq!(v["permission"]["mcp"], "allow");
-        assert_eq!(v["permission"]["paper-search_*"], "allow");
+        assert_eq!(v["permission"]["paper-search_search_*"], "allow");
+        assert_eq!(v["permission"]["paper-search_read_*"], "allow");
+        assert_eq!(v["permission"]["paper-search_download_*"], "ask");
         assert_eq!(v["permission"]["skill"], "allow");
         assert_eq!(v["permission"]["task"], "allow");
         assert_eq!(v["permission"]["todowrite"], "allow");
@@ -762,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn autonomous_allows_each_configured_mcp_server_prefix() {
+    fn autonomous_allows_only_curated_read_only_mcp_tools() {
         let existing = r#"{
           "mcp": {
             "paper-search": {"type":"local","command":["paper-search"]},
@@ -771,13 +768,15 @@ mod tests {
         }"#;
         let out = set_permission_mode(existing, MODE_FULL).unwrap();
         let value: Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(value["permission"]["paper-search_*"], "allow");
-        assert_eq!(value["permission"]["lab_*"], "allow");
+        assert_eq!(value["permission"]["paper-search_search_*"], "allow");
+        assert_eq!(value["permission"]["paper-search_read_*"], "allow");
+        assert_eq!(value["permission"]["paper-search_download_*"], "ask");
+        assert!(value["permission"].get("lab_*").is_none());
         assert_eq!(value["mcp"]["lab"]["url"], "https://example.com/mcp");
         assert_eq!(permission_mode_of(&out).unwrap(), Some(MODE_FULL));
         let floor: Value =
             serde_json::from_str(&effective_permission_floor_json(&out).unwrap()).unwrap();
-        assert_eq!(floor["lab_*"], "allow");
+        assert!(floor.get("lab_*").is_none());
 
         let mut with_new_server = value;
         with_new_server["mcp"]["new-lab"] = json!({
@@ -788,7 +787,7 @@ mod tests {
         assert_eq!(permission_mode_of(&changed).unwrap(), Some(MODE_FULL));
         let changed_floor: Value =
             serde_json::from_str(&effective_permission_floor_json(&changed).unwrap()).unwrap();
-        assert_eq!(changed_floor["new-lab_*"], "allow");
+        assert!(changed_floor.get("new-lab_*").is_none());
     }
 
     #[test]
