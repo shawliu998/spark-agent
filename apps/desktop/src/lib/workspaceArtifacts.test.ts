@@ -52,6 +52,7 @@ describe("discoverWorkspaceArtifacts", () => {
       if (!dir) {
         return [
           entry("node_modules", { isDir: true }),
+          entry(".spark", { isDir: true }),
           entry("results", { isDir: true }),
           entry("report.md", { isDir: false }),
         ];
@@ -63,6 +64,7 @@ describe("discoverWorkspaceArtifacts", () => {
       { block: { path: "report.md", artifact: "report", tool: "workspace" } },
     ]);
     expect(list).not.toHaveBeenCalledWith("node_modules", "workspace");
+    expect(list).not.toHaveBeenCalledWith(".spark", "workspace");
   });
 
   it("bounds traversal for large workspaces", async () => {

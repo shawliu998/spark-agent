@@ -12,6 +12,7 @@ const IGNORED_DIRECTORIES = new Set([
   ".git",
   ".opencode",
   ".openscience",
+  ".spark",
   ".venv",
   "__pycache__",
   "node_modules",
