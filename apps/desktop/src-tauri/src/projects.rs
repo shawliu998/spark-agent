@@ -212,7 +212,7 @@ fn load_recents(app: &AppHandle) -> Result<Vec<ProjectSummary>, String> {
 }
 
 fn load_recents_file(file: &Path) -> Result<Vec<ProjectSummary>, String> {
-    match std::fs::read(&file) {
+    match std::fs::read(file) {
         Ok(contents) => serde_json::from_slice(&contents).map_err(|error| error.to_string()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(error) => Err(error.to_string()),

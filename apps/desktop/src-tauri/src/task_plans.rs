@@ -98,6 +98,9 @@ pub struct TaskPlan {
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
+// The common Task prefix is intentional: these names are the durable JSONL
+// wire format and changing them would break recovery of existing workspaces.
+#[allow(clippy::enum_variant_names)]
 enum JournalEvent {
     TaskPlanCreated {
         #[serde(rename = "schemaVersion")]
