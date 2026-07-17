@@ -157,6 +157,28 @@ def deploy_profile(runtime: Path, model: str, api_key: str, base_url: str) -> tu
     config_root = runtime / "xdg-config" / "opencode"
     config_root.mkdir(parents=True)
     config = json.loads((PROFILE / "opencode.json").read_text(encoding="utf-8"))
+    # The packaged app installs this equivalent through the native `full`
+    # compatibility preset. This bounded smoke needs only the ordinary
+    # research-tool slice; destructive-policy fidelity is covered by Rust
+    # preset tests and is intentionally not reimplemented in Python.
+    permission = config["permission"]
+    permission.update({
+        "edit": "allow",
+        "apply_patch": "allow",
+        "bash": {
+            "*": "allow",
+            "rm *": "ask",
+            "* rm *": "ask",
+            "sudo *": "deny",
+            "* sudo *": "deny",
+            "git push *": "ask",
+            "* git push *": "ask",
+        },
+        "webfetch": "allow",
+        "websearch": "allow",
+        "skill": "allow",
+        "task": "allow",
+    })
     config["model"] = f"{provider_id}/{model_id}"
     config["provider"] = {
         provider_id: {
@@ -282,8 +304,10 @@ def run() -> None:
                     "parts": [{
                         "type": "text",
                         "text": (
-                            "Work autonomously on data.csv. Inspect its schema and quality, load "
-                            "relevant skills, write and run scripts/analysis.py, and create "
+                            "Work autonomously on data.csv. Load the exploratory-data-analysis "
+                            "skill and delegate exactly one bounded schema and quality review to "
+                            "the task agent. Then inspect the returned result, write and run "
+                            "scripts/analysis.py, and create "
                             "tables/summary.csv, figures/analysis.png, and "
                             "reports/data-analysis.md with limitations. Verify every artifact. "
                             "Use only installed Python packages and do not ask questions."
@@ -303,8 +327,28 @@ def run() -> None:
                 for part in message_item.get("parts", []) if isinstance(part, dict)
                 and part.get("type") == "tool" and part.get("tool")
             }) if isinstance(messages, list) else []
-            if "bash" not in tools:
-                fail(f"real-provider Agent did not execute Python through bash; tools={tools}")
+            missing_tools = {"bash", "skill", "task"} - set(tools)
+            if missing_tools:
+                fail(
+                    "real-provider Agent missed required native tools: "
+                    f"missing={sorted(missing_tools)}, tools={tools}"
+                )
+
+            process.terminate()
+            process.wait(timeout=8)
+            process, restarted_api = start_sidecar(binary, runtime, workspace)
+            sessions = restarted_api.request("GET", "/experimental/session")
+            if not isinstance(sessions, list) or not any(
+                isinstance(item, dict) and str(item.get("id")) == session_id
+                for item in sessions
+            ):
+                fail("real-provider session did not survive an OpenCode restart")
+            restarted_history = restarted_api.request(
+                "GET", f"/session/{urllib.parse.quote(session_id, safe='')}/message"
+            )
+            if not isinstance(restarted_history, list) or not restarted_history:
+                fail("real-provider message history did not survive an OpenCode restart")
+            validate_artifacts(workspace)
             print(json.dumps({
                 "status": "PASS",
                 "model": model,
