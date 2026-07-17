@@ -20,6 +20,9 @@ Before searching, define:
 - eligible designs and source types;
 - date, language, and publication-status limits;
 - exclusion rules and stopping condition.
+- discovery-call budget. Unless the user requests a systematic review or sets a
+  different limit, a quick or explicitly sized review may use at most
+  `max(6, 2 * requested_source_count)` discovery calls.
 
 Record the search date, database/source, and exact query. Search at least two
 appropriate credential-free sources when available, such as OpenAlex, Crossref,
@@ -51,6 +54,10 @@ state where publication bias or missing data could distort the picture.
 
 Verify every included reference against a registry, repository, or publisher
 record. Mark inaccessible or unresolved references; never fabricate metadata.
+When the user requests an exact number of sources, stop discovery immediately
+after enough eligible candidates are available and use direct records only for
+verification. Never repeat a materially equivalent failed query; change source
+once, then preserve the evidence gap instead of entering a search loop.
 
 ## Deliverables
 

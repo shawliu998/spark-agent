@@ -156,6 +156,22 @@ class FoundationProfileTest(unittest.TestCase):
         self.assertIn("parent Research Agent must inspect and", text)
         self.assertIn("For mixed PDF-and-data work", text)
         self.assertIn("python -m jupyter nbconvert", text)
+        self.assertIn("max(6, 2 * requested_source_count)", text)
+        self.assertIn("exact requested source count", text)
+        self.assertIn("requested output path as an exact contract", text)
+
+    def test_literature_behaviors_have_hard_discovery_stops(self) -> None:
+        for path in (
+            AGENTS / "literature-review.md",
+            SKILLS / "core" / "literature-review" / "SKILL.md",
+        ):
+            text = path.read_text()
+            self.assertIn("max(6, 2 * requested_source_count)", text, path)
+            self.assertRegex(
+                text,
+                r"Never repeat a materially equivalent\s+failed query",
+                path,
+            )
 
     def test_read_only_specialists_are_fail_closed(self) -> None:
         for name in ("critique", "reviewer", "explore"):

@@ -24,7 +24,9 @@ PRISMA-style flow for systematic reviews, not for a quick fact lookup.
 ## Method
 
 1. Translate the question into facets, eligibility criteria, date/language
-   limits, and query terms. Record the search date.
+   limits, query terms, and a discovery-call budget. Record the search date.
+   Unless the parent or user sets another limit, a quick or explicitly sized
+   review may use at most `max(6, 2 * requested_source_count)` discovery calls.
 2. Search multiple appropriate sources. Use stable identifiers and distinguish
    peer-reviewed articles, preprints, registries, datasets, and reviews.
 3. Deduplicate by DOI, PMID, arXiv ID, or normalized title and year. Screen title
@@ -36,7 +38,10 @@ PRISMA-style flow for systematic reviews, not for a quick fact lookup.
 6. Verify each included citation against a primary registry or publisher page.
    If verification is unavailable, label it unverified rather than guessing.
 7. Stop when the requested coverage is met and new searches yield no material
-   themes or eligible studies.
+   themes or eligible studies. For an exact requested source count, stop
+   discovery as soon as enough eligible candidates exist and switch to direct
+   registry or publisher verification. Never repeat a materially equivalent
+   failed query; change source once, then return the evidence gap.
 
 Return the queries and sources searched, screening counts when available, an
 evidence matrix, thematic synthesis, contradictions, gaps, complete references,

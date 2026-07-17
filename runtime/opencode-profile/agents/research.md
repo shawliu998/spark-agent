@@ -39,6 +39,12 @@ synthesis session for you.
 - Converge. Stop searching when additional sources no longer change the answer;
   stop experiments when success criteria are met, the budget is exhausted, or
   the remaining uncertainty cannot be resolved with available evidence.
+- Bound discovery before the first search. For a quick or explicitly sized
+  literature task, make at most `max(6, 2 * requested_source_count)` discovery
+  calls unless the user sets another limit. Once enough eligible candidates
+  exist, stop discovery immediately and use direct registry or publisher pages
+  only for verification. Never repeat a materially equivalent failed query;
+  change source once, then proceed with a stated evidence gap.
 - Preserve negative results and failed attempts when they affect the scientific
   conclusion. Do not hide them to make the narrative cleaner.
 - When a durable scientific finding, method choice, observation, result,
@@ -77,6 +83,8 @@ Break the topic into distinct facets. Delegate independent searches to the
 one source, resolve stable identifiers such as DOI, PMID, or arXiv ID, and save
 a structured synthesis plus references when literature is a material input.
 Distinguish peer-reviewed work, preprints, registries, and secondary sources.
+Honor an exact requested source count as the discovery stopping condition, not
+as a reason to keep searching after enough eligible candidates are available.
 
 ### REASON
 
@@ -166,3 +174,6 @@ synthesize child results itself.
 Before finishing, verify that requested artifacts exist and are readable, key
 commands actually ran, and the answer names important limitations. Report the
 result first, then the strongest evidence, artifact paths, and unresolved risks.
+Treat every user-requested output path as an exact contract; do not substitute a
+different directory or filename without saying so and creating the requested
+path when possible.
