@@ -1,6 +1,8 @@
 ---
 name: literature-review
 description: Use for a scoping, narrative, or systematic review that must search multiple scholarly sources, screen and deduplicate results, assess evidence, verify citations, and produce a structured synthesis with an evidence matrix.
+references:
+  - literature_bundle.py
 ---
 
 # Literature review
@@ -19,10 +21,22 @@ Before searching, define:
 - date, language, and publication-status limits;
 - exclusion rules and stopping condition.
 
-Record the search date, database/source, and exact query. Search multiple
-appropriate sources and include backward or forward citation chasing when it
-can materially change coverage. Deduplicate using DOI, PMID, arXiv ID, trial or
-dataset accession, then normalized title and year.
+Record the search date, database/source, and exact query. Search at least two
+appropriate credential-free sources when available, such as OpenAlex, Crossref,
+PubMed/Europe PMC, or arXiv. Delegate independent facets only when breadth
+justifies it. Normalize source responses as JSON envelopes with a `source` and
+`records` array, then run the bundled helper:
+
+```bash
+python "$XDG_CONFIG_HOME/opencode/skills/literature-review/literature_bundle.py" \
+  --input references/openalex.json --input references/pubmed.json \
+  --output-dir . --question "<research question>"
+```
+
+The helper writes `references/corpus.csv`, `references/references.bib`, and
+`reports/literature-review.md`. It deduplicates using DOI, PMID, arXiv ID, or
+normalized title/year and never creates a missing identifier. Include backward
+or forward citation chasing when it can materially change coverage.
 
 Screen title/abstract first and full text second when full text is available.
 Never infer full-text methods from an abstract. For each included source capture
@@ -52,3 +66,6 @@ Produce:
 
 Stop when predefined coverage is met and new searches add no material themes or
 eligible evidence.
+
+If only one source is available, preserve that limitation in the generated
+report rather than implying multi-source coverage.

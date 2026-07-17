@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "namespace": "spark-core",
   "source": "bundled",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "license": "MIT",
   "skills": [
     {
@@ -147,12 +147,138 @@
       "license": "MIT",
       "origin": "spark",
       "reuseType": "original"
+    },
+    {
+      "name": "research-lookup",
+      "path": "core/research-lookup",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "systematic-review",
+      "path": "core/systematic-review",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "evidence-synthesis",
+      "path": "core/evidence-synthesis",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "scientific-brainstorming",
+      "path": "core/scientific-brainstorming",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "peer-review",
+      "path": "core/peer-review",
+      "category": "review",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "data-cleaning",
+      "path": "core/data-cleaning",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "pandas",
+      "path": "core/pandas",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "numpy-scipy",
+      "path": "core/numpy-scipy",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "statsmodels",
+      "path": "core/statsmodels",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "scikit-learn",
+      "path": "core/scikit-learn",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "notebook-analysis",
+      "path": "core/notebook-analysis",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "reproducible-python",
+      "path": "core/reproducible-python",
+      "category": "compute",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "model-evaluation",
+      "path": "core/model-evaluation",
+      "category": "review",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "scientific-visualization",
+      "path": "core/scientific-visualization",
+      "category": "visualization",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
     }
   ],
   "upstreamReference": {
     "repository": "https://github.com/synthetic-sciences/openscience",
     "commit": "e9844a49f1f4d93cbf5f88b8f4880c003adc6e61",
     "license": "Apache-2.0",
-    "notice": "The eight Foundation skills are original Spark behavior-only implementations; no upstream skill file is copied or substantially adapted."
+    "notice": "Foundation skills are Spark-authored implementations. The eight initial skills were informed by OpenScience behavior-only references; no upstream skill file is copied or substantially adapted. New Batch 2 skills are original Spark content under MIT. If an Apache-adapted skill is added later, retain this repository, path, pinned commit, license, and modification notice in its entry."
   }
 }

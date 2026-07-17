@@ -2,6 +2,8 @@
 
 2026-07-17 17:18 · feat(autonomous-research-ui): made one selected-model Research turn the default, removed keyword/provider-name auto-routing, surfaced native OpenCode child sessions beside optional Manual Parallel Tasks, and strengthened the Research Agent’s completion, dataset/PDF+CSV, and nbconvert notebook guidance; 676 Desktop tests, Desktop typecheck/lint/build, 8 profile tests, and diff checks pass.
 
+2026-07-17 17:18 · feat(autonomous-research-batch2): expanded the loadable Spark core pack to 29 skills with manifest/frontmatter/reference validation and added a credential-free literature bundle builder for corpus.csv, references.bib, and literature-review.md; focused skill/profile and existing core helper tests pass.
+
 2026-07-17 16:32 · feat(task-plan-recovery): persisted same-workspace task plans and synthesis sessions in a tail-repairing workspace-local journal with durable lifecycle states, fail-closed recovery, endpoint/workspace guards, isolated outputs, cross-session snapshot deferral, and honest requested-model labels; 677 Desktop and 239 Rust tests, production build, typecheck, lint, and diff checks pass.
 
 2026-07-17 16:05 · feat(task-orchestration): turned the Tasks panel into a same-workspace orchestrator that deterministically decomposes one objective into three editable independent tasks, validates 2–5 task plans, creates separate OpenCode sessions, routes each session independently, and keeps background status/approvals visible; 128 focused Desktop tests, typecheck, lint, and diff checks pass.

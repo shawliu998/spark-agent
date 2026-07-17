@@ -4,8 +4,7 @@ Scientific skills, layered:
 
 ```text
 skills/
-  core/      # self-authored skills specific to this app (traceability-review;
-             # other dirs are roadmap placeholders until they get a SKILL.md)
+  core/      # small, loadable Spark research/data skills
   external/  # third-party skill packs, fetched by script — git-ignored
   user/      # user-installed / custom skills (live in the runtime workspace)
 ```
@@ -18,18 +17,26 @@ skills; every listed path must stay inside this directory and contain a matching
 
 ## Foundation research skills
 
-The first general-research pack covers the evidence-to-writing loop:
+The bundled core pack contains 29 small, loadable research, data, review,
+visualization, and computation skills. The evidence-to-writing loop includes:
 
-- `literature-review`, `citation-management`, `hypothesis-generation`;
-- `scientific-critical-thinking`, `scientific-writing`;
-- `exploratory-data-analysis`, `statistical-analysis`, `matplotlib`.
+- `research-lookup`, `literature-review`, `systematic-review`,
+  `evidence-synthesis`, `citation-management`;
+- `hypothesis-generation`, `scientific-brainstorming`,
+  `scientific-critical-thinking`, `peer-review`, `scientific-writing`;
+- `exploratory-data-analysis`, `data-cleaning`, `pandas`, `numpy-scipy`,
+  `statistical-analysis`, `statsmodels`, `scikit-learn`, `model-evaluation`;
+- `matplotlib`, `scientific-visualization`, `notebook-analysis`, and
+  `reproducible-python`, alongside the reusable local gates and run helpers.
 
 Their instructions are Spark-authored, behavior-only implementations informed
 by corresponding OpenScience capabilities at commit
 `e9844a49f1f4d93cbf5f88b8f4880c003adc6e61` (Apache-2.0); no upstream skill file
-is copied or substantially adapted. Closed services, Atlas, mandatory cloud
-compute, and provider-specific search are intentionally excluded. Exact source
-references and reuse classifications are recorded in `manifest.json`.
+is copied or substantially adapted. New Batch 2 skills are original Spark
+content under MIT. Any future Apache adaptation must retain its source
+repository, upstream path, pinned commit, Apache notice, and a statement that
+Spark modified it. Exact source references and reuse classifications are
+recorded in `manifest.json`.
 
 ## Default pack: ai4s-skills (bundled into the installer)
 

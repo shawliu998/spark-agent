@@ -28,6 +28,31 @@ EXPECTED_AGENTS = {
     "task": "subagent",
 }
 
+ENTRY_SKILLS = {
+    "literature-review",
+    "citation-management",
+    "hypothesis-generation",
+    "scientific-critical-thinking",
+    "scientific-writing",
+    "exploratory-data-analysis",
+    "statistical-analysis",
+    "matplotlib",
+    "research-lookup",
+    "systematic-review",
+    "evidence-synthesis",
+    "scientific-brainstorming",
+    "peer-review",
+    "data-cleaning",
+    "pandas",
+    "numpy-scipy",
+    "statsmodels",
+    "scikit-learn",
+    "notebook-analysis",
+    "reproducible-python",
+    "model-evaluation",
+    "scientific-visualization",
+}
+
 FOUNDATION_SKILLS = {
     "literature-review",
     "citation-management",
@@ -154,7 +179,7 @@ class FoundationProfileTest(unittest.TestCase):
         self.assertEqual(set(names), deployable)
         self.assertEqual(
             {entry["name"] for entry in entries if entry["entry"]},
-            FOUNDATION_SKILLS,
+            ENTRY_SKILLS,
         )
 
         skills_root = SKILLS.resolve()
