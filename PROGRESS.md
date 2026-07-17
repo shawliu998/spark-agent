@@ -1,6 +1,6 @@
 # Progress
 
-2026-07-17 14:24 · feat(openscience-parity-batch1): integrated the folder-backed Home/onboarding shell and deterministic synthetic research demo, retargeted the bundled demo action/resource to `examples/research-demo`, and aligned its portable metadata with project schema v1; 7 focused Desktop tests, Desktop typecheck, demo, JSON, Rust formatting, and diff checks pass.
+2026-07-17 14:24 · feat(openscience-parity-batch1): integrated the folder-backed Home/onboarding shell and deterministic synthetic research demo, retargeted the bundled demo action/resource to `examples/research-demo`, and aligned its portable metadata with project schema v1; 7 focused Desktop tests, Desktop typecheck, 5 project Rust tests, demo, JSON, Rust formatting, and diff checks pass.
 
 2026-07-17 14:15 · fix(client-shell): restored New Session navigation, added last-session project resume, six General Research templates, and schema-v1 id/workspacePath migration; formatting, JSON, and diff checks pass, while Rust tests remain blocked before compilation by the missing bundled OpenCode sidecar resource.
 

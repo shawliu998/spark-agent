@@ -324,7 +324,7 @@ pub fn list_recent_projects(app: AppHandle) -> Result<Vec<ProjectSummary>, Strin
         valid.push(ProjectSummary {
             path: root.to_string_lossy().to_string(),
             metadata,
-            last_opened_at: entry.last_opened_at,
+            last_opened_at: entry.last_opened_at.clone(),
         });
     }
     if valid.len() != original.len() {
