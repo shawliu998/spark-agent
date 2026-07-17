@@ -94,6 +94,10 @@
       "title": "Bericht auf Nachvollziehbarkeit prüfen",
       "description": "Zitate, unbelegte Zahlen und die Übereinstimmung von Abbildung und Code prüfen."
     },
+    "papers-data": {
+      "title": "Papers und Daten verbinden",
+      "description": "Lokale Papers und Datensätze erfassen, relevante Evidenzlücken schließen und nachvollziehbar zusammenführen."
+    },
     "example-climate": {
       "title": "Ein Beispiel erkunden: Klimatrends",
       "description": "Echte NASA-GISTEMP-Daten — Trend, Dekadenvergleich, Abbildung und Bericht."

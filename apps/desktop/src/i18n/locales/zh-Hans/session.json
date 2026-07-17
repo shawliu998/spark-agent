@@ -137,6 +137,10 @@
       "title": "审查报告的可追溯性",
       "description": "检查引用、无来源数字，以及图表与代码的一致性。"
     },
+    "papers-data": {
+      "title": "关联论文与数据",
+      "description": "盘点本地论文和数据集，补齐必要证据，并生成可追溯的综合结论。"
+    },
     "example-climate": {
       "title": "探索示例：气候趋势",
       "description": "真实的 NASA GISTEMP 数据——趋势、十年对比、图表和报告。"

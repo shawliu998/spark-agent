@@ -94,6 +94,10 @@
       "title": "Auditar un informe para verificar su trazabilidad",
       "description": "Comprueba citas, cifras sin fuente y la coherencia entre figuras y código."
     },
+    "papers-data": {
+      "title": "Conectar artículos y datos",
+      "description": "Inventaría artículos y conjuntos de datos locales, cubre lagunas útiles y crea una síntesis trazable."
+    },
     "example-climate": {
       "title": "Explorar un ejemplo: tendencias climáticas",
       "description": "Datos reales de NASA GISTEMP — tendencia, comparación decenal, figura e informe."

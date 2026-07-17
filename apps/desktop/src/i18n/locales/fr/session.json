@@ -94,6 +94,10 @@
       "title": "Auditer un rapport pour sa traçabilité",
       "description": "Vérifier les citations, les chiffres non sourcés et la cohérence entre figures et code."
     },
+    "papers-data": {
+      "title": "Relier articles et données",
+      "description": "Inventorier les articles et jeux de données locaux, combler les lacunes utiles et produire une synthèse traçable."
+    },
     "example-climate": {
       "title": "Explorer un exemple : tendances climatiques",
       "description": "Données réelles NASA GISTEMP — tendance, comparaison décennale, figure et rapport."

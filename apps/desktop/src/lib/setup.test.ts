@@ -5,7 +5,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  addMcpServer: vi.fn(async () => {}),
+  addMcpServer: vi.fn(async (_name: string, _config?: unknown) => {}),
+  listMcpServers: vi.fn(async () => [] as Array<{ name: string }>),
   loadCatalog: vi.fn(async () => {}),
   saveScienceConnectorApiKey: vi.fn(async (_connectorId: string, _apiKey: string) => {}),
   /** Resolver for the in-flight setupJupyter promise, so tests hold it open. */
@@ -14,7 +15,10 @@ const mocks = vi.hoisted(() => ({
   setupScienceMcp: vi.fn(async () => "/env/bin/python"),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
-  client: null as null | { addMcpServer: ReturnType<typeof vi.fn> },
+  client: null as null | {
+    addMcpServer: ReturnType<typeof vi.fn>;
+    listMcpServers: ReturnType<typeof vi.fn>;
+  },
 }));
 
 mocks.setupJupyter.mockImplementation(
@@ -65,11 +69,19 @@ vi.mock("./toast", () => ({
   toast: { success: mocks.toastSuccess, error: mocks.toastError },
 }));
 
-import { useSetupStore } from "./setup";
+import { ensureScienceConnector, useSetupStore } from "./setup";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.client = { addMcpServer: mocks.addMcpServer };
+  mocks.listMcpServers.mockResolvedValue([]);
+  mocks.addMcpServer.mockImplementation(async (name: string) => {
+    mocks.listMcpServers.mockResolvedValue([{ name }]);
+  });
+  mocks.setupScienceMcp.mockResolvedValue("/env/bin/python");
+  mocks.client = {
+    addMcpServer: mocks.addMcpServer,
+    listMcpServers: mocks.listMcpServers,
+  };
   mocks.setupJupyter.mockImplementation(
     () => new Promise<void>((r) => (mocks.resolveSetup = () => r())),
   );
@@ -109,7 +121,7 @@ describe("setup store", () => {
   it("finishes local Jupyter setup even when the runtime endpoint changes", async () => {
     const run = useSetupStore.getState().enableJupyter();
     const replacementAdd = vi.fn(async () => {});
-    mocks.client = { addMcpServer: replacementAdd };
+    mocks.client = { addMcpServer: replacementAdd, listMcpServers: mocks.listMcpServers };
     mocks.resolveSetup();
 
     await run;
@@ -144,6 +156,30 @@ describe("setup store", () => {
     expect(mocks.addMcpServer).toHaveBeenCalledWith("papers", expect.anything());
   });
 
+  it("skips provisioning when the requested connector is already configured", async () => {
+    mocks.listMcpServers.mockResolvedValue([{ name: "papers" }]);
+
+    await ensureScienceConnector("papers");
+
+    expect(mocks.setupScienceMcp).not.toHaveBeenCalled();
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
+  });
+
+  it("provisions and verifies a missing connector", async () => {
+    await ensureScienceConnector("papers");
+
+    expect(mocks.setupScienceMcp).toHaveBeenCalledWith("papers");
+    expect(mocks.addMcpServer).toHaveBeenCalledTimes(1);
+    expect(mocks.listMcpServers).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws and stays fail-closed when connector setup fails", async () => {
+    mocks.setupScienceMcp.mockRejectedValueOnce(new Error("install failed"));
+
+    await expect(ensureScienceConnector("papers")).rejects.toThrow("setup did not complete");
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
+  });
+
   it("sends keyed connectors only through the native credential transaction", async () => {
     await useSetupStore.getState().enableConnector("fred", "  fred-secret  ");
 
@@ -172,7 +208,10 @@ describe("setup store", () => {
 
   it("does not register a provisioned connector on a replacement endpoint", async () => {
     const run = useSetupStore.getState().enableConnector("papers", "key123");
-    mocks.client = { addMcpServer: vi.fn(async () => {}) };
+    mocks.client = {
+      addMcpServer: vi.fn(async () => {}),
+      listMcpServers: mocks.listMcpServers,
+    };
 
     await run;
 
@@ -183,7 +222,10 @@ describe("setup store", () => {
 
   it("does not expose a keyed connector secret after the endpoint is replaced", async () => {
     const run = useSetupStore.getState().enableConnector("fred", "fred-secret");
-    mocks.client = { addMcpServer: vi.fn(async () => {}) };
+    mocks.client = {
+      addMcpServer: vi.fn(async () => {}),
+      listMcpServers: mocks.listMcpServers,
+    };
 
     await run;
 

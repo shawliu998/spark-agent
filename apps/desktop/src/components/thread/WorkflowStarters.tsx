@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
-import { ChevronRight, FileSearch, FlaskConical, Globe2, LineChart } from "lucide-react";
+import { BookOpen, ChevronRight, FileSearch, FlaskConical, Globe2, LineChart } from "lucide-react";
+import { ensureScienceConnector } from "@/lib/setup";
 import { installExample, isTauri } from "@/lib/tauri";
 import { toast } from "@/lib/toast";
 
@@ -42,6 +43,21 @@ export const WORKFLOW_STARTERS: WorkflowStarter[] = [
       "Ask me which document to audit if there is more than one candidate.",
   },
   {
+    id: "papers-data",
+    icon: <BookOpen size={17} strokeWidth={1.75} />,
+    prompt:
+      "Connect the papers and datasets in this workspace end to end. Inventory local papers and data first; " +
+      "when useful, use the configured credential-free literature search to fill evidence gaps, but treat local " +
+      "papers as sufficient when they answer the question. Resolve stable identifiers, inspect data quality, and " +
+      "write and execute reproducible analysis code. Produce references/corpus.csv, references/references.bib, " +
+      "scripts/papers_data_analysis.py, tables/papers_data_summary.csv, figures/papers_data_analysis.png, and " +
+      "reports/papers-data-synthesis.md. Trace every numeric claim to executed output and every literature claim " +
+      "to a listed source, and state material limitations.",
+    prepare: async () => {
+      if (isTauri) await ensureScienceConnector("paper-search");
+    },
+  },
+  {
     id: "example-climate",
     icon: <Globe2 size={17} strokeWidth={1.75} />,
     prompt:
@@ -72,6 +88,10 @@ export function WorkflowStarters({ onPick }: { onPick: (prompt: string) => void 
     demo: { title: t("starters.demo.title"), description: t("starters.demo.description") },
     analyze: { title: t("starters.analyze.title"), description: t("starters.analyze.description") },
     audit: { title: t("starters.audit.title"), description: t("starters.audit.description") },
+    "papers-data": {
+      title: t("starters.papers-data.title"),
+      description: t("starters.papers-data.description"),
+    },
     "example-climate": {
       title: t("starters.example-climate.title"),
       description: t("starters.example-climate.description"),

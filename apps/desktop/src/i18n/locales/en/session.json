@@ -137,6 +137,10 @@
       "title": "Audit a report for traceability",
       "description": "Check citations, unsourced numbers, and figure-versus-code consistency."
     },
+    "papers-data": {
+      "title": "Connect papers and data",
+      "description": "Inventory local papers and datasets, fill useful evidence gaps, and produce a traceable synthesis."
+    },
     "example-climate": {
       "title": "Explore an example: climate trends",
       "description": "Real NASA GISTEMP data — trend, decadal comparison, figure, and report."

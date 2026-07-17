@@ -110,7 +110,7 @@ fn template_prompt(template: &str) -> Result<Option<(&'static str, &'static str)
         ))),
         "papers-and-data" => Ok(Some((
             "Papers and data",
-            "Start a General Research project that connects the project papers with its datasets. Build a source inventory, inspect the data, identify reproducible claims, and save an evidence-bound analysis and report.",
+            "Start a General Research project that connects the project papers with its datasets. Inventory local papers and data first; when useful, use configured credential-free literature search to fill evidence gaps, but treat local papers as sufficient when they answer the question. Resolve stable identifiers, inspect data quality, and write and execute reproducible analysis code. Produce references/corpus.csv, references/references.bib, scripts/papers_data_analysis.py, tables/papers_data_summary.csv, figures/papers_data_analysis.png, and reports/papers-data-synthesis.md. Trace every numeric claim to executed output and every literature claim to a listed source, and state material limitations.",
         ))),
         "reproduce-result" => Ok(Some((
             "Reproduce a result",
@@ -475,5 +475,22 @@ mod tests {
         }
         assert!(template_prompt("computational-study").is_err());
         assert!(template_prompt("verified-dataset-analysis").is_err());
+    }
+
+    #[test]
+    fn papers_and_data_template_names_the_reproducible_deliverables() {
+        let (_, prompt) = template_prompt("papers-and-data").unwrap().unwrap();
+        for path in [
+            "references/corpus.csv",
+            "references/references.bib",
+            "scripts/papers_data_analysis.py",
+            "tables/papers_data_summary.csv",
+            "figures/papers_data_analysis.png",
+            "reports/papers-data-synthesis.md",
+        ] {
+            assert!(prompt.contains(path), "missing deliverable {path}");
+        }
+        assert!(prompt.contains("stable identifiers"));
+        assert!(prompt.contains("state material limitations"));
     }
 }

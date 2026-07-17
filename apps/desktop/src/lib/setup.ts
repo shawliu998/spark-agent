@@ -21,7 +21,7 @@ interface SetupState {
   /** Bumped when any provisioning run finishes, so open pages re-read status. */
   generation: number;
   enableJupyter: () => Promise<void>;
-  enableConnector: (id: string, apiKey?: string) => Promise<void>;
+  enableConnector: (id: string, apiKey?: string) => Promise<boolean>;
 }
 
 export const useSetupStore = create<SetupState>((set, get) => ({
@@ -51,24 +51,24 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   },
 
   enableConnector: async (id, apiKey) => {
-    if (get().connectorId) return; // one connector provisioning at a time
+    if (get().connectorId) return false; // one connector provisioning at a time
     const c = SCIENCE_CONNECTORS.find((x) => x.id === id);
-    if (!c) return;
+    if (!c) return false;
     if (c.securityGated) {
       toast.error(
         `${c.label} remains disabled until native per-call approval and immutable connector targets are enforced.`,
       );
-      return;
+      return false;
     }
     const connectorApiKey = apiKey?.trim();
     if (c.apiKeyEnv && !connectorApiKey) {
       toast.error(`${c.label} requires an API key.`);
-      return;
+      return false;
     }
     const setupClient = getClient();
     if (!setupClient) {
       toast.error("Connect the runtime before enabling a science connector.");
-      return;
+      return false;
     }
     set({ connectorId: id, line: null });
     try {
@@ -78,7 +78,7 @@ export const useSetupStore = create<SetupState>((set, get) => ({
         toast.error(
           `${c.label} was installed locally, but the runtime endpoint changed before MCP registration. Reconnect and enable it again.`,
         );
-        return;
+        return false;
       }
       if (c.apiKeyEnv) {
         // Native code owns the whole credential/config/restart transaction and
@@ -90,17 +90,39 @@ export const useSetupStore = create<SetupState>((set, get) => ({
       } else {
         const config = connectorConfig(c, python);
         await setupClient.addMcpServer(c.id, config);
-        if (getClient() !== setupClient) return;
+        if (getClient() !== setupClient) return false;
       }
       toast.success(`${c.label} enabled — the agent can now use it from chat.`);
       await useRuntimeStore.getState().loadCatalog();
+      return true;
     } catch (e) {
       toast.error(`${c.label} setup failed: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
     } finally {
       set((st) => ({ connectorId: null, line: null, generation: st.generation + 1 }));
     }
   },
 }));
+
+/** Ensure one curated connector is present on the current runtime endpoint.
+ * Provisioning remains inside the native allowlist; callers only select an id. */
+export async function ensureScienceConnector(id: string): Promise<void> {
+  const setupClient = getClient();
+  if (!setupClient) throw new Error("Connect the runtime before setting up a science connector.");
+
+  const isPresent = async () =>
+    (await setupClient.listMcpServers()).some((server) => server.name === id);
+  if (await isPresent()) return;
+
+  const enabled = await useSetupStore.getState().enableConnector(id);
+  if (!enabled) throw new Error(`Science connector ${id} setup did not complete.`);
+  if (getClient() !== setupClient) {
+    throw new Error("The runtime endpoint changed during connector setup. Reconnect and try again.");
+  }
+  if (!(await isPresent())) {
+    throw new Error(`Science connector ${id} was not registered after setup.`);
+  }
+}
 
 // A SINGLE app-lifetime uv-progress listener. Registered once from AppShell so
 // a page unmount can never sever it — the old per-page listener died with

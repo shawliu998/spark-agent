@@ -94,6 +94,10 @@
       "title": "리포트 추적성 감사",
       "description": "인용, 출처 없는 수치, 그림과 코드 간 일치 여부를 확인합니다."
     },
+    "papers-data": {
+      "title": "논문과 데이터 연결",
+      "description": "로컬 논문과 데이터셋을 정리하고 필요한 근거를 보완해 추적 가능한 종합 결과를 만듭니다."
+    },
     "example-climate": {
       "title": "예제 살펴보기: 기후 변화 추세",
       "description": "실제 NASA GISTEMP 데이터 — 추세, 연대별 비교, 그림, 리포트."
