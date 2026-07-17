@@ -18,6 +18,10 @@ const IGNORED_DIRECTORIES = new Set([
   "node_modules",
 ]);
 
+function isIgnoredDirectory(path: string): boolean {
+  return path.split(/[\\/]/).some((part) => IGNORED_DIRECTORIES.has(part));
+}
+
 export interface DiscoveredWorkspaceArtifact {
   block: ArtifactBlock;
   modified: number;
@@ -69,7 +73,7 @@ export async function discoverWorkspaceArtifacts(
     for (const entry of entries) {
       if (visited++ >= maxEntries) break;
       if (entry.isDir) {
-        if (next.depth < maxDepth && !IGNORED_DIRECTORIES.has(entry.name)) {
+        if (next.depth < maxDepth && !isIgnoredDirectory(entry.path)) {
           pending.push({ dir: entry.path, depth: next.depth + 1 });
         }
         continue;

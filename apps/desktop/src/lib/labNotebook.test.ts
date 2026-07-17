@@ -13,7 +13,7 @@ const valid = JSON.stringify({
 
 describe("parseLabNotebook", () => {
   it("keeps durable entries when a restart leaves a malformed final write", () => {
-    const result = parseLabNotebook(`${valid}\n{\"version\":1`);
+    const result = parseLabNotebook(`${valid}\n{"version":1`);
     expect(result.entries).toHaveLength(1);
     expect(result.warnings).toEqual(["Ignored an interrupted final notebook line."]);
   });
