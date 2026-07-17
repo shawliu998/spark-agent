@@ -1,6 +1,7 @@
 // Folder-backed Spark projects. The project file deliberately contains only
 // portable project metadata; OpenCode remains the owner of conversations.
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{path::BaseDirectory, AppHandle, Manager};
@@ -8,11 +9,16 @@ use tauri::{path::BaseDirectory, AppHandle, Manager};
 const PROJECT_SCHEMA_VERSION: u32 = 1;
 const PROJECT_FILE: &str = "project.json";
 const RECENTS_FILE: &str = "recent-projects.json";
+const DEMO_RESOURCE: &str = "examples/climate-trends";
+const DEMO_FOLDER: &str = "spark-agent-climate-demo";
+static NEXT_PROJECT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectMetadata {
     pub schema_version: u32,
+    #[serde(default)]
+    pub id: String,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -22,8 +28,19 @@ pub struct ProjectMetadata {
     pub starter_prompt: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub workspace_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_session_id: Option<String>,
+}
+
+fn new_project_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let sequence = NEXT_PROJECT_ID.fetch_add(1, Ordering::Relaxed);
+    format!("spark-{timestamp:x}-{sequence:x}")
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -87,13 +104,21 @@ fn template_prompt(template: &str) -> Result<Option<(&'static str, &'static str)
             "Literature review",
             "Start a General Research literature review for this project. Define the question, search multiple sources, verify stable identifiers, save references, and write a concise synthesis with limitations.",
         ))),
-        "data-analysis" => Ok(Some((
-            "Data analysis",
+        "dataset-analysis" => Ok(Some((
+            "Dataset analysis",
             "Start a General Research data analysis. Inspect the project data, document data quality and assumptions, write and run the analysis, save figures and tables, then report results and limitations.",
         ))),
-        "computational-study" => Ok(Some((
-            "Computational study",
-            "Start a General Research computational study. Scope the research question, design a reproducible method, implement and run the code, validate results, and write a report with limitations.",
+        "papers-and-data" => Ok(Some((
+            "Papers and data",
+            "Start a General Research project that connects the project papers with its datasets. Build a source inventory, inspect the data, identify reproducible claims, and save an evidence-bound analysis and report.",
+        ))),
+        "reproduce-result" => Ok(Some((
+            "Reproduce a result",
+            "Start a General Research reproduction. Identify the target result and available evidence, implement the method, run validation checks, compare the outcome, and document deviations and limitations.",
+        ))),
+        "research-report" => Ok(Some((
+            "Research report",
+            "Start a General Research report. Inspect the project evidence and artifacts, identify remaining gaps, write a structured report, and ask the reviewer agent to check claims, figures, and references.",
         ))),
         _ => Err("unknown research template".into()),
     }
@@ -128,6 +153,7 @@ fn default_metadata(root: &Path) -> ProjectMetadata {
     let timestamp = now();
     ProjectMetadata {
         schema_version: PROJECT_SCHEMA_VERSION,
+        id: new_project_id(),
         title: root
             .file_name()
             .and_then(|name| name.to_str())
@@ -139,6 +165,7 @@ fn default_metadata(root: &Path) -> ProjectMetadata {
         starter_prompt: None,
         created_at: timestamp.clone(),
         updated_at: timestamp,
+        workspace_path: root.to_string_lossy().to_string(),
         last_session_id: None,
     }
 }
@@ -147,13 +174,27 @@ fn read_or_adopt(root: &Path) -> Result<ProjectMetadata, String> {
     let file = project_file(root);
     match std::fs::read(&file) {
         Ok(contents) => {
-            let metadata: ProjectMetadata = serde_json::from_slice(&contents)
+            let mut metadata: ProjectMetadata = serde_json::from_slice(&contents)
                 .map_err(|error| format!("invalid .spark/project.json: {error}"))?;
             if metadata.schema_version != PROJECT_SCHEMA_VERSION {
                 return Err(format!(
                     "unsupported project schema version: {}",
                     metadata.schema_version
                 ));
+            }
+            let workspace_path = root.to_string_lossy().to_string();
+            let mut migrated = false;
+            if metadata.id.is_empty() {
+                metadata.id = new_project_id();
+                migrated = true;
+            }
+            if metadata.workspace_path != workspace_path {
+                metadata.workspace_path = workspace_path;
+                migrated = true;
+            }
+            if migrated {
+                metadata.updated_at = now();
+                write_json(&file, &metadata)?;
             }
             Ok(metadata)
         }
@@ -235,23 +276,22 @@ pub fn create_project(
     std::fs::create_dir(&root).map_err(|error| error.to_string())?;
     let result = (|| {
         let starter_prompt = scaffold(&root, &template)?;
+        let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
         let timestamp = now();
         let metadata = ProjectMetadata {
             schema_version: PROJECT_SCHEMA_VERSION,
+            id: new_project_id(),
             title: title.trim().to_string(),
             description: None,
             template: (template != "blank").then_some(template),
             starter_prompt,
             created_at: timestamp.clone(),
             updated_at: timestamp,
+            workspace_path: canonical_root.to_string_lossy().to_string(),
             last_session_id: None,
         };
         write_json(&project_file(&root), &metadata)?;
-        remember(
-            &app,
-            &root.canonicalize().map_err(|error| error.to_string())?,
-            metadata,
-        )
+        remember(&app, &canonical_root, metadata)
     })();
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&root);
@@ -321,29 +361,34 @@ pub fn update_project_last_session(
 
 #[tauri::command]
 pub fn open_demo_project(app: AppHandle) -> Result<ProjectSummary, String> {
-    let root = crate::runtime::base_workspace_dir(&app)?.join("spark-agent-climate-demo");
+    // Keep these constants isolated: the independently maintained demo can be
+    // retargeted without changing project metadata or activation behavior.
+    let root = crate::runtime::base_workspace_dir(&app)?.join(DEMO_FOLDER);
     std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let source = app
         .path()
-        .resolve("examples/climate-trends", BaseDirectory::Resource)
+        .resolve(DEMO_RESOURCE, BaseDirectory::Resource)
         .map_err(|error| format!("demo resource missing: {error}"))?;
     if !source.is_dir() {
         return Err("demo resource is not bundled in this build".into());
     }
     crate::examples::copy_missing(&source, &root)
         .map_err(|error| format!("demo install failed: {error}"))?;
+    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
     let metadata = match std::fs::read(project_file(&root)) {
         Ok(_) => read_or_adopt(&root)?,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let timestamp = now();
             let metadata = ProjectMetadata {
                 schema_version: PROJECT_SCHEMA_VERSION,
+                id: new_project_id(),
                 title: "Spark Agent Climate Trends Demo".into(),
                 description: Some("A real bundled climate dataset for General Research.".into()),
                 template: Some("demo".into()),
                 starter_prompt: Some("Analyze the bundled climate-trends dataset with General Research, save a figure and report, and cite the dataset source.".into()),
                 created_at: timestamp.clone(),
                 updated_at: timestamp,
+                workspace_path: canonical_root.to_string_lossy().to_string(),
                 last_session_id: None,
             };
             write_json(&project_file(&root), &metadata)?;
@@ -351,11 +396,7 @@ pub fn open_demo_project(app: AppHandle) -> Result<ProjectSummary, String> {
         }
         Err(error) => return Err(error.to_string()),
     };
-    remember(
-        &app,
-        &root.canonicalize().map_err(|error| error.to_string())?,
-        metadata,
-    )
+    remember(&app, &canonical_root, metadata)
 }
 
 #[cfg(test)]
@@ -366,7 +407,7 @@ mod tests {
     fn templates_scaffold_only_general_research_files() {
         let root =
             std::env::temp_dir().join(format!("spark-project-template-{}", std::process::id()));
-        let prompt = scaffold(&root, "data-analysis").unwrap();
+        let prompt = scaffold(&root, "dataset-analysis").unwrap();
         assert!(root.join("data/raw").is_dir());
         assert!(root.join("reports").is_dir());
         assert!(root.join(".spark/general-research-starter.md").is_file());
@@ -381,6 +422,8 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let metadata = read_or_adopt(&root).unwrap();
         assert_eq!(metadata.schema_version, 1);
+        assert!(!metadata.id.is_empty());
+        assert_eq!(metadata.workspace_path, root.to_string_lossy().to_string());
         assert!(project_file(&root).is_file());
         let _ = std::fs::remove_dir_all(root);
     }
@@ -413,5 +456,24 @@ mod tests {
         assert_eq!(recents.len(), 2);
         assert_eq!(recents[0].path, "/tmp/older");
         assert_eq!(recents[0].last_opened_at, "3");
+    }
+
+    #[test]
+    fn exact_project_template_catalog_excludes_verified_workflows() {
+        for template in [
+            "blank",
+            "literature-review",
+            "dataset-analysis",
+            "papers-and-data",
+            "reproduce-result",
+            "research-report",
+        ] {
+            assert!(
+                template_prompt(template).is_ok(),
+                "missing template: {template}"
+            );
+        }
+        assert!(template_prompt("computational-study").is_err());
+        assert!(template_prompt("verified-dataset-analysis").is_err());
     }
 }

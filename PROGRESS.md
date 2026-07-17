@@ -429,3 +429,4 @@
 
 2026-07-02 07:04 · Initialized project skeleton: monorepo directory tree (apps / packages / runtime / docs / examples / scripts), AGENTS.md + CLAUDE.md symlink, README, MIT LICENSE, .gitignore, and English PRD + TECHNICAL_DESIGN docs. No build tooling yet.
 2026-07-17 14:08 · feat(client-shell): implemented folder-backed Phase 2 projects, Home, onboarding, templates, demo activation, and session association; Rust formatting and diff checks pass, while focused Rust/Vitest execution is blocked by the checkout's missing bundled sidecar resource and absent desktop node_modules.
+2026-07-17 14:15 · fix(client-shell): restored New Session navigation, added last-session project resume, six General Research templates, and schema-v1 id/workspacePath migration; formatting, JSON, and diff checks pass, while Rust tests remain blocked before compilation by the missing bundled OpenCode sidecar resource.

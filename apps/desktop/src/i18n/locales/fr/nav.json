@@ -8,6 +8,7 @@
     "settings": "Paramètres"
   },
   "items": {
+    "home": "Accueil",
     "new": "Nouveau",
     "research": "Workflows vérifiés",
     "analysis": "Analyse de données",

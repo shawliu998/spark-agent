@@ -8,6 +8,7 @@
     "settings": "设置"
   },
   "items": {
+    "home": "主页",
     "new": "新建",
     "research": "验证工作流",
     "analysis": "数据分析",

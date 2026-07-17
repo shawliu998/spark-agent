@@ -8,6 +8,7 @@
     "settings": "설정"
   },
   "items": {
+    "home": "홈",
     "new": "새로 만들기",
     "research": "검증 워크플로",
     "analysis": "데이터 분석",

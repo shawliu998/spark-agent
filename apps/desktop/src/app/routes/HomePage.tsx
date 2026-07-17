@@ -9,6 +9,7 @@ import {
   listRecentProjects,
   openDemoProject,
   openProject,
+  projectRoute,
   removeRecentProject,
   RESEARCH_TEMPLATES,
   type ProjectSummary,
@@ -36,7 +37,7 @@ export function HomePage() {
     try {
       await useRuntimeStore.getState().switchWorkspace({ path: project.path });
       await refresh();
-      navigate("/live");
+      navigate(projectRoute(project));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     } finally {

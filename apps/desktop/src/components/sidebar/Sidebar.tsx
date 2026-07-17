@@ -28,7 +28,7 @@ export function Sidebar({ project }: { project: Project }) {
   const { t } = useTranslation("nav");
   const navigate = useNavigate();
   const location = useLocation();
-  const { sessions, hiddenExamples, deleteSession, hideExample } = useRuntimeStore();
+  const { sessions, hiddenExamples, startDraft, deleteSession, hideExample } = useRuntimeStore();
   const showUpdateBadge = useUpdateStore((s) => s.showBadge);
   const { sidebarCollapsed, sidebarWidth, setSidebarCollapsed, setSidebarWidth, toggleSidebar } =
     useUiStore();
@@ -62,7 +62,8 @@ export function Sidebar({ project }: { project: Project }) {
   };
 
   const startNew = () => {
-    navigate("/home");
+    startDraft();
+    navigate("/live");
   };
 
   const rows: Row[] = [
@@ -142,7 +143,7 @@ export function Sidebar({ project }: { project: Project }) {
       </div>
 
       <nav className="flex flex-col px-3">
-        <NavRow icon={<Home size={16} />} label="Home" onClick={() => navigate("/home")} />
+        <NavRow icon={<Home size={16} />} label={t("items.home")} onClick={() => navigate("/home")} />
         <NavRow icon={<Plus size={16} />} label={t("items.new")} onClick={startNew} />
         {productNavigation.map((item) => {
           const Icon = item.icon;

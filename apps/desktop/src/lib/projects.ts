@@ -1,15 +1,23 @@
 import { isTauri } from "./tauri";
 
-export type ResearchTemplate = "blank" | "literature-review" | "data-analysis" | "computational-study";
+export type ResearchTemplate =
+  | "blank"
+  | "literature-review"
+  | "dataset-analysis"
+  | "papers-and-data"
+  | "reproduce-result"
+  | "research-report";
 
 export interface ProjectMetadata {
   schemaVersion: 1;
+  id: string;
   title: string;
   description?: string;
   template?: string;
   starterPrompt?: string;
   createdAt: string;
   updatedAt: string;
+  workspacePath: string;
   lastSessionId?: string;
 }
 
@@ -48,6 +56,11 @@ export function openDemoProject(): Promise<ProjectSummary> {
   return invokeProject("open_demo_project");
 }
 
+/** A recent project owns its session association in `.spark/project.json`. */
+export function projectRoute(project: Pick<ProjectSummary, "lastSessionId">): string {
+  return project.lastSessionId ? `/live/${project.lastSessionId}` : "/live";
+}
+
 export const RESEARCH_TEMPLATES: Array<{
   id: ResearchTemplate;
   title: string;
@@ -55,6 +68,8 @@ export const RESEARCH_TEMPLATES: Array<{
 }> = [
   { id: "blank", title: "Blank project", description: "A clean research folder with the standard layout." },
   { id: "literature-review", title: "Literature review", description: "A starter prompt for evidence gathering and synthesis." },
-  { id: "data-analysis", title: "Data analysis", description: "Folders and a General Research prompt for data work." },
-  { id: "computational-study", title: "Computational study", description: "A reproducible computation and reporting starting point." },
+  { id: "dataset-analysis", title: "Dataset analysis", description: "Folders and a General Research prompt for data work." },
+  { id: "papers-and-data", title: "Papers + data", description: "Bring literature and local datasets into one research project." },
+  { id: "reproduce-result", title: "Reproduce a result", description: "Validate a reported result with code, data, and documented deviations." },
+  { id: "research-report", title: "Research report", description: "Organize evidence, artifacts, and findings into a reviewed report." },
 ];

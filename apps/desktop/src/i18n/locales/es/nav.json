@@ -8,6 +8,7 @@
     "settings": "Configuración"
   },
   "items": {
+    "home": "Inicio",
     "new": "Nuevo",
     "research": "Flujos verificados",
     "analysis": "Análisis de datos",
