@@ -29,6 +29,7 @@
     "test:integration": "bash scripts/quality/docker-smoke.sh",
     "test:foundation": "bash scripts/quality/check-foundation.sh",
     "test:foundation:live": "bash scripts/quality/check-foundation.sh --live",
+    "test:autonomous:live": "python3 -B tests/autonomous/live_provider_smoke.py",
     "test:release-assets": "bash scripts/quality/check-release-assets.sh",
     "demo:research": "python3 examples/research-demo/scripts/validate.py",
     "quality": "bash scripts/quality/run-all.sh",
