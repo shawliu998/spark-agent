@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { DirEntry } from "./artifactFile";
-import { discoverWorkspaceArtifacts } from "./workspaceArtifacts";
+import { createdWorkspaceArtifacts, discoverWorkspaceArtifacts } from "./workspaceArtifacts";
 
 function entry(
   path: string,
@@ -96,5 +96,28 @@ describe("discoverWorkspaceArtifacts", () => {
       "variants.vcf",
       "volume.fits",
     ]);
+  });
+});
+
+describe("createdWorkspaceArtifacts", () => {
+  it("reports only paths created after a research turn starts", () => {
+    const artifact = (path: string, modified: number) => ({
+      block: {
+        kind: "artifact" as const,
+        artifact: "report" as const,
+        path,
+        filename: path,
+        mime: "text/markdown",
+        tool: "workspace",
+      },
+      modified,
+      size: 1,
+    });
+    expect(
+      createdWorkspaceArtifacts(
+        ["reports/existing.md"],
+        [artifact("reports/new.md", 2), artifact("reports/existing.md", 3)],
+      ).map((item) => item.block.path),
+    ).toEqual(["reports/new.md"]);
   });
 });

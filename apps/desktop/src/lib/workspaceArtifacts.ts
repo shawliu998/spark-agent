@@ -23,6 +23,15 @@ export interface DiscoveredWorkspaceArtifact {
   size: number;
 }
 
+/** Artifacts whose project-relative path did not exist at turn start. */
+export function createdWorkspaceArtifacts(
+  before: Iterable<string>,
+  after: DiscoveredWorkspaceArtifact[],
+): DiscoveredWorkspaceArtifact[] {
+  const existing = new Set(before);
+  return after.filter((artifact) => !existing.has(artifact.block.path));
+}
+
 interface DiscoveryOptions {
   /** Injectable for focused tests; production uses the existing Tauri file bridge. */
   list?: (dir: string, root: "workspace") => Promise<DirEntry[]>;

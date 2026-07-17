@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { FlaskConical, FolderOpen, ListTodo, Loader2, NotebookPen, PanelLeft, PlugZap } from "lucide-react";
+import { CheckCircle2, FlaskConical, FolderOpen, ListTodo, Loader2, NotebookPen, PanelLeft, PlugZap } from "lucide-react";
 import type { RuntimeStatus } from "@ai4s/shared";
 import { DRAFT_KEY, rootSessionOf, subagentActivity, useRuntimeStore } from "@/lib/runtime";
 import { queryRuns } from "@/lib/runs";
@@ -26,7 +26,7 @@ import { MaximizePaneButton, RightPane } from "@/components/inspector/RightPane"
 import { SessionFilesPane } from "./FilesPage";
 import { RunsPane } from "./RunsPage";
 import { cn } from "@/lib/cn";
-import { discoverWorkspaceArtifacts } from "@/lib/workspaceArtifacts";
+import { createdWorkspaceArtifacts, discoverWorkspaceArtifacts } from "@/lib/workspaceArtifacts";
 import { generateTaskPlan } from "@/lib/taskPlanning";
 
 /** Live agent session backed by the OpenCode runtime. `/live` (no id) is a blank draft;
@@ -86,6 +86,10 @@ export function LiveSessionPage() {
     Awaited<ReturnType<typeof discoverWorkspaceArtifacts>>
   >([]);
   const [artifactRefresh, setArtifactRefresh] = useState(0);
+  const [turnCreatedArtifacts, setTurnCreatedArtifacts] = useState<
+    Awaited<ReturnType<typeof discoverWorkspaceArtifacts>> | null
+  >(null);
+  const artifactsAtTurnStart = useRef<Set<string> | null>(null);
   const [showTaskCenter, setShowTaskCenter] = useState(false);
   const [showTaskPlanner, setShowTaskPlanner] = useState(false);
   const clearingLocalCommand = useRef(false);
@@ -123,6 +127,10 @@ export function LiveSessionPage() {
   };
   const onSend = async (text: string) => {
     if (executionMode !== "general") return;
+    artifactsAtTurnStart.current = new Set(
+      discoveredArtifacts.map((artifact) => artifact.block.path),
+    );
+    setTurnCreatedArtifacts(null);
     afterTurn(await sendPrompt(text));
   };
   const onRunShell = async (command: string) => afterTurn(await runShell(command));
@@ -186,7 +194,14 @@ export function LiveSessionPage() {
     if (working) return;
     let cancelled = false;
     void discoverWorkspaceArtifacts().then((artifacts) => {
-      if (!cancelled) setDiscoveredArtifacts(artifacts);
+      if (cancelled) return;
+      setDiscoveredArtifacts(artifacts);
+      if (artifactsAtTurnStart.current) {
+        setTurnCreatedArtifacts(
+          createdWorkspaceArtifacts(artifactsAtTurnStart.current, artifacts),
+        );
+        artifactsAtTurnStart.current = null;
+      }
     });
     return () => {
       cancelled = true;
@@ -522,6 +537,36 @@ export function LiveSessionPage() {
             )}
             {historyLoading && <ThreadSkeleton />}
             {!historyLoading && thread && <BlockList blocks={thread.blocks} handlers={handlers} />}
+            {!historyLoading && !working && turnCreatedArtifacts && (
+              <div className="rounded-card border border-ok/25 bg-ok/5 px-4 py-3">
+                <div className="flex items-center gap-2 text-sm font-medium text-text">
+                  <CheckCircle2 size={15} className="text-ok" />
+                  {t("live.completion.title", { defaultValue: "Research completed" })}
+                </div>
+                <div className="mt-2 text-xs text-muted">
+                  {t("live.completion.created", { defaultValue: "Created:" })}
+                </div>
+                {turnCreatedArtifacts.length > 0 ? (
+                  <ul className="mt-1 space-y-1">
+                    {turnCreatedArtifacts.map((artifact) => (
+                      <li key={artifact.block.path}>
+                        <button
+                          type="button"
+                          onClick={() => openArtifact(artifact.block)}
+                          className="font-mono text-xs text-accent hover:underline"
+                        >
+                          {artifact.block.path}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="mt-1 text-xs text-muted">
+                    {t("live.completion.none", { defaultValue: "No new artifact files detected." })}
+                  </div>
+                )}
+              </div>
+            )}
             {working && (
               // Typing-indicator at the bottom of the conversation: the message
               // just echoed above it, so the user always sees the send is alive.
