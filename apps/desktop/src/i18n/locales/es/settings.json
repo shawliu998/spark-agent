@@ -86,12 +86,13 @@
     "settingUp": "Configurando…",
     "enable": "Habilitar",
     "securityGated": "Bloqueado por seguridad",
-    "securityGatedTitle": "Deshabilitado hasta aplicar aprobación nativa por llamada y objetivos de conector inmutables y totalmente bloqueados",
+    "securityGatedTitle": "Deshabilitado hasta aplicar aprobación nativa por llamada, objetivos inmutables verificados, instalación atómica totalmente protegida por hashes y E2E de macOS empaquetado",
     "freeKeySuffix": "(clave gratuita)",
     "getFreeKey": "Obtener una clave gratuita",
     "jupyterLabel": "Jupyter",
-    "jupyterDescription": "permite que el agente controle cuadernos reales · entorno aislado con numpy·pandas·matplotlib, ~500 MB en la primera ejecución · una vez configurado, el botón Ejecutar de la app también lo usa, así que tú y el agente comparten un mismo Python",
-    "setUpAndEnable": "Configurar y habilitar",
+    "jupyterDescription": "JupyterLab local con entorno Python compartido en la app · el token no entra en el IPC del renderizador ni en argumentos de procesos · el acceso MCP del agente está bloqueado por seguridad y no disponible",
+    "setUpAndEnable": "Configurar Jupyter local",
+    "localReady": "Local listo",
     "startingDownload": "iniciando descarga…",
     "typeLocal": "local",
     "typeRemote": "remoto",
@@ -109,7 +110,7 @@
   },
   "python": {
     "title": "Kernel local de Python",
-    "hint": "Ejecuta las celdas del cuaderno en la app. Usa tu entorno de Jupyter cuando está configurado (el mismo Python que el agente); si no, se detecta automáticamente, o puedes indicar un intérprete explícito abajo",
+    "hint": "Ejecuta las celdas del cuaderno en la app. Cuando está configurado, usa el mismo Python gestionado por la app que JupyterLab local; si no, se detecta automáticamente, o puedes indicar un intérprete explícito abajo",
     "sourceManual": "manual",
     "sourceAppManaged": "gestionado por la app",
     "sourceAutoDetected": "detectado automáticamente",
@@ -154,7 +155,7 @@
       "workspaceFiles": "Los archivos de tu espacio de trabajo y los datos sin procesar",
       "codeExecution": "Ejecución de código — el kernel de Python y Jupyter se ejecutan localmente; los conjuntos de datos se procesan aquí y nunca se suben en bloque.",
       "sessionHistory": "Historial de sesiones y registros de procedencia, en la carpeta de datos privada de la app.",
-      "providerKeys": "Las claves API simples de proveedores y las claves de los conectores Materials Project/FRED gestionados por Spark están protegidas en reposo por el gestor de credenciales del sistema. La migración de MP/FRED y la infraestructura del bróker privado están implementadas, y se eliminó el iniciador de Spark heredado sensible a DYLD. Sus entradas gestionadas están deshabilitadas de forma predeterminada: la ejecución con credenciales falla de forma cerrada y Ajustes las marca como Bloqueadas por seguridad. La ruta preparada usa /usr/bin/nc -U, firmado por Apple para la plataforma, hacia un socket de dominio Unix privado; el bróker Tauri vincula el UID, PID, ejecutable y proceso padre del relé con el PID, hora de inicio y generación del OpenCode actualmente controlado por Spark, y valida la configuración estricta de la app y el destino canónico. Es una defensa por capas preparada, no una garantía entregada de que la ruta de la clave sea infranqueable o el destino esté confinado de forma estricta. Puertas de lanzamiento: P0 — destinos descargados inmutables y firmados/verificados o aislamiento frente a cambios de la misma UID, aprobación nativa por llamada y cierre de la omisión de aprobación de dependencias de configuración; P1 — bloqueo transitivo totalmente protegido con hashes e instalación atómica por etapas; P1 — E2E de macOS empaquetado. Los registros OAuth y el token de Jupyter gestionado por la app aún usan archivos privados legibles solo por tu cuenta; las credenciales de MCP personalizados/BYO quedan fuera de este límite. Las herramientas locales aprobadas aún pueden heredar secretos del proveedor u otros secretos de ejecución; el aislamiento general sigue en desarrollo."
+      "providerKeys": "Las claves API simples de proveedores y las claves de los conectores Materials Project/FRED gestionados por Spark están protegidas en reposo por el gestor de credenciales del sistema. La migración de MP/FRED y la infraestructura del bróker privado están implementadas, y se eliminó el iniciador de Spark heredado sensible a DYLD. Sus entradas gestionadas están deshabilitadas de forma predeterminada: la ejecución con credenciales falla de forma cerrada y Ajustes las marca como Bloqueadas por seguridad. La ruta preparada usa /usr/bin/nc -U, firmado por Apple para la plataforma, hacia un socket de dominio Unix privado; el bróker Tauri vincula el UID, PID, ejecutable y proceso padre del relé con el PID, hora de inicio y generación del OpenCode actualmente controlado por Spark, y valida la configuración estricta de la app y el destino canónico. Es una defensa por capas preparada, no una garantía entregada de que la ruta de la clave sea infranqueable o el destino esté confinado de forma estricta. Puertas de lanzamiento: P0 — destinos descargados inmutables y firmados/verificados o aislamiento frente a cambios de la misma UID, aprobación nativa por llamada y cierre de la omisión de aprobación de dependencias de configuración; P1 — bloqueo transitivo totalmente protegido con hashes e instalación atómica por etapas; P1 — E2E de macOS empaquetado. Los registros OAuth aún usan un archivo privado de la app legible solo por tu cuenta. El token de Jupyter gestionado por la app está protegido en reposo por el gestor de credenciales; los metadatos/configuración heredados en texto claro se eliminan antes de iniciar OpenCode, y el token no entra en el IPC del renderizador ni en los argumentos de procesos. El MCP de Jupyter para el agente sigue bloqueado por seguridad y falla de forma cerrada. El entorno inicial del proceso hijo de Jupyter, la URL/historial del token en el navegador, la inspección por procesos con la misma UID y el aislamiento general de ejecución siguen abiertos. Las credenciales de MCP personalizados/BYO quedan fuera de este límite; las herramientas locales aprobadas aún pueden heredar secretos del proveedor u otros secretos de ejecución."
     },
     "remote": {
       "heading": "Enviado a tu proveedor de modelos",

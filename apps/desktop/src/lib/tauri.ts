@@ -197,9 +197,8 @@ export async function finalizeProviderLogin(
 export interface JupyterStatus {
   installed: boolean;
   running: boolean;
-  url: string | null;
-  token: string | null;
-  mcp_command: string | null;
+  /** Native-validated Spark-owned registration; no connection secret crosses IPC. */
+  registered: boolean;
 }
 
 /** State of the app-managed Jupyter environment (desktop only). */
@@ -223,24 +222,39 @@ export async function startJupyter(): Promise<JupyterStatus> {
   return invoke<JupyterStatus>("start_jupyter");
 }
 
-/** Open the app-managed JupyterLab in the system browser, starting the server
- *  if needed. Returns false when Jupyter has not been set up yet (the caller
- *  should point the user at Settings). Same env the agent drives, same files.
+/** Reconcile legacy Jupyter config and the managed process before the bundled
+ * runtime boots. The caller must not start OpenCode until this succeeds: native
+ * reconciliation is the pre-launch boundary that removes unsafe legacy state. */
+export async function reconcileJupyter(): Promise<RuntimeRestartResult> {
+  if (!isTauri) return { runtimeUrl: null };
+  const { invoke } = await import("@tauri-apps/api/core");
+  const result = await invoke<RuntimeRestartResult>("reconcile_jupyter");
+  // Restoring the optional local Lab is intentionally best-effort. Config
+  // reconciliation above is the security boundary and must succeed before
+  // OpenCode starts; a broken optional Python environment must not strand the
+  // rest of the desktop after that boundary has passed.
+  try {
+    const status = await jupyterStatus();
+    if (status?.installed && !status.running) await startJupyter();
+  } catch {
+    /* Settings reports and repairs optional Jupyter setup failures. */
+  }
+  return result;
+}
+
+/** Ask native code to start and open the app-managed JupyterLab. Returns false
+ * when Jupyter has not been set up yet (the caller should point the user at
+ * Settings). Same environment and files, with all authorization kept native.
  *
  *  `notebook` is a path RELATIVE TO THE LAB ROOT (the active workspace) — pass
- *  it to open that file directly (`/lab/tree/<path>`); omit to land on the lab
- *  home. Only pass a path you know is under the workspace root. */
+ *  it to open that file directly; omit to land on the lab home. Native code
+ *  validates that it remains under the workspace root. */
 export async function openJupyterLab(notebook?: string): Promise<boolean> {
   if (!isTauri) return false;
-  const st = await jupyterStatus();
-  if (!st?.installed) return false;
-  const s = await startJupyter(); // idempotent; yields the fixed url + token
-  if (!s.url || !s.token) return false;
-  const rel = notebook?.trim().replace(/^\/+/, "");
-  // Encode each segment but keep the "/" separators so nested paths resolve.
-  const tree = rel ? "/tree/" + rel.split("/").map(encodeURIComponent).join("/") : "";
-  await openExternal(`${s.url}/lab${tree}?token=${encodeURIComponent(s.token)}`);
-  return true;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("open_jupyter_lab", {
+    notebook: notebook?.trim() || null,
+  });
 }
 
 /** The interpreter local Python kernels resolve to, and where it came from. */
@@ -295,16 +309,6 @@ export async function setupScienceMcp(connectorId: string): Promise<string> {
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("setup_science_mcp", { connectorId });
-}
-
-/** Auto-start Jupyter on launch when it was enabled before. Silent no-op otherwise. */
-export async function ensureJupyter(): Promise<void> {
-  try {
-    const s = await jupyterStatus();
-    if (s?.installed && !s.running) await startJupyter();
-  } catch {
-    /* Jupyter is optional — never block the app on it */
-  }
 }
 
 /** Open an http(s) URL in the system browser (never navigates the webview). */

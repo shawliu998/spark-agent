@@ -21,7 +21,7 @@ describe("DataFlowCard", () => {
     expect(screen.getByText(/P1.*packaged macOS E2E/i)).toBeInTheDocument();
     expect(screen.getByText(/OAuth records.*Jupyter token/)).toBeInTheDocument();
     expect(screen.getByText(/custom\/BYO MCP credentials.*outside this boundary/i)).toBeInTheDocument();
-    expect(screen.getByText(/broader execution isolation is still in progress/i)).toBeInTheDocument();
+    expect(screen.getByText(/broader execution-time isolation remain open/i)).toBeInTheDocument();
     expect(screen.queryByText(/key never crosses|enabled runtime still uses the connector/i)).not.toBeInTheDocument();
     // The copy must never promise perfection — it states scope, not guarantees.
     expect(screen.queryByText(/no errors|zero hallucination/i)).not.toBeInTheDocument();

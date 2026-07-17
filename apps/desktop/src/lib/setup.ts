@@ -34,32 +34,15 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     // One provisioning run at a time: a second `uv venv` / `pip install` into
     // the same env dir races the first and fails.
     if (get().jupyterBusy) return;
-    const setupClient = getClient();
-    if (!setupClient) {
-      toast.error("Connect the runtime before enabling Jupyter MCP.");
-      return;
-    }
     set({ jupyterBusy: true, line: null });
     try {
       toast.success("Setting up Jupyter — first run downloads a few hundred MB, please wait…");
       await setupJupyter();
       const s = await startJupyter();
-      if (!s.url || !s.token || !s.mcp_command) throw new Error("setup finished incomplete");
-      if (getClient() !== setupClient) {
-        toast.error(
-          "Jupyter was installed locally, but the runtime endpoint changed before MCP registration. Reconnect and enable it again.",
-        );
-        return;
-      }
-      await setupClient.addMcpServer("jupyter", {
-        type: "local",
-        command: [s.mcp_command],
-        enabled: true,
-        environment: { JUPYTER_URL: s.url, JUPYTER_TOKEN: s.token, ALLOW_IMG_OUTPUT: "true" },
-      });
-      if (getClient() !== setupClient) return;
-      toast.success("Jupyter MCP enabled — the agent can now drive notebooks.");
-      await useRuntimeStore.getState().loadCatalog();
+      if (!s.installed || !s.running) throw new Error("setup finished incomplete");
+      toast.success(
+        "Local JupyterLab is ready. Agent MCP access remains security-gated until the native broker passes its release gates.",
+      );
     } catch (e) {
       toast.error(`Jupyter setup failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

@@ -26,8 +26,13 @@ evidence binding, and deterministic review.
 > approval and closure of the OpenCode config-dependency bypass—and two P1 gates:
 > a fully hashed transitive lock with staged atomic install, and packaged macOS
 > E2E. The broker is staged defense in depth, not a delivered key-delivery or
-> hard-confinement guarantee. Structured provider records, OAuth, the app-managed
-> Jupyter token, broader execution-time secret isolation, packaged-app restart
+> hard-confinement guarantee. Spark now replaces any legacy plaintext Jupyter
+> token with a fresh credential stored in the OS credential manager; native startup and
+> browser opening keep it out of renderer IPC and process arguments. Local
+> JupyterLab and in-app kernels remain available, but agent Jupyter MCP access is
+> security-gated and fails closed until the same broker, target-integrity,
+> approval, supply-chain, and packaged-E2E gates pass. Structured provider
+> records, OAuth, broader execution-time secret isolation, packaged-app restart
 > E2E, installers, and broader connector parity remain in progress.
 
 ## What works today
@@ -49,6 +54,9 @@ evidence binding, and deterministic review.
   scientific writing, and Matplotlib.
 - Extend the runtime with project or user OpenCode agents, skills, MCP servers,
   commands, and model providers.
+- Set up and open an app-managed local JupyterLab environment without exposing
+  its authorization token to renderer state. Agent access to that environment is
+  intentionally unavailable while its credential-bearing MCP path is security-gated.
 - Enable optional credential-free curated scientific MCP connectors, including
   multi-source paper search (arXiv, PubMed, Crossref, and Semantic Scholar),
   BioMCP, space weather, Open-Meteo, and USGS water. Materials Project and FRED
@@ -258,6 +266,20 @@ and verify their committed SHA-256 digests before unpacking them.
 - OpenCode's config loader can still install config-directory dependencies
   outside the tool-permission flow. Gating or disabling that path until explicit
   approval is a release blocker.
+- App-managed Jupyter metadata is versioned and secretless: `server.json` v2
+  contains only its schema version and port. Any exposed legacy plaintext token
+  is rotated, its replacement is stored in the OS credential manager before
+  OpenCode starts, and legacy Spark-owned MCP
+  entries containing Jupyter connection material are scrubbed fail-closed. The
+  renderer receives only installed/running/registered booleans; native code starts
+  JupyterLab with a child-only token environment variable and opens its tokenized
+  URL through macOS NSWorkspace, never a helper command argument. A controlled
+  ServerApp also suppresses token-bearing server-info/browser files; startup uses
+  a credential-free child-listener ownership check. This removes Spark's plaintext
+  metadata, renderer-IPC, launch-argument, and known runtime-file exposures, but does
+  not make the secret uncrossable: the child startup environment, browser URL/history,
+  same-UID listener races/process introspection, and execution-time isolation
+  remain explicit limitations requiring packaged E2E evidence.
 - A generated Bearer credential on every internal launch, a dynamically allocated
   loopback-only service port, and an allowlisted CORS boundary.
 - No arbitrary direct shell mode in the product UI.

@@ -33,6 +33,29 @@ FRED entries remain visible but security-gated and fail closed:
 Literature and database results carry real identifiers (DOI / PMID / arXiv id),
 so the `traceability-review` skill can audit them afterward.
 
+## App-managed Jupyter
+
+Settings can provision the app-managed Jupyter environment for local JupyterLab
+and in-app Python-kernel use. This does **not** enable an agent MCP connection.
+Agent Jupyter MCP is security-gated and no managed registration command is exposed until a
+secretless broker and the target-integrity, per-call-approval, config-dependency,
+hashed-atomic-install, and packaged-macOS-E2E gates below are complete.
+
+Native reconciliation runs before OpenCode starts. It rotates any exposed legacy
+`server.json` v1 token, stores the fresh replacement in the OS credential manager,
+and rewrites `server.json` v2 with only `version` and `port`. This native boundary
+runs for direct runtime starts even when the MCP entry is absent or user-owned. It
+also scrubs legacy Spark-owned Jupyter MCP config
+that embedded URL/token material; an unrelated custom MCP entry with the same name
+is not silently overwritten. Renderer status contains no token, URL, or executable
+command. A controlled ServerApp suppresses token-bearing server-info/browser-open
+files, removes legacy copies from Spark's private runtime, and rotates the token if
+one is found. Readiness verifies that the new child PID owns the loopback listener
+without sending a token probe. JupyterLab receives its token through its child
+environment instead of a process argument, and macOS opens the native-built URL
+through NSWorkspace. The local Lab environment excludes the gated Agent MCP and
+collaboration packages and does not auto-discover unrelated server extensions.
+
 ## Bring your own MCP server
 
 Any MCP server works — internal ELN, LIMS, a database gateway, an instrument
@@ -106,6 +129,11 @@ app also bundles first-party skills (e.g. `traceability-review`) and the
   insufficient.
 - **P1 validation gate:** pass packaged macOS E2E for migration, default denial,
   broker lineage/revocation, target verification, atomic install, and restart.
-- OAuth records and the persistent Jupyter token still use owner-only app-private
-  files. Broader execution-time secret isolation and hard confinement remain
-  release-blocking work.
+- OAuth records still use an owner-only app-private file. Spark's persistent copy
+  of the app-managed Jupyter token is in the OS credential manager, but that is not
+  complete custody: the child environment during startup and the browser token
+  URL/history remain exposure surfaces, while same-UID listener replacement/
+  introspection and execution-time isolation are open. Agent Jupyter MCP therefore
+  remains unavailable.
+- Broader execution-time secret isolation and hard confinement remain release-
+  blocking work.

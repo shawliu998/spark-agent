@@ -1030,8 +1030,9 @@ export function SettingsPage() {
                     );
                   },
                 )}
-              {/* Featured: one-click Jupyter (shown until its MCP entry exists). */}
-              {isTauri && !mcpServers.some((s) => s.name === "jupyter") && (
+              {/* Only native validation can declare the managed Jupyter MCP
+                  registration safe; an arbitrary same-named entry is not proof. */}
+              {isTauri && !jupyter?.registered && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-surface px-3 py-2.5 text-[13px]">
                   <NotebookPen size={14} className="shrink-0 text-muted" />
                   <div className="min-w-0 flex-1">
@@ -1043,14 +1044,21 @@ export function SettingsPage() {
                   <button
                     className={btnAccent("h-8")}
                     onClick={() => void useSetupStore.getState().enableJupyter()}
-                    disabled={jupyterBusy || busy}
+                    disabled={
+                      jupyterBusy || busy || Boolean(jupyter?.installed && jupyter.running)
+                    }
+                    title={
+                      jupyter?.installed && jupyter.running
+                        ? t("mcp.securityGatedTitle")
+                        : undefined
+                    }
                   >
                     {jupyterBusy ? (
                       <>
                         <Loader2 size={12} className="animate-spin" /> {t("mcp.settingUp")}
                       </>
-                    ) : jupyter?.installed ? (
-                      t("mcp.enable")
+                    ) : jupyter?.installed && jupyter.running ? (
+                      t("mcp.localReady")
                     ) : (
                       t("mcp.setUpAndEnable")
                     )}

@@ -88,8 +88,14 @@ competitors.
 - **Acceptance.** A user can complete an analysis with zero data leaving the
   device; the app states plainly what (if anything) is sent to a model provider.
   Persistent kernels keep variables/dataframes/models in memory to avoid reloads.
-- **Status.** ✅ Local Python **and R** kernels + Jupyter sidecar (isolated env,
-  workspace-scoped). One persistent kernel per notebook keyed by kernelspec
+- **Status.** ✅ Local Python **and R** kernels + app-managed JupyterLab (isolated
+  env, workspace-scoped). Spark's persistent token copy is held in the OS
+  credential manager and omitted from renderer IPC and startup arguments; local
+  JupyterLab remains available while agent Jupyter MCP is security-gated and
+  fail-closed. Known token-bearing runtime files are suppressed and scrubbed;
+  child-startup environment/browser URL and same-UID listener-race/execution-time
+  exposure remain open and require packaged E2E evidence.
+  One persistent kernel per notebook keyed by kernelspec
   language; R uses a base-R-only bridge (no IRkernel/jsonlite), so R notebooks
   run cell-by-cell with shared state, last-expression values, stdout/warnings,
   and error reporting — against any installed R, offline. New-notebook menu
@@ -323,10 +329,21 @@ competitors.
     execution, native per-call approval, and closure of the config-dependency
     approval bypass. Two P1 gates require a fully hashed transitive lock with staged
     atomic install and packaged macOS E2E. Unsupported structured provider API
-    records fail closed. OAuth records and the persistent Jupyter token still use
-    owner-only app-private files, and custom/BYO MCP custody remains outside this
-    boundary. The runtime root/config/auth modes and authenticated loopback API
-    remain defense in depth, not substitutes for broader execution-time isolation.
+    records fail closed. OAuth records still use an owner-only app-private file.
+    Spark transactionally rotates any token exposed in legacy plaintext
+    `server.json` v1, stores the fresh replacement in the OS credential manager,
+    and writes `server.json` v2 containing only
+    version and port, renderer IPC omits token/URL/command fields, startup `argv`
+    omits the token, token-bearing server-info/browser files are suppressed and
+    scrubbed, readiness sends no credential, and macOS opens the native-built URL
+    through NSWorkspace.
+    Legacy Spark-owned plaintext Jupyter MCP config is scrubbed before OpenCode
+    starts, and agent Jupyter MCP registration remains security-gated and
+    fail-closed. These changes are not complete custody: the child startup
+    environment, tokenized browser URL/history, same-UID listener races/introspection,
+    and execution-time isolation remain open. Custom/BYO MCP custody remains outside
+    this boundary. The runtime root/config/auth modes and authenticated loopback
+    API remain defense in depth, not substitutes for broader execution-time isolation.
   - [ ] **OpenCode config dependency installation bypasses product approval.**
     The pinned loader may install config-directory packages (with lifecycle
     scripts disabled) before the tool-permission layer, including for project
@@ -674,11 +691,18 @@ competitors.
   available to the runtime. Those staged controls are not a delivered claim that
   a key cannot cross the path or that the target is hard-confined. The item remains
   partial because the P0 target-integrity/native-approval/config-dependency gate
-  and the P1 hashed-atomic-install and packaged-macOS-E2E gates remain open; OAuth
-  records and the Jupyter token remain in owner-only files; custom/BYO MCP custody
-  is outside the verified boundary; and approved local tools can still inherit
-  provider or other runtime secrets. Broader execution-time redaction and hard
-  confinement are not yet proven.
+  and the P1 hashed-atomic-install and packaged-macOS-E2E gates remain open. The
+  app-managed Jupyter path now rotates any token exposed in plaintext metadata and
+  stores a fresh replacement in the OS credential manager; secretless v2 metadata,
+  renderer/argv exclusion, native URL opening, credential-free readiness,
+  runtime-file suppression/scrub, and unconditional pre-OpenCode reconciliation
+  ship. Agent Jupyter MCP remains fail-closed
+  because a secretless broker and the same release gates are not complete. OAuth
+  records remain in an owner-only file; custom/BYO MCP custody is outside the
+  verified boundary; approved local tools can still inherit provider or other
+  runtime secrets; and the child startup environment, browser URL/history, and
+  same-UID listener races/introspection remain exposed surfaces. Broader
+  execution-time redaction and hard confinement are not yet proven.
 
 ### P2-4 · Beta stability & guardrails — 🟡 Partial
 
@@ -715,7 +739,7 @@ competitors.
 | P0-4 | Reviewer: traceable claims (3 checks) | P0 | 🟡 Partial — 3 checks + PDF-manuscript extractor shipped; weak-model robustness pending |
 | **P0-5** | **Domain-correctness gates ("runs" ≠ "right")** | **P0** | 🟡 **Partial — 5 gates ship (physics/earth/biology/chemistry/social science), deterministic + pluggable; chemistry now uses real RDKit round-trip when installed; only POSCAR→pymatgen round-trip pending** |
 | P0-6 | Large files: reference, don't load | P0 | ✅ Done — memory-pointer probe (table/parquet/hdf5/fits/netcdf/log + genomics FASTQ/FASTA/VCF/BAM, GRIB, ROOT) + one-click "Inspect without loading" in the too-large-preview card |
-| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — manual-only permission floor, sidecar/preview auth, provider plus MP/FRED at-rest credential custody, kernel deadlock, and Windows injection are addressed; MP/FRED execution is fail-closed pending target integrity/native approval, while hard confinement, OAuth/Jupyter custody, execution-time isolation, and config dependency-install approval remain open** |
+| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — manual-only permission floor, sidecar/preview auth, provider plus MP/FRED at-rest custody, Jupyter plaintext-metadata/renderer/argv removal, kernel deadlock, and Windows injection are addressed; MP/FRED and agent Jupyter MCP execution are fail-closed pending target integrity/native approval, while hard confinement, OAuth, Jupyter child/browser/same-UID exposure, execution-time isolation, and config dependency-install approval remain open** |
 | P1-1 | Multi-discipline from day one | P1 | 🟡 Partial — pluggable + climate example; non-bio depth pending |
 | P1-2 | Domain + literature connectors | P1 | 🟡 Partial — literature/bio plus credential-free physics/earth connectors ship; Materials/FRED migration/broker infrastructure exists but execution is security-gated, so runnable coverage does not yet span all 5 disciplines |
 | P1-3 | Scientific renderers | P1 | 🟡 Partial — base + 3D structure + genome + FITS + DOS + band + phase + qualitative-coding + anomaly map (all 4 disciplines; materials trio complete); ternary/coastlines next |
@@ -724,7 +748,7 @@ competitors.
 | **P1-6** | **Social-science analysis integrity** | **P1** | 🟡 **Partial — stats-integrity skill: interpretation/prereg/seed checks + verified .dta→R round-trip** |
 | P2-1 | Notebook + larger-project handling | P2 | ✅ Done — notebook + workspace Files explorer |
 | P2-2 | HPC / SSH / Slurm / Modal | P2 | 🟡 Partial — SSH+Slurm + Modal (detection + skill) shipped; multi-env mgmt pending |
-| P2-3 | Plain-language privacy posture | P2 | 🟡 Partial — disclosure and provider plus MP/FRED at-rest custody ship; MP/FRED execution fails closed pending P0/P1 release gates, while OAuth/Jupyter, custom MCP custody, and execution-time isolation remain open |
+| P2-3 | Plain-language privacy posture | P2 | 🟡 Partial — disclosure, provider/MP/FRED at-rest custody, and Jupyter legacy-token rotation plus renderer/argv exclusion ship; MP/FRED and agent Jupyter MCP execution fail closed pending P0/P1 release gates, while OAuth, Jupyter child/browser/same-UID exposure, custom MCP custody, and execution-time isolation remain open |
 | P2-4 | Beta stability & guardrails | P2 | 🟡 Partial — prompts + exit-cleanup + large-file-preview OOM guard fixed; broader first-run pass pending |
 
 **What's done vs. what's next.** The shared 80% (the moat) is largely ✅: workflow

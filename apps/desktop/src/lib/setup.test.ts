@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   resolveSetup: (() => {}) as () => void,
   setupJupyter: vi.fn(),
   setupScienceMcp: vi.fn(async () => "/env/bin/python"),
+  toastError: vi.fn(),
+  toastSuccess: vi.fn(),
   client: null as null | { addMcpServer: ReturnType<typeof vi.fn> },
 }));
 
@@ -31,9 +33,9 @@ vi.mock("./runtime", () => ({
 vi.mock("./tauri", () => ({
   setupJupyter: mocks.setupJupyter,
   startJupyter: async () => ({
-    url: "http://127.0.0.1:9",
-    token: "tok",
-    mcp_command: "/env/bin/jupyter-mcp-server",
+    installed: true,
+    running: true,
+    registered: false,
   }),
   setupScienceMcp: mocks.setupScienceMcp,
   watchSetupProgress: async () => () => {},
@@ -59,7 +61,9 @@ vi.mock("./scienceConnectors", () => ({
     enabled: true,
   }),
 }));
-vi.mock("./toast", () => ({ toast: { success: () => {}, error: () => {} } }));
+vi.mock("./toast", () => ({
+  toast: { success: mocks.toastSuccess, error: mocks.toastError },
+}));
 
 import { useSetupStore } from "./setup";
 
@@ -85,7 +89,10 @@ describe("setup store", () => {
     expect(s.jupyterBusy).toBe(false);
     expect(s.line).toBeNull();
     expect(s.generation).toBe(gen0 + 1);
-    expect(mocks.addMcpServer).toHaveBeenCalledWith("jupyter", expect.anything());
+    expect(mocks.addMcpServer).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/Local JupyterLab is ready.*Agent MCP access remains security-gated/i),
+    );
   });
 
   it("ignores a second concurrent enableJupyter — no colliding provisioning run", async () => {
@@ -99,7 +106,7 @@ describe("setup store", () => {
     expect(mocks.setupJupyter).toHaveBeenCalledTimes(1);
   });
 
-  it("does not expose Jupyter credentials to a replacement endpoint", async () => {
+  it("finishes local Jupyter setup even when the runtime endpoint changes", async () => {
     const run = useSetupStore.getState().enableJupyter();
     const replacementAdd = vi.fn(async () => {});
     mocks.client = { addMcpServer: replacementAdd };
@@ -110,6 +117,22 @@ describe("setup store", () => {
     expect(mocks.addMcpServer).not.toHaveBeenCalled();
     expect(replacementAdd).not.toHaveBeenCalled();
     expect(useSetupStore.getState().jupyterBusy).toBe(false);
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/Local JupyterLab is ready/i),
+    );
+  });
+
+  it("does not require a connected runtime for local Jupyter setup", async () => {
+    mocks.client = null;
+    const run = useSetupStore.getState().enableJupyter();
+    mocks.resolveSetup();
+    await run;
+
+    expect(mocks.setupJupyter).toHaveBeenCalledTimes(1);
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.stringMatching(/Local JupyterLab is ready/i),
+    );
+    expect(mocks.toastError).not.toHaveBeenCalled();
   });
 
   it("tracks the connector being provisioned and clears it when done", async () => {

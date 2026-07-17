@@ -184,10 +184,18 @@ target is confined. OpenCode owns OAuth login, after which Spark finalizes any
 simple API record. The legacy
 `configure_opencode` bridge uses the same native custody path. Neither path touches
 the user's global OpenCode config. OAuth records remain in an owner-only
-app-private auth file, and the persistent Jupyter token remains in an owner-only
-app-private metadata file. Provider keys can still be inherited by an explicitly
-approved local tool in the sidecar process tree; broader execution isolation and
-hard confinement remain open.
+app-private auth file. The app-managed Jupyter token is stored under its own OS
+credential-manager service. Native reconciliation replaces a legacy v1 plaintext
+token with a freshly generated value, durably stores that replacement first, then
+atomically rewrites
+`server.json` v2 with only `version` and `port`; conflicting or incomplete states
+fail closed. This reconciliation runs inside every native OpenCode spawn, regardless
+of whether the Jupyter MCP entry is absent, Spark-owned, or user-owned, so renderer
+startup order is not the security boundary. Before OpenCode starts, it also removes
+exact legacy Spark-owned Jupyter MCP entries that contain plaintext connection
+material; a managed-command collision with extra or malformed fields blocks startup.
+Provider keys can still be inherited by an explicitly approved local tool in the
+sidecar process tree; broader execution isolation and hard confinement remain open.
 
 Credential-bearing connector release has one P0 and two P1 gates:
 
@@ -248,14 +256,24 @@ First batch: `filesystem` (project files), `paper-search-mcp` (literature), `Bio
 `local runtime MCP` (execution status). v1 ships filesystem + paper search first;
 BioMCP and Zotero follow.
 
+The app-managed Jupyter environment is usable locally, but its agent MCP bridge is
+not part of the enabled batch. Native reconciliation rejects or scrubs legacy
+Spark-owned Jupyter entries with embedded URL/token material, while preserving an
+unrelated custom server that merely shares the name `jupyter`. Managed registration
+fails closed until a secretless native broker, same-UID-resistant immutable or
+verified execution target, native approval for every call, closure of the config-
+dependency approval bypass, a fully hashed transitive lock with staged atomic
+installation, and packaged macOS E2E are complete.
+
 ## 7. Execution layer
 
 ```text
 Execution Layer
 ├── OpenCode tools (local, in the bundled runtime)
 ├── Docker sandbox            (optional, advanced)
-├── SSH / Modal remote        (optional, advanced — later)
-└── Jupyter Kernel Gateway    (later)
+├── App-managed JupyterLab    (local UI and in-app kernel environment)
+├── Agent Jupyter MCP         (security-gated; disabled)
+└── SSH / Modal remote        (optional, advanced — later)
 ```
 
 OpenCode executes its tools locally within the bundled runtime, gated by its permission
@@ -266,15 +284,37 @@ an advanced "Remote Compute" area, never the default path.
 hard-depend on Docker Desktop or WSL in v1 — that raises the install barrier and is not
 consumer-grade.
 
-**v0.3 Jupyter Kernel Gateway** for a more notebook-like experience:
+**App-managed JupyterLab** supplies the notebook-like local environment:
 
 ```text
-Desktop App → Local Runtime Manager → Jupyter Kernel Gateway → Python / R kernel
+Desktop App → Local Runtime Manager → JupyterLab → Python kernel
 → stream output / figures / tables
 ```
 
-Jupyter Kernel Gateway is a headless Jupyter kernel server addressable over REST /
-WebSocket.
+The native shell owns its authorization material. `server.json` v2 records only
+the schema version and port; the token lives in the OS credential manager. Status
+IPC exposes only installed/running/registered booleans. JupyterLab receives the
+token in its child environment rather than `argv`, and macOS opens the native-built
+token URL through NSWorkspace rather than `/usr/bin/open`. Notebook paths are
+validated below the active workspace before a browser URL is formed.
+
+The bootstrap uses a controlled `ServerApp` that suppresses upstream server-info
+JSON and browser redirect files, disables unrelated extension discovery, and loads
+only the official JupyterLab extension. Startup readiness sends no credential: on
+macOS, native code requires `/usr/sbin/lsof` to prove that the exact child PID owns
+the fixed `127.0.0.1:<port>` listener. Existing Spark-private `jpserver-*.json` and
+redirect files are unlinked without following symlinks; finding one rotates the v2
+credential before any replacement Lab starts. The local environment removes the
+retired `jupyter-mcp-server` and `jupyter-collaboration` packages because Agent MCP
+remains gated and the old MCP dependency set is not part of the validated Lab stack.
+
+These controls remove Spark's plaintext metadata, renderer, and process-argument
+exposure and the known token-bearing Jupyter runtime files; they are not complete
+execution-time custody. The child environment during startup and the browser URL/
+history remain exposure surfaces, and another process with the same user identity
+may still introspect execution or race listener ownership after the ownership check.
+Agent MCP access therefore remains fail-closed pending the release gates in Section
+5.3 and packaged evidence.
 
 ## 8. Local Runtime Manager
 
@@ -287,8 +327,9 @@ lightweight installer + a first-launch Runtime Manager + on-demand scientific en
 ### 8.2 Responsibilities
 
 Detect OpenCode; detect Python / uv / Node / Git; create the workspace; create isolated
-environments; install base Python packages; manage scientific tool dependencies; start
-the OpenCode server; start an optional Jupyter Gateway; monitor runtime health.
+environments; install base Python packages; manage scientific tool dependencies;
+reconcile and start optional app-managed JupyterLab; then start OpenCode; monitor
+runtime health.
 
 ### 8.3 Runtime directory
 
@@ -423,9 +464,17 @@ production claim is made that the key-delivery path is available, uncrossable, o
 hard-confined.
 Approved local tools can still inherit provider or other sidecar runtime secrets.
 Structured provider API records fail closed instead of losing metadata. OAuth
-records and the persistent Jupyter token still use owner-only app-private files
-and remain open custody work; custom/BYO MCP credential custody is outside this
-guarantee. Spark does not intentionally write secrets to workspace provenance,
+records still use an owner-only app-private file. The app-managed Jupyter path
+transactionally rotates the token exposed by v1 plaintext metadata and stores its
+fresh replacement in a dedicated OS credential-manager item; v2 metadata is
+secretless, renderer IPC omits connection
+material, startup `argv` omits the token, and native macOS URL opening avoids a
+helper-process argument. Agent Jupyter MCP remains disabled and fail-closed until
+the connector release gates pass. The child startup environment, tokenized browser
+URL/history, same-UID listener races/introspection, and execution-time isolation
+remain open; this is not a claim of complete token custody. Custom/BYO MCP credential
+custody is outside this guarantee. Spark does not intentionally write secrets to
+workspace provenance,
 git, crash reports, or exports, but execution-time redaction is not yet a hard
 boundary. Before credential-bearing connectors can be enabled, the P0
 target-integrity/native-approval/config-dependency gate and both P1 gates—a fully

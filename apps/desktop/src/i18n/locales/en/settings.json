@@ -86,12 +86,13 @@
     "settingUp": "Setting up…",
     "enable": "Enable",
     "securityGated": "Security gated",
-    "securityGatedTitle": "Disabled until native per-call approval and immutable, fully locked connector targets are enforced",
+    "securityGatedTitle": "Disabled until native per-call approval, immutable verified targets, fully hashed atomic installation, and packaged macOS E2E are enforced",
     "freeKeySuffix": "(free key)",
     "getFreeKey": "Get a free key",
     "jupyterLabel": "Jupyter",
-    "jupyterDescription": "lets the agent drive real notebooks · isolated env w/ numpy·pandas·matplotlib, ~500 MB on first run · once set up, the app's Run button uses it too, so you and the agent share one Python",
-    "setUpAndEnable": "Set up & enable",
+    "jupyterDescription": "local JupyterLab + shared in-app Python environment · token stays out of renderer IPC and process arguments · agent MCP access is security-gated and unavailable",
+    "setUpAndEnable": "Set up local Jupyter",
+    "localReady": "Local ready",
     "startingDownload": "starting download…",
     "typeLocal": "local",
     "typeRemote": "remote",
@@ -109,7 +110,7 @@
   },
   "python": {
     "title": "Local Python kernel",
-    "hint": "Runs notebook cells in the app. Uses your Jupyter environment when set up (same Python as the agent), else auto-detects — or set an explicit interpreter below",
+    "hint": "Runs notebook cells in the app. Uses the same app-managed Python as local JupyterLab when set up, else auto-detects — or set an explicit interpreter below",
     "sourceManual": "manual",
     "sourceAppManaged": "app-managed",
     "sourceAutoDetected": "auto-detected",
@@ -154,7 +155,7 @@
       "workspaceFiles": "Your workspace files and raw data",
       "codeExecution": "Code execution — the Python kernel and Jupyter run locally; datasets are processed here, never uploaded in bulk.",
       "sessionHistory": "Session history and provenance records, in the app's private data folder.",
-      "providerKeys": "Simple provider API keys and Spark-managed Materials Project/FRED connector keys are protected at rest by the OS credential manager. MP/FRED migration and private-broker infrastructure are implemented, and the legacy DYLD-sensitive Spark launcher is removed. Their managed entries are disabled by default: credential-bearing execution fails closed and Settings marks them Security gated. The staged path uses Apple platform-signed /usr/bin/nc -U to a private Unix-domain socket; the Tauri broker binds relay UID/PID/executable/parent to the currently owned OpenCode PID/start time/generation and validates strict app config and the canonical target. This is staged defense in depth, not a delivered claim that the key path is uncrossable or the target is hard-confined. Release gates are: P0, immutable signed/verified downloaded targets or isolation from same-UID mutation, native per-call approval, and closure of the config-dependency approval bypass; P1, a fully hashed transitive lock with staged atomic install; P1, packaged macOS E2E. OAuth records and the app-managed Jupyter token still use owner-only app-private files, and custom/BYO MCP credentials are outside this boundary. Approved local tools may still inherit provider or other runtime secrets; broader execution isolation is still in progress."
+      "providerKeys": "Simple provider API keys and Spark-managed Materials Project/FRED connector keys are protected at rest by the OS credential manager. MP/FRED migration and private-broker infrastructure are implemented, and the legacy DYLD-sensitive Spark launcher is removed. Their managed entries are disabled by default: credential-bearing execution fails closed and Settings marks them Security gated. The staged path uses Apple platform-signed /usr/bin/nc -U to a private Unix-domain socket; the Tauri broker binds relay UID/PID/executable/parent to the currently owned OpenCode PID/start time/generation and validates strict app config and the canonical target. This is staged defense in depth, not a delivered claim that the key path is uncrossable or the target is hard-confined. Release gates are: P0, immutable signed/verified downloaded targets or isolation from same-UID mutation, native per-call approval, and closure of the config-dependency approval bypass; P1, a fully hashed transitive lock with staged atomic install; P1, packaged macOS E2E. OAuth records still use an owner-only app-private file. Spark's persistent copy of the app-managed Jupyter token is stored in the OS credential manager; legacy plaintext metadata/config is scrubbed before OpenCode starts, and the token is omitted from renderer IPC and process arguments. Agent Jupyter MCP remains security-gated and fail-closed. Jupyter runtime artifacts, the child startup environment, browser token URL/history, same-UID introspection, and broader execution-time isolation remain open. Custom/BYO MCP credentials are outside this boundary, and approved local tools may still inherit provider or other runtime secrets."
     },
     "remote": {
       "heading": "Sent to your model provider",

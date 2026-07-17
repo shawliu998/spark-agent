@@ -463,6 +463,24 @@ fn opencode_config_files(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
+/// Remove only the retired, exact Spark-owned Jupyter MCP registration from
+/// every live config filename before OpenCode can read it. The retired entry
+/// serialized the persistent Jupyter token; custom same-name entries remain
+/// user-owned and are never rewritten here.
+fn reconcile_jupyter_config_files(app: &AppHandle) -> Result<(), String> {
+    // Credential/artifact reconciliation is unconditional. A missing or
+    // user-owned MCP entry must never let direct native start_runtime bypass
+    // rotation of legacy plaintext Jupyter state.
+    crate::jupyter::reconcile_jupyter_security(app)?;
+    for path in opencode_config_files(app)? {
+        let existing = read_optional_config(&path)?;
+        if let Some(updated) = crate::jupyter::reconcile_jupyter_mcp_config(app, &existing)? {
+            write_private_atomic(&path, updated.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
 fn managed_science_connector_commands(
     app: &AppHandle,
 ) -> Result<std::collections::BTreeMap<String, Vec<String>>, String> {
@@ -2651,6 +2669,10 @@ fn spawn_sidecar(
         for d in [&cfg, &data, &cache, &runtime_state] {
             std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
+        // This defense is repeated inside the process-start transaction, not
+        // left to renderer startup ordering. OpenCode must never observe the
+        // retired Jupyter config that carried a plaintext persistent token.
+        reconcile_jupyter_config_files(app)?;
         crate::science_mcp::ensure_connector_broker(app)?;
         // Refresh Spark-managed agents and skills, then merge missing profile
         // defaults. Existing providers, models, MCP servers, custom permission,
@@ -5559,6 +5581,19 @@ mod tests {
 
         fs::remove_dir_all(&tmp).unwrap();
     }
+}
+
+/// Scrub the retired Spark-owned plaintext Jupyter MCP registration before
+/// desktop bootstrap starts OpenCode. This uses the same stop/mutate/restore
+/// transaction as every other native config write.
+#[tauri::command(async)]
+pub fn reconcile_jupyter(
+    app: AppHandle,
+    state: State<'_, RuntimeState>,
+) -> Result<RuntimeRestartResult, String> {
+    let (_, runtime_url) =
+        with_config_transaction(&app, &state, || reconcile_jupyter_config_files(&app))?;
+    Ok(RuntimeRestartResult { runtime_url })
 }
 
 /// Remove an entry from a map section of the app-private global OpenCode
