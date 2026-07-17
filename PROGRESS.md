@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-18 01:06 · test(pr-scope-ui): completed the Draft PR scope audit with no review comments, untracked build outputs, oversized repository blobs, or credible credential matches, and verified the existing branch Debug App reaches Runtime Ready, passes a real DeepSeek V4 Flash connection check, restores the autonomous dataset/literature session with its scripts, tables, figures, report, and executed notebook, and opens the task center; an exact-HEAD repack remains blocked only because this isolated worktree has no frontend node_modules installed.
+
 2026-07-18 00:23 · fix(pr-ci): made fresh Desktop CI fetch both checksum-pinned skill packs before release validation, restricted macOS-only Rust helpers to their actual build/test targets, mirrored compiled-analysis dependencies into Core development tests, and strengthened cleanup replacement detection to compare complete file identity; release integrity, Rust format/Clippy plus 249 tests, Core Ruff/Pyright, and Python 3.12/3.13 with 422 passed/2 skipped each are green locally.
 
 2026-07-17 23:45 · test(autonomous-real-tasks): added reusable dataset, papers-plus-data, and executed-notebook live-provider scenarios with isolated real inputs, explicit Agent/tool prompts, artifact-specific structural validators, a three-scenario batch command, and four passing offline contract tests; live provider execution remains an explicit skip because this shell has no model credential environment variables.
