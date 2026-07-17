@@ -48,8 +48,9 @@
       },
       "full": {
         "label": "Autónomo",
-        "description": "La investigación normal del proyecto avanza automáticamente; las operaciones destructivas, externas, de credenciales y del sistema siguen protegidas",
-        "notice": "El modo autónomo puede editar archivos del proyecto, ejecutar comandos locales, instalar dependencias del proyecto, usar herramientas de investigación configuradas y acceder a la web. Las operaciones destructivas o externas siguen requiriendo confirmación."
+      "description": "La investigación normal del proyecto avanza automáticamente; las operaciones destructivas, externas, de credenciales y del sistema siguen protegidas",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "El modo autónomo puede editar archivos del proyecto, ejecutar comandos locales, instalar dependencias del proyecto, usar herramientas de investigación configuradas y acceder a la web. Las operaciones destructivas o externas siguen requiriendo confirmación."
       },
       "custom": {
         "label": "Política personalizada externa",

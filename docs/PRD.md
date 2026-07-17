@@ -109,13 +109,14 @@ When users select a Verified Workflow, every important artifact must be traceabl
 
 ### 4.4 Human-in-the-loop
 
-General Research uses a Spark-managed OpenCode manual-approval profile. Ordinary
-workspace reads may proceed, but every write/edit, Shell command, web request,
-and MCP action asks first; unknown concrete tool IDs default to ask and file-tool
-access outside the workspace is denied. The Composer does not offer Full Access
-or persistent grants. Verified Workflows retain their existing plan, execution,
-and remote-data approvals. Manual approval is not a process-isolation boundary,
-so arbitrary-code confinement remains a separate Sandbox requirement.
+General Research defaults to the Spark-managed Balanced profile. Users may opt
+into **Autonomous Research — Developer Preview**, where ordinary project edits,
+local analysis commands, web research, native task delegation, Skills, and
+curated credential-free literature reads proceed without repeated prompts.
+Deletion, global/system installs, uploads, remote or paid actions, credential
+access, custom MCP tools, and outside-workspace file access remain ask or deny.
+Neither preset is Full Access or process isolation. Verified Workflows retain
+their existing plan, execution, and remote-data approvals.
 
 ### 4.5 Execution modes
 
@@ -340,13 +341,12 @@ Success · Warning · Failed.
 
 ### 7.3 Approval dialog
 
-OpenCode's Spark-managed profile asks before every workspace write/edit, Shell
-command, web fetch/search, MCP action, or patch operation; unknown tool IDs ask
-and file-tool access outside the workspace is denied. Ordinary bounded workspace
-reads do not require a second Spark approval. General Research is not an OS
-sandbox; Sandbox and Verified execution provide stronger isolation. Prompt
-options are Allow Once · Deny · View Details; persistent grants and Full Access
-are not offered.
+Balanced asks before workspace mutations, Shell, web, and MCP actions. Autonomous
+Research — Developer Preview lets ordinary project research proceed while native
+policy keeps destructive, credential, upload, custom MCP, system, and external
+operations guarded. General Research is not an OS sandbox; Verified execution
+provides stronger controls. Prompt options are Allow Once · Deny · View Details;
+persistent grants and Full Access are not offered.
 
 ### 7.4 Command palette
 
@@ -388,9 +388,10 @@ figures; virtualized log lists.
 
 ### 10.2 Security
 
-No silent permission escalation; every General write/edit/Shell/web/MCP operation
-prompts, unknown concrete tools ask, and outside-workspace file-tool access is
-denied. Stricter isolation and immutable approvals apply in Verified mode; remote
+No silent permission escalation: Balanced prompts for mutations and remote tools;
+Autonomous allows only its explicit project-research and curated-read rules;
+unknown/custom tools ask, and outside-workspace file-tool access is denied.
+Stricter isolation and immutable approvals apply in Verified mode; remote
 connections are auditable. Verified-workflow model keys, simple General provider
 API keys, and Spark-managed Materials Project/FRED connector keys use separate OS
 credential-manager services. MP/FRED migration and the native private-broker

@@ -48,8 +48,9 @@
       },
       "full": {
         "label": "Autonom",
-        "description": "Normale Projektforschung läuft automatisch; destruktive, externe, Zugangsdaten- und Systemaktionen bleiben geschützt",
-        "notice": "Im autonomen Modus darf Spark Projektdateien bearbeiten, lokale Befehle ausführen, Projektabhängigkeiten installieren, konfigurierte Forschungswerkzeuge nutzen und auf das Web zugreifen. Destruktive oder externe Aktionen erfordern weiterhin eine Bestätigung."
+      "description": "Normale Projektforschung läuft automatisch; destruktive, externe, Zugangsdaten- und Systemaktionen bleiben geschützt",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "Im autonomen Modus darf Spark Projektdateien bearbeiten, lokale Befehle ausführen, Projektabhängigkeiten installieren, konfigurierte Forschungswerkzeuge nutzen und auf das Web zugreifen. Destruktive oder externe Aktionen erfordern weiterhin eine Bestätigung."
       },
       "custom": {
         "label": "Externe benutzerdefinierte Richtlinie",

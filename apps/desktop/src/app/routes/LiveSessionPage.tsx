@@ -100,6 +100,8 @@ export function LiveSessionPage() {
   const [projectPythonInstalled, setProjectPythonInstalled] = useState<boolean | null>(null);
   const [projectPythonBusy, setProjectPythonBusy] = useState(false);
   const [projectPythonError, setProjectPythonError] = useState<string | null>(null);
+  const [preparingTurn, setPreparingTurn] = useState(false);
+  const preparingTurnRef = useRef(false);
   const clearingLocalCommand = useRef(false);
   const mounted = useRef(false);
   useEffect(() => {
@@ -165,12 +167,20 @@ export function LiveSessionPage() {
     if (mounted.current && id && !sessionId) navigate(`/live/${id}`);
   };
   const onSend = async (text: string) => {
-    if (executionMode !== "general") return;
+    if (executionMode !== "general" || preparingTurnRef.current) return;
+    preparingTurnRef.current = true;
+    setPreparingTurn(true);
     artifactsAtTurnStart.current = new Set(
       discoveredArtifacts.map((artifact) => artifact.block.path),
     );
     setTurnCreatedArtifacts(null);
-    afterTurn(await sendPrompt(text));
+    const turn = sendPrompt(text);
+    try {
+      afterTurn(await turn);
+    } finally {
+      preparingTurnRef.current = false;
+      if (mounted.current) setPreparingTurn(false);
+    }
   };
   const onRunShell = async (command: string) => afterTurn(await runShell(command));
   const onRunCommand = async (name: string, args: string) => {
@@ -217,9 +227,9 @@ export function LiveSessionPage() {
   // working until session.idle. Together they lock the composer and show the
   // working indicator, so a sent message is never silently "nowhere".
   const running = !!(currentId && runningSessions[currentId]);
-  const working = sending || running;
+  const working = preparingTurn || sending || running;
   const runningTaskCount = sessions.filter(
-    (session) => !session.parentId && runningSessions[session.id],
+    (session) => session.id !== currentId && runningSessions[session.id],
   ).length;
 
   // General sessions own ordinary workspace files directly. Re-scan on open,
@@ -343,6 +353,16 @@ export function LiveSessionPage() {
       return nativeChild || manualTask;
     });
   }, [currentId, sessionParents, sessions, taskSessionIds]);
+  const completedChildCount = visibleTaskSessions.filter(
+    (session) =>
+      !runningSessions[session.id] &&
+      !waitingSessions[session.id] &&
+      !failedSessions[session.id] &&
+      !recoveringSessions[session.id],
+  ).length;
+  const currentTerminalStatus = currentId
+    ? sessionExecutions[currentId]?.terminalStatus
+    : undefined;
   const latestPlanId = useMemo(() => {
     const latest = Object.values(sessionExecutions)
       .filter((execution) => execution.planId && execution.kind === "task")
@@ -580,7 +600,11 @@ export function LiveSessionPage() {
               <div className="rounded-card border border-ok/25 bg-ok/5 px-4 py-3">
                 <div className="flex items-center gap-2 text-sm font-medium text-text">
                   <CheckCircle2 size={15} className="text-ok" />
-                  {t("live.completion.title", { defaultValue: "Research completed" })}
+                  {currentTerminalStatus === "failed"
+                    ? t("live.completion.failed", { defaultValue: "Research needs attention" })
+                    : currentTerminalStatus === "canceled"
+                      ? t("live.completion.stopped", { defaultValue: "Research stopped" })
+                      : t("live.completion.title", { defaultValue: "Research completed" })}
                 </div>
                 <div className="mt-2 text-xs text-muted">
                   {t("live.completion.created", { defaultValue: "Created:" })}
@@ -603,6 +627,28 @@ export function LiveSessionPage() {
                   <div className="mt-1 text-xs text-muted">
                     {t("live.completion.none", { defaultValue: "No new artifact files detected." })}
                   </div>
+                )}
+                {completedChildCount > 0 && (
+                  <div className="mt-2 text-xs text-muted">
+                    {t("live.completion.children", {
+                      defaultValue: "{{count}} child tasks completed",
+                      count: completedChildCount,
+                    })}
+                  </div>
+                )}
+                <div className="mt-1 text-xs text-muted">
+                  {t("live.completion.limitations", {
+                    defaultValue: "Important limitations are reported in the agent response above.",
+                  })}
+                </div>
+                {(currentTerminalStatus === "failed" || currentTerminalStatus === "canceled") && (
+                  <button
+                    type="button"
+                    onClick={() => void onSend("Continue from the last verified step and resolve the blocker.")}
+                    className="mt-2 rounded-input border border-border px-2.5 py-1 text-xs text-text hover:bg-surface-2"
+                  >
+                    {t("live.completion.continue", { defaultValue: "Resume / Continue" })}
+                  </button>
                 )}
               </div>
             )}

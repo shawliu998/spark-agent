@@ -256,16 +256,17 @@ and verify their committed SHA-256 digests before unpacking them.
 
 ## Safety defaults
 
-- General Research requires manual approval before every workspace write/edit,
-  Shell command, MCP action, and OpenCode web fetch/search request. Unknown
-  concrete tool IDs ask, and file tools deny access outside the current
-  workspace. Approval is not an OS sandbox: once approved, arbitrary code still
-  runs with the signed-in user's authority, so hard isolation remains open.
-- The Composer does not offer Full Access. A legacy Full Access or external
-  custom OpenCode policy is shown as such and can be replaced with Spark's
-  manual-approval default; effective project and agent rules are checked before
-  each turn so they cannot silently weaken the runtime floor. Verified Workflows
-  independently keep strict plan, execution, and remote-data approvals.
+- General Research defaults to Balanced, which asks before workspace writes,
+  Shell, MCP, and web actions. The optional **Autonomous Research — Developer
+  Preview** preset allows ordinary project edits, local analysis, web research,
+  native tasks, Skills, and curated credential-free literature reads. Deletion,
+  global/system installation, uploads, remote or paid actions, credential access,
+  and custom MCP tools remain ask or deny. Both presets deny file-tool access
+  outside the workspace.
+- Autonomous is not Full Access and is not an OS sandbox: allowed commands still
+  run with the signed-in user's authority. Native resolved-agent validation checks
+  the effective policy before each turn; Verified Workflows independently retain
+  strict plan, execution, and remote-data approvals.
 - OpenCode's config loader can still install config-directory dependencies
   outside the tool-permission flow. Gating or disabling that path until explicit
   approval is a release blocker.

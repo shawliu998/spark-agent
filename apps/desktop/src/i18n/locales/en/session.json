@@ -48,8 +48,9 @@
       },
       "full": {
         "label": "Autonomous",
-        "description": "Ordinary project research proceeds automatically; destructive, external, credential, and system operations remain guarded",
-        "notice": "Autonomous mode can edit project files, run local commands, install project dependencies, use configured research tools, and access the web. Destructive or external operations still require confirmation."
+      "description": "Ordinary project research proceeds automatically; destructive, external, credential, and system operations remain guarded",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "Autonomous mode can edit project files, run local commands, install project dependencies, use configured research tools, and access the web. Destructive or external operations still require confirmation."
       },
       "custom": {
         "label": "External custom policy",

@@ -600,6 +600,9 @@ export function Composer({
       </div>
       {approvalMode === "full" && (
         <p role="note" className="px-1.5 pt-1 text-[11px] leading-4 text-muted">
+          <span className="font-medium text-text">
+            {t("composer.approval.full.preview")}
+          </span>{" "}
           {t("composer.approval.full.notice")}
         </p>
       )}

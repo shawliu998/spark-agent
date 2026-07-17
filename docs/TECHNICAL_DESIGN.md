@@ -434,12 +434,13 @@ data/code relationships, reproducibility metadata, containment, and content hash
 
 ### 11.1 Default permissions
 
-General Research uses a Spark-managed OpenCode profile. Ordinary reads inside the
-workspace are allowed, while every workspace write/edit, Shell command, web
-fetch/search, MCP action, and patch operation asks. Unknown concrete tool IDs
-default to ask, and file-tool access outside the workspace is denied. The Composer
-does not offer Full Access or persistent permission grants. Manual approval is not
-an OS sandbox; Verified Workflows retain their stricter approvals.
+General Research defaults to Spark's Balanced OpenCode profile. The optional
+**Autonomous Research — Developer Preview** native preset allows ordinary
+workspace edits, local analysis, web research, native task/Skill calls, and
+curated credential-free literature reads. Destructive commands, global/system
+installs, uploads, remote or paid operations, credentials, custom MCP tools, and
+outside-workspace file access remain ask or deny. This is not Full Access or an
+OS sandbox; Verified Workflows retain their stricter approvals.
 
 ### 11.2 Approval levels
 
@@ -664,9 +665,11 @@ defer Docker / Jupyter.
 ### 18.4 Agent safety
 
 Risk: the agent runs commands, reads/writes files, and accesses the network.
-Mitigation: every General Shell/web/MCP/patch operation asks, outside-workspace
-file-tool access is denied, Full Access is not selectable, and the product clearly
-states that manual approval is not an OS sandbox.
+Mitigation: Balanced asks for mutations and remote tools; Autonomous Research is
+clearly labeled Developer Preview and limits automatic work to the project plus
+curated read-only research tools. Destructive, credential, custom MCP, upload,
+system, and outside-workspace actions remain guarded. Neither preset is Full
+Access or an OS sandbox.
 Use the optional sandbox or Verified runtime when a hard isolation boundary is
 required; record best-effort provenance without treating it as containment.
 
