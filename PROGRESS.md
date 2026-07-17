@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 23:45 · test(autonomous-real-tasks): added reusable dataset, papers-plus-data, and executed-notebook live-provider scenarios with isolated real inputs, explicit Agent/tool prompts, artifact-specific structural validators, a three-scenario batch command, and four passing offline contract tests; live provider execution remains an explicit skip because this shell has no model credential environment variables.
+
 2026-07-17 21:24 · feat(papers-data-starter): added a one-click Papers + data General Research starter that reuses or safely provisions the allowlisted paper-search connector before launching an explicit six-artifact traceability contract, aligned the folder project template and all seven locales, and passed 691 Desktop plus 249 Rust tests, typecheck, lint, formatting, and diff checks.
 
 2026-07-17 20:58 · fix(autonomous-skill-live): bundled checksum-pinned ripgrep 15.1.0 beside OpenCode so skill loading no longer falls into a 90-second runtime download failure, surfaced persisted/live tool errors, added approval rules plus one-way policy migration for interpreter deletion APIs, and verified the packaged app with DeepSeek V4 Flash: notebook-analysis loaded in ~12 seconds, a pathlib unlink command paused for approval and was rejected before file creation, and a real three-source papers-plus-data audit produced six verified reproducible artifacts; 686 Desktop tests, 248 Rust tests, lint, typecheck, release integrity, build, restart, local Git snapshots, and UI recovery pass.

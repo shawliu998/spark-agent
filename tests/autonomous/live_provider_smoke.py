@@ -23,18 +23,14 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from real_task_scenarios import scenario
+
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE = ROOT / "runtime" / "opencode-profile"
 SKILLS = ROOT / "runtime" / "skills" / "core"
 PINNED_VERSION = "1.17.13"
 PASSWORD = "autonomous-live-smoke"
-REQUIRED_ARTIFACTS = (
-    "scripts/analysis.py",
-    "tables/summary.csv",
-    "figures/analysis.png",
-    "reports/data-analysis.md",
-)
 
 
 def fail(message: str) -> None:
@@ -249,18 +245,6 @@ def start_sidecar(binary: Path, runtime: Path, workspace: Path) -> tuple[subproc
     fail(f"OpenCode did not start; see {log_path}")
 
 
-def validate_artifacts(workspace: Path) -> list[str]:
-    missing = [path for path in REQUIRED_ARTIFACTS if not (workspace / path).is_file()]
-    if missing:
-        fail(f"real-provider smoke did not create required artifacts: {missing}")
-    png = (workspace / "figures/analysis.png").read_bytes()
-    if not png.startswith(b"\x89PNG\r\n\x1a\n"):
-        fail("real-provider figure is not a PNG")
-    if len((workspace / "tables/summary.csv").read_text(encoding="utf-8").splitlines()) < 2:
-        fail("real-provider summary CSV has no data rows")
-    return list(REQUIRED_ARTIFACTS)
-
-
 def run() -> None:
     model = os.environ.get("SPARK_LIVE_MODEL", "").strip()
     api_key = os.environ.get("SPARK_LIVE_API_KEY", "").strip()
@@ -268,6 +252,7 @@ def run() -> None:
         print("SKIP: set SPARK_LIVE_MODEL and SPARK_LIVE_API_KEY to run the real-provider smoke")
         return
     base_url = os.environ.get("SPARK_LIVE_BASE_URL", "https://api.openai.com/v1").strip()
+    task = scenario(os.environ.get("SPARK_LIVE_SCENARIO", "dataset").strip())
     binary = sidecar_path()
     version = subprocess.run(
         [str(binary), "--version"], check=True, capture_output=True, text=True, timeout=10
@@ -281,11 +266,7 @@ def run() -> None:
         runtime = root / "runtime"
         workspace = root / "workspace"
         workspace.mkdir()
-        (workspace / "data.csv").write_text(
-            "group,value,quality\ncontrol,1.0,ok\ncontrol,1.2,ok\ntreatment,1.8,ok\n"
-            "treatment,2.1,ok\ntreatment,,missing\n",
-            encoding="utf-8",
-        )
+        task.seed(workspace)
         provider_id, model_id = deploy_profile(runtime, model, api_key, base_url)
         process, api = start_sidecar(binary, runtime, workspace)
         try:
@@ -303,21 +284,13 @@ def run() -> None:
                     "model": {"providerID": provider_id, "modelID": model_id},
                     "parts": [{
                         "type": "text",
-                        "text": (
-                            "Work autonomously on data.csv. Load the exploratory-data-analysis "
-                            "skill and delegate exactly one bounded schema and quality review to "
-                            "the task agent. Then inspect the returned result, write and run "
-                            "scripts/analysis.py, and create "
-                            "tables/summary.csv, figures/analysis.png, and "
-                            "reports/data-analysis.md with limitations. Verify every artifact. "
-                            "Use only installed Python packages and do not ask questions."
-                        ),
+                        "text": task.prompt,
                     }],
                 },
                 timeout=30,
             )
             idle.wait()
-            artifacts = validate_artifacts(workspace)
+            artifacts = task.validate(workspace)
             messages = api.request(
                 "GET", f"/session/{urllib.parse.quote(session_id, safe='')}/message"
             )
@@ -348,11 +321,12 @@ def run() -> None:
             )
             if not isinstance(restarted_history, list) or not restarted_history:
                 fail("real-provider message history did not survive an OpenCode restart")
-            validate_artifacts(workspace)
+            task.validate(workspace)
             print(json.dumps({
                 "status": "PASS",
                 "model": model,
                 "provider": model.partition("/")[0],
+                "scenario": task.id,
                 "durationSeconds": round(time.monotonic() - started, 1),
                 "tools": tools,
                 "artifacts": artifacts,
