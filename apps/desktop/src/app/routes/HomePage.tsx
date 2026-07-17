@@ -153,7 +153,7 @@ export function HomePage() {
               <Settings2 size={15} /> Model and runtime settings
             </button>
             <button onClick={() => void openDemo()} disabled={busy} className={cn(secondaryButton, "mt-2 w-full justify-center")}>
-              <GraduationCap size={15} /> Open Climate Trends Demo
+              <GraduationCap size={15} /> Open Synthetic Research Demo
             </button>
           </div>
         </section>

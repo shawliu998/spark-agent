@@ -42,6 +42,7 @@
       "../../../runtime/opencode-profile/OPENSCIENCE_NOTICE.txt": "licenses/OPENSCIENCE_NOTICE.txt",
       "../../../runtime/harness": "harness/",
       "../../../examples/climate-trends": "examples/climate-trends/",
+      "../../../examples/research-demo": "examples/research-demo/",
       "../../../LICENSE": "LICENSE",
       "../../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },

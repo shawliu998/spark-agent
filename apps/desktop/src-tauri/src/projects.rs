@@ -9,8 +9,8 @@ use tauri::{path::BaseDirectory, AppHandle, Manager};
 const PROJECT_SCHEMA_VERSION: u32 = 1;
 const PROJECT_FILE: &str = "project.json";
 const RECENTS_FILE: &str = "recent-projects.json";
-const DEMO_RESOURCE: &str = "examples/climate-trends";
-const DEMO_FOLDER: &str = "spark-agent-climate-demo";
+const DEMO_RESOURCE: &str = "examples/research-demo";
+const DEMO_FOLDER: &str = "spark-agent-research-demo";
 static NEXT_PROJECT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -382,10 +382,10 @@ pub fn open_demo_project(app: AppHandle) -> Result<ProjectSummary, String> {
             let metadata = ProjectMetadata {
                 schema_version: PROJECT_SCHEMA_VERSION,
                 id: new_project_id(),
-                title: "Spark Agent Climate Trends Demo".into(),
-                description: Some("A real bundled climate dataset for General Research.".into()),
+                title: "Synthetic Research Demo".into(),
+                description: Some("A deterministic synthetic project for learning the General Research workflow.".into()),
                 template: Some("demo".into()),
-                starter_prompt: Some("Analyze the bundled climate-trends dataset with General Research, save a figure and report, and cite the dataset source.".into()),
+                starter_prompt: Some("Reproduce the bundled synthetic analysis with General Research, inspect every generated artifact, and explain the evidence and limitations without making real scientific claims.".into()),
                 created_at: timestamp.clone(),
                 updated_at: timestamp,
                 workspace_path: canonical_root.to_string_lossy().to_string(),

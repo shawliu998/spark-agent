@@ -1,6 +1,12 @@
 # Progress
 
+2026-07-17 14:24 · feat(openscience-parity-batch1): integrated the folder-backed Home/onboarding shell and deterministic synthetic research demo, retargeted the bundled demo action/resource to `examples/research-demo`, and aligned its portable metadata with project schema v1; demo, JSON, Rust formatting, and diff checks pass.
+
+2026-07-17 14:15 · fix(client-shell): restored New Session navigation, added last-session project resume, six General Research templates, and schema-v1 id/workspacePath migration; formatting, JSON, and diff checks pass, while Rust tests remain blocked before compilation by the missing bundled OpenCode sidecar resource.
+
 2026-07-17 14:11 · feat(research-demo): added a fully synthetic deterministic research demo with checked-in raw data, reproducible analysis/report/notebook outputs, a pure-Python PNG generator, and a `pnpm demo:research` validation command that reruns the analysis and verifies structure, summary consistency, and artifact discoverability; `pnpm demo:research` and `git diff --check` pass, while the bibliography remains intentionally empty because no real identifiers were used.
+
+2026-07-17 14:08 · feat(client-shell): implemented folder-backed Phase 2 projects, Home, onboarding, templates, demo activation, and session association; Rust formatting and diff checks pass, while focused Rust/Vitest execution is blocked by the checkout's missing bundled sidecar resource and absent desktop node_modules.
 
 2026-07-17 13:10 · feat(connector-approval): staged fail-closed native approval once per MP/FRED broker connection before Keychain access with serialized no-cache decisions and post-decision peer/generation/config/target revalidation, isolated OpenCode HOME and forced Pure mode with a real project-plugin non-execution smoke, while keeping credential execution disabled; 644 Desktop, 226 Rust, 424 Core, 82 Runtime, Docker restart, production build, and pinned OpenCode live Foundation tests pass, while per-JSON-RPC-tool-call approval, config-driven background installation, immutable/isolated targets, hashed atomic installs, and packaged macOS E2E remain open.
 
@@ -428,5 +434,3 @@
 2026-07-02 08:05 · Slice #1 (UI shell + static workspace) built browser-first: pnpm workspace + Vite/React/TS/Tailwind/Radix. Three-column Claude-Science-style UI (sessions sidebar / thread / contextual inspector) with warm paper theme, reproducing all three reference screenshots (figure+artifact, table+notebook, literature+PDF) from mock data. Settings has fillable, empty API-key fields with Hermes as runtime. Verified on Mac: typecheck ✓, eslint ✓, 19 vitest tests ✓, vite build ✓; screenshots confirmed against references.
 
 2026-07-02 07:04 · Initialized project skeleton: monorepo directory tree (apps / packages / runtime / docs / examples / scripts), AGENTS.md + CLAUDE.md symlink, README, MIT LICENSE, .gitignore, and English PRD + TECHNICAL_DESIGN docs. No build tooling yet.
-2026-07-17 14:08 · feat(client-shell): implemented folder-backed Phase 2 projects, Home, onboarding, templates, demo activation, and session association; Rust formatting and diff checks pass, while focused Rust/Vitest execution is blocked by the checkout's missing bundled sidecar resource and absent desktop node_modules.
-2026-07-17 14:15 · fix(client-shell): restored New Session navigation, added last-session project resume, six General Research templates, and schema-v1 id/workspacePath migration; formatting, JSON, and diff checks pass, while Rust tests remain blocked before compilation by the missing bundled OpenCode sidecar resource.

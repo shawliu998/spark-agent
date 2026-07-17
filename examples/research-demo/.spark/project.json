@@ -1,6 +1,11 @@
 {
-  "name": "research-demo",
+  "schemaVersion": 1,
+  "id": "spark-synthetic-research-demo-v1",
   "title": "Synthetic Research Demo",
+  "createdAt": "2026-07-17T00:00:00Z",
+  "updatedAt": "2026-07-17T00:00:00Z",
+  "workspacePath": "",
+  "name": "research-demo",
   "description": "A deterministic synthetic research project that demonstrates Spark Agent output generation without making real scientific claims.",
   "synthetic": true,
   "workspace": {
