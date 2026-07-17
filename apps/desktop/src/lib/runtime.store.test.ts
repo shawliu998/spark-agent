@@ -71,7 +71,7 @@ const mocks = vi.hoisted(() => ({
    *  ~60 s fetch kill on a long sync turn ("Load failed"). */
   dropCommandPost: false,
   /** Approval mode the Rust config currently holds. */
-  approvalMode: "approve" as string,
+  approvalMode: "balanced" as string,
   getApprovalMode: vi.fn(async () => mocks.approvalMode),
   startRuntimeUrl: "http://127.0.0.1:1",
   restartUrl: "http://127.0.0.1:1",
@@ -335,7 +335,7 @@ beforeEach(async () => {
   mocks.abortTrailing = [];
   mocks.messages = [];
   mocks.failMessages = false;
-  mocks.approvalMode = "approve";
+  mocks.approvalMode = "balanced";
   mocks.startRuntimeUrl = "http://127.0.0.1:1";
   mocks.restartUrl = "http://127.0.0.1:1";
   mocks.workspacePathValue = "/ws/base";
@@ -2363,18 +2363,16 @@ describe("per-session right pane", () => {
 
 describe("approval mode", () => {
   it("restores Full Access from the native config when connecting", async () => {
-    expect(useRuntimeStore.getState().approvalMode).toBe("approve");
+    expect(useRuntimeStore.getState().approvalMode).toBe("balanced");
     mocks.approvalMode = "full";
     await useRuntimeStore.getState().connect();
     expect(useRuntimeStore.getState().approvalMode).toBe("full");
   });
 
-  it("rejects Full Access before invoking the native persistence command", async () => {
-    await expect(useRuntimeStore.getState().setApprovalMode("full")).rejects.toThrow(
-      "legacy unsafe mode",
-    );
-    expect(mocks.setApprovalMode).not.toHaveBeenCalled();
-    expect(useRuntimeStore.getState().approvalMode).toBe("approve");
+  it("persists Full Access through the native command and reconnects", async () => {
+    await useRuntimeStore.getState().setApprovalMode("full");
+    expect(mocks.setApprovalMode).toHaveBeenCalledWith("full");
+    expect(useRuntimeStore.getState().approvalMode).toBe("full");
   });
 
   it("preserves a custom native permission policy without labelling it Manual", async () => {
@@ -2383,10 +2381,10 @@ describe("approval mode", () => {
     expect(useRuntimeStore.getState().approvalMode).toBe("custom");
   });
 
-  it("falls back to Manual approval when native config cannot be read", async () => {
+  it("falls back to Balanced when native config cannot be read", async () => {
     mocks.getApprovalMode.mockRejectedValueOnce(new Error("config unavailable"));
     await useRuntimeStore.getState().connect();
-    expect(useRuntimeStore.getState().approvalMode).toBe("approve");
+    expect(useRuntimeStore.getState().approvalMode).toBe("balanced");
   });
 
   it("rejects an unknown mode without persisting it", async () => {
@@ -2394,7 +2392,7 @@ describe("approval mode", () => {
       useRuntimeStore.getState().setApprovalMode("custom" as never),
     ).rejects.toThrow("report-only");
     expect(mocks.setApprovalMode).not.toHaveBeenCalled();
-    expect(useRuntimeStore.getState().approvalMode).toBe("approve");
+    expect(useRuntimeStore.getState().approvalMode).toBe("balanced");
     expect(useRuntimeStore.getState().error).toContain("report-only");
   });
 

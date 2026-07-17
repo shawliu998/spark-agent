@@ -40,18 +40,18 @@
       "aria": "Modo de aprobación",
       "title": "Cómo se aprueban las acciones del agente",
       "menuAria": "Modos de aprobación",
-      "menuTitle": "Las acciones de Spark requieren aprobación manual",
-      "approve": {
-        "label": "Aprobación manual",
-        "description": "Pregunta antes de cada comando de shell, aplicación de parches y solicitud web"
+      "menuTitle": "Elige un ajuste de permisos nativo de OpenCode",
+      "balanced": {
+        "label": "Equilibrado",
+        "description": "Lectura y búsqueda libres; pregunta antes de editar, ejecutar comandos, usar la web o MCP"
       },
       "full": {
-        "label": "Acceso completo heredado",
-        "description": "Modo heredado inseguro; cambia a Aprobación manual"
+        "label": "Acceso completo",
+        "description": "Autoriza ediciones del espacio; comandos, red, instalaciones y borrado aún preguntan"
       },
       "custom": {
         "label": "Política personalizada externa",
-        "description": "Spark no la administra; cambia a Aprobación manual para restaurar el valor seguro"
+        "description": "Spark no la administra; elige Equilibrado o Acceso completo para usar un ajuste definido"
       }
     },
     "error": {
@@ -65,14 +65,13 @@
     "cleared": "Contexto del chat borrado. Los archivos permanecen en la misma carpeta."
   },
   "researchControls": {
-    "mode": { "aria": "Modo de ejecución", "general": "Investigación general", "sandbox": "Investigación en sandbox", "verified": "Flujos verificados" },
+    "mode": { "aria": "Modo de ejecución", "general": "Investigación general", "verified": "Flujos verificados" },
     "agent": { "aria": "Agente de investigación", "empty": "No hay agentes disponibles", "primaryGroup": "Agentes principales", "subagentGroup": "Subagentes", "otherGroup": "Otros agentes" },
     "model": { "aria": "Modelo", "empty": "No hay modelos disponibles" },
     "skills": { "aria": "Abrir habilidades de investigación", "title": "Ver habilidades reportadas por OpenCode", "count": "{{count}} habilidades" }
   },
   "workspaceArtifacts": {
-    "heading": "Artefactos del espacio", "count": "{{count}} encontrados", "refreshAria": "Actualizar artefactos del espacio",
-    "sandboxTitle": "La investigación en sandbox aún no está configurada.", "sandboxBody": "Elige Investigación general para usar OpenCode o Flujos verificados para un proceso estructurado."
+    "heading": "Artefactos del espacio", "count": "{{count}} encontrados", "refreshAria": "Actualizar artefactos del espacio"
   },
   "starters": {
     "newSession": "Nueva sesión",

@@ -40,18 +40,18 @@
       "aria": "승인 모드",
       "title": "에이전트 작업이 승인되는 방식",
       "menuAria": "승인 모드",
-      "menuTitle": "Spark 작업에는 수동 승인이 필요합니다",
-      "approve": {
-        "label": "수동 승인",
-        "description": "모든 셸 명령, 패치 적용, 웹 요청 전에 확인합니다"
+      "menuTitle": "OpenCode 기본 권한 프리셋 선택",
+      "balanced": {
+        "label": "균형",
+        "description": "읽기와 검색은 허용하고 편집, 명령, 웹, MCP는 확인합니다"
       },
       "full": {
-        "label": "레거시 전체 권한",
-        "description": "안전하지 않은 레거시 모드입니다. 수동 승인으로 전환하세요"
+        "label": "전체 권한",
+        "description": "작업공간 편집은 허용하지만 명령, 네트워크, 설치, 삭제는 계속 확인합니다"
       },
       "custom": {
         "label": "외부 사용자 지정 정책",
-        "description": "Spark에서 관리하지 않습니다. 안전한 기본값을 복원하려면 수동 승인으로 전환하세요"
+        "description": "Spark에서 관리하지 않습니다. 균형 또는 전체 권한을 선택하세요"
       }
     },
     "error": {
@@ -65,14 +65,13 @@
     "cleared": "채팅 컨텍스트를 지웠습니다. 파일은 같은 폴더에 남아 있습니다."
   },
   "researchControls": {
-    "mode": { "aria": "실행 모드", "general": "일반 연구", "sandbox": "샌드박스 연구", "verified": "검증 워크플로" },
+    "mode": { "aria": "실행 모드", "general": "일반 연구", "verified": "검증 워크플로" },
     "agent": { "aria": "연구 에이전트", "empty": "사용 가능한 에이전트 없음", "primaryGroup": "기본 에이전트", "subagentGroup": "하위 에이전트", "otherGroup": "기타 에이전트" },
     "model": { "aria": "모델", "empty": "사용 가능한 모델 없음" },
     "skills": { "aria": "연구 스킬 열기", "title": "OpenCode가 보고한 스킬 보기", "count": "스킬 {{count}}개" }
   },
   "workspaceArtifacts": {
-    "heading": "작업공간 산출물", "count": "{{count}}개 발견", "refreshAria": "작업공간 산출물 새로고침",
-    "sandboxTitle": "샌드박스 연구가 아직 설정되지 않았습니다.", "sandboxBody": "OpenCode는 일반 연구를, 구조화된 절차는 검증 워크플로를 선택하세요."
+    "heading": "작업공간 산출물", "count": "{{count}}개 발견", "refreshAria": "작업공간 산출물 새로고침"
   },
   "starters": {
     "newSession": "새 세션",

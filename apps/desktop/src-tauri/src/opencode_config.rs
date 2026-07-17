@@ -2,10 +2,9 @@
 // Used by the runtime command, which writes it into an app-private config dir.
 use serde_json::{json, Value};
 
-/// User-facing OpenCode permission states. New writes support only the safe
-/// manual-approval default; legacy Full Access remains detectable so the UI can
-/// tell the user to migrate it.
-pub const MODE_APPROVE: &str = "approve";
+/// User-facing OpenCode permission presets. Both are persisted as native
+/// OpenCode permission objects; arbitrary user-authored objects remain custom.
+pub const MODE_BALANCED: &str = "balanced";
 pub const MODE_FULL: &str = "full";
 pub const MODE_CUSTOM: &str = "custom";
 
@@ -58,13 +57,10 @@ fn legacy_approve_permission() -> Value {
     })
 }
 
-/// High-risk command tokens gated by the retired patterned Balanced preset.
-/// OpenCode command
-/// permissions are glob based and last-match-wins, so every token gets both a
-/// direct rule and an embedded rule for compound commands such as
-/// `cd work && rm -rf output`.
-const DANGEROUS_BASH: &[&str] = &[
-    // Deletion and destructive filesystem/system operations.
+/// Destructive or system-changing commands still require approval in both
+/// presets. OpenCode command permissions are glob based and last-match-wins,
+/// so every token gets direct and embedded rules for compound commands.
+const DESTRUCTIVE_BASH: &[&str] = &[
     "rm",
     "rmdir",
     "unlink",
@@ -85,7 +81,11 @@ const DANGEROUS_BASH: &[&str] = &[
     "osascript",
     "diskutil",
     "dd",
-    // Dependency installation.
+];
+
+/// Balanced additionally asks before dependency changes, credential access,
+/// network/remote operations, and paid or cluster execution.
+const BALANCED_BASH: &[&str] = &[
     "pip install",
     "pip3 install",
     "python -m pip install",
@@ -105,7 +105,6 @@ const DANGEROUS_BASH: &[&str] = &[
     "gem install",
     "apt install",
     "apt-get install",
-    // Credentials, remote connections/uploads, and paid/cluster tools.
     "env",
     "printenv",
     "security",
@@ -125,13 +124,17 @@ const DANGEROUS_BASH: &[&str] = &[
     "kubectl",
 ];
 
-fn prior_balanced_permission() -> Value {
+fn command_rules(tokens: &[&str], action: &str) -> serde_json::Map<String, Value> {
     let mut bash = serde_json::Map::new();
     bash.insert("*".to_string(), json!("allow"));
-    for token in DANGEROUS_BASH {
-        bash.insert(format!("{token} *"), json!("ask"));
-        bash.insert(format!("* {token} *"), json!("ask"));
+    for token in tokens {
+        bash.insert(format!("{token} *"), json!(action));
+        bash.insert(format!("* {token} *"), json!(action));
     }
+    bash
+}
+
+fn sensitive_shell_rules(bash: &mut serde_json::Map<String, Value>) {
     for pattern in [
         "find * -delete*",
         "* find * -delete*",
@@ -153,6 +156,13 @@ fn prior_balanced_permission() -> Value {
     ] {
         bash.insert(pattern.to_string(), json!("ask"));
     }
+}
+
+fn prior_balanced_permission() -> Value {
+    let mut tokens = DESTRUCTIVE_BASH.to_vec();
+    tokens.extend_from_slice(BALANCED_BASH);
+    let mut bash = command_rules(&tokens, "ask");
+    sensitive_shell_rules(&mut bash);
 
     json!({
         "read": {
@@ -194,12 +204,9 @@ fn prior_manual_approval_permission() -> Value {
     })
 }
 
-fn manual_approval_permission() -> Value {
-    // OpenCode 1.17.13 evaluates permission rules last-match-wins. Keep the
-    // wildcard first so concrete safe workspace operations may opt in below,
-    // while every unrecognised tool ID (including MCP tools) still asks.
-    // `apply_patch` currently gates on `edit`; keep both asks so the pinned
-    // runtime and a future tool-specific gate are covered.
+fn balanced_permission() -> Value {
+    // Root policy requires manual approval for every command, edit, remote
+    // request, and dependency change. Unknown native tools ask by default.
     json!({
         "*": "ask",
         "read": {
@@ -226,26 +233,65 @@ fn manual_approval_permission() -> Value {
     })
 }
 
-/// Exact JSON injected into the child after OpenCode has merged global and
-/// project config. This does not rewrite a user's custom policy at rest.
-pub fn effective_permission_floor_json() -> Result<String, String> {
-    serde_json::to_string(&manual_approval_permission()).map_err(|error| error.to_string())
+fn full_permission() -> Value {
+    // Full Access is workspace-oriented, not approval-off: only native
+    // workspace edits are pre-approved. Commands and remote tools still ask.
+    json!({
+        "*": "ask",
+        "read": {
+            "*": "allow",
+            "*.env": "ask",
+            "*.env.*": "ask",
+            "*.env.example": "allow",
+            "mcp:*": "ask"
+        },
+        "edit": "allow",
+        "apply_patch": "allow",
+        "bash": "ask",
+        "external_directory": "deny",
+        "doom_loop": "ask",
+        "question": "allow",
+        "webfetch": "ask",
+        "websearch": "ask",
+        "mcp": "ask",
+        "skill": "allow"
+    })
 }
 
-fn full_permission() -> Value {
+fn legacy_full_permission() -> Value {
     json!({ "*": "allow" })
+}
+
+fn is_legacy_full(permission: &Value) -> bool {
+    permission == &legacy_full_permission() || permission == &json!({})
+}
+
+/// Exact native JSON injected after global/project config. A custom policy is
+/// preserved on disk but runs under the Balanced overlay until Spark can name
+/// and validate it as a selectable preset.
+pub fn effective_permission_mode(existing: &str) -> Result<&'static str, String> {
+    match permission_mode_of(existing)? {
+        Some(MODE_FULL) => Ok(MODE_FULL),
+        Some(MODE_BALANCED | MODE_CUSTOM) | None => Ok(MODE_BALANCED),
+        Some(_) => unreachable!("permission_mode_of returns only known modes"),
+    }
+}
+
+pub fn effective_permission_floor_json(existing: &str) -> Result<String, String> {
+    let permission = match effective_permission_mode(existing)? {
+        MODE_FULL => full_permission(),
+        MODE_BALANCED => balanced_permission(),
+        _ => unreachable!("effective_permission_mode returns a selectable mode"),
+    };
+    serde_json::to_string(&permission).map_err(|error| error.to_string())
 }
 
 /// Apply an explicit native OpenCode permission preset; unrelated config keys
 /// (providers, models, MCP, user options) are preserved structurally.
 pub fn set_permission_mode(existing: &str, mode: &str) -> Result<String, String> {
     let permission = match mode {
-        MODE_APPROVE => manual_approval_permission(),
-        MODE_FULL => {
-            return Err(
-                "Full Access is a legacy unsafe mode; switch to Manual approval".to_string(),
-            )
-        }
+        MODE_BALANCED => balanced_permission(),
+        MODE_FULL => full_permission(),
         other => return Err(format!("unknown approval mode \"{other}\"")),
     };
     let mut root = parse_config(existing, "existing OpenCode config")?;
@@ -264,13 +310,13 @@ pub fn permission_mode_of(existing: &str) -> Result<Option<&'static str>, String
     let Some(permission) = root.get("permission") else {
         return Ok(None);
     };
-    if permission == &manual_approval_permission()
+    if permission == &balanced_permission()
         || permission == &prior_manual_approval_permission()
         || permission == &prior_balanced_permission()
         || permission == &legacy_approve_permission()
     {
-        Ok(Some(MODE_APPROVE))
-    } else if permission == &full_permission() || permission == &json!({}) {
+        Ok(Some(MODE_BALANCED))
+    } else if permission == &full_permission() || is_legacy_full(permission) {
         Ok(Some(MODE_FULL))
     } else {
         Ok(Some(MODE_CUSTOM))
@@ -278,9 +324,9 @@ pub fn permission_mode_of(existing: &str) -> Result<Option<&'static str>, String
 }
 
 /// Merge the bundled app-private profile into an existing OpenCode config.
-/// Every explicit existing field wins. Permission is seeded when missing, and
-/// exact Spark-owned legacy approve/Balanced/Full Access presets are migrated
-/// to the safe manual-approval policy. Arbitrary custom permission objects win.
+/// Every explicit existing field wins. Permission is seeded when missing;
+/// exact Spark-owned legacy Balanced/manual and Full presets migrate to their
+/// current equivalents. Arbitrary custom permission objects win at rest.
 pub fn merge_profile_defaults(existing: &str, template: &str) -> Result<String, String> {
     let mut root = parse_config(existing, "existing OpenCode config")?;
     let defaults = parse_config(template, "bundled OpenCode profile")?;
@@ -294,15 +340,15 @@ pub fn merge_profile_defaults(existing: &str, template: &str) -> Result<String, 
             None => {
                 root_obj.insert(key.clone(), value.clone());
             }
-            Some(current)
-                if key == "permission"
-                    && (current == &legacy_approve_permission()
-                        || current == &prior_manual_approval_permission()
-                        || current == &prior_balanced_permission()
-                        || current == &full_permission()
-                        || current == &json!({})) =>
-            {
-                root_obj.insert(key.clone(), value.clone());
+            Some(current) if key == "permission" => {
+                if current == &legacy_approve_permission()
+                    || current == &prior_manual_approval_permission()
+                    || current == &prior_balanced_permission()
+                {
+                    root_obj.insert(key.clone(), balanced_permission());
+                } else if is_legacy_full(current) {
+                    root_obj.insert(key.clone(), full_permission());
+                }
             }
             Some(_) => {}
         }
@@ -392,8 +438,8 @@ mod tests {
     }
 
     #[test]
-    fn manual_approval_mode_matches_the_safe_runtime_contract() {
-        let out = set_permission_mode("", MODE_APPROVE).unwrap();
+    fn balanced_mode_requires_approval_for_every_mutation_command_and_remote_tool() {
+        let out = set_permission_mode("", MODE_BALANCED).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["permission"]["*"], "ask");
         assert_eq!(v["permission"]["read"]["*"], "allow");
@@ -418,16 +464,25 @@ mod tests {
     }
 
     #[test]
-    fn new_full_mode_selection_is_rejected() {
-        let error = set_permission_mode("", MODE_FULL).unwrap_err();
-        assert!(error.contains("legacy unsafe mode"));
+    fn full_mode_only_preapproves_workspace_edits() {
+        let out = set_permission_mode("", MODE_FULL).unwrap();
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["permission"]["*"], "ask");
+        assert_eq!(v["permission"]["edit"], "allow");
+        assert_eq!(v["permission"]["apply_patch"], "allow");
+        assert_eq!(v["permission"]["bash"], "ask");
+        assert_eq!(v["permission"]["webfetch"], "ask");
+        assert_eq!(v["permission"]["websearch"], "ask");
+        assert_eq!(v["permission"]["mcp"], "ask");
+        assert_eq!(v["permission"]["external_directory"], "deny");
+        assert_eq!(v["permission"]["read"]["*.env"], "ask");
     }
 
     #[test]
     fn set_permission_mode_preserves_unrelated_keys() {
         let existing =
             r#"{"model":"anthropic/claude","provider":{"openai":{"options":{"apiKey":"k"}}}}"#;
-        let out = set_permission_mode(existing, MODE_APPROVE).unwrap();
+        let out = set_permission_mode(existing, MODE_BALANCED).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["model"], "anthropic/claude");
         assert_eq!(v["provider"]["openai"]["options"]["apiKey"], "k");
@@ -443,8 +498,10 @@ mod tests {
         // Never configured (first run) — profile merging seeds the default.
         assert_eq!(permission_mode_of("").unwrap(), None);
         assert_eq!(permission_mode_of(r#"{"model":"m"}"#).unwrap(), None);
-        let approved = set_permission_mode("", MODE_APPROVE).unwrap();
-        assert_eq!(permission_mode_of(&approved).unwrap(), Some(MODE_APPROVE));
+        let balanced = set_permission_mode("", MODE_BALANCED).unwrap();
+        assert_eq!(permission_mode_of(&balanced).unwrap(), Some(MODE_BALANCED));
+        let full_current = set_permission_mode("", MODE_FULL).unwrap();
+        assert_eq!(permission_mode_of(&full_current).unwrap(), Some(MODE_FULL));
         let full = r#"{"permission":{"*":"allow"}}"#;
         assert_eq!(permission_mode_of(full).unwrap(), Some(MODE_FULL));
         assert_eq!(
@@ -494,7 +551,7 @@ mod tests {
     fn profile_defaults_migrate_exact_legacy_permissions_only() {
         let template = json!({
             "default_agent": "research",
-            "permission": manual_approval_permission(),
+            "permission": balanced_permission(),
         });
         for permission in [
             legacy_approve_permission(),
@@ -509,32 +566,32 @@ mod tests {
             let value: Value = serde_json::from_str(&out).unwrap();
             assert_eq!(value["model"], "keep/me");
             assert_eq!(value["default_agent"], "research");
-            assert_eq!(value["permission"], manual_approval_permission());
+            assert_eq!(value["permission"], balanced_permission());
         }
     }
 
     #[test]
-    fn profile_merge_migrates_legacy_full_access_across_restart() {
+    fn profile_merge_preserves_legacy_full_choice_with_current_safety_edges() {
         let full = r#"{"model":"keep/me","permission":{"*":"allow"}}"#;
         let template = json!({
             "default_agent": "research",
-            "permission": manual_approval_permission(),
+            "permission": balanced_permission(),
         });
         let restarted = merge_profile_defaults(full, &template.to_string()).unwrap();
         let value: Value = serde_json::from_str(&restarted).unwrap();
         assert_eq!(value["model"], "keep/me");
-        assert_eq!(value["permission"], manual_approval_permission());
-        assert_eq!(permission_mode_of(&restarted).unwrap(), Some(MODE_APPROVE));
+        assert_eq!(value["permission"], full_permission());
+        assert_eq!(permission_mode_of(&restarted).unwrap(), Some(MODE_FULL));
     }
 
     #[test]
     fn profile_merge_migrates_legacy_empty_full_across_restart() {
-        let template = json!({"permission": manual_approval_permission()}).to_string();
+        let template = json!({"permission": balanced_permission()}).to_string();
         let existing = json!({"permission": {}}).to_string();
         let merged = merge_profile_defaults(&existing, &template).unwrap();
         let value: Value = serde_json::from_str(&merged).unwrap();
-        assert_eq!(value["permission"], manual_approval_permission());
-        assert_eq!(permission_mode_of(&merged).unwrap(), Some(MODE_APPROVE));
+        assert_eq!(value["permission"], full_permission());
+        assert_eq!(permission_mode_of(&merged).unwrap(), Some(MODE_FULL));
     }
 
     #[test]
@@ -557,7 +614,7 @@ mod tests {
     fn malformed_or_non_object_configs_fail_closed() {
         assert!(merge_profile_defaults("[1]", "{}").is_err());
         assert!(merge_config("[1]", "openai", "secret", "", None).is_err());
-        assert!(set_permission_mode("[1]", MODE_APPROVE).is_err());
+        assert!(set_permission_mode("[1]", MODE_BALANCED).is_err());
         assert!(permission_mode_of("{/* unterminated").is_err());
     }
 
@@ -589,15 +646,27 @@ mod tests {
     }
 
     #[test]
-    fn bundled_profile_permission_matches_the_rust_manual_contract() {
+    fn bundled_profile_and_launch_overlay_match_each_native_preset() {
         let template: Value = serde_json::from_str(include_str!(
             "../../../../runtime/opencode-profile/opencode.json"
         ))
         .unwrap();
-        assert_eq!(template["permission"], manual_approval_permission());
+        assert_eq!(template["permission"], balanced_permission());
         assert_eq!(
-            serde_json::from_str::<Value>(&effective_permission_floor_json().unwrap()).unwrap(),
-            manual_approval_permission()
+            serde_json::from_str::<Value>(&effective_permission_floor_json("{}").unwrap()).unwrap(),
+            balanced_permission()
+        );
+        let full = set_permission_mode("{}", MODE_FULL).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&effective_permission_floor_json(&full).unwrap())
+                .unwrap(),
+            full_permission()
+        );
+        let custom = r#"{"permission":{"bash":"deny"}}"#;
+        assert_eq!(
+            serde_json::from_str::<Value>(&effective_permission_floor_json(custom).unwrap())
+                .unwrap(),
+            balanced_permission()
         );
     }
 }

@@ -52,9 +52,12 @@ export interface ComposerCommand {
   source?: string;
 }
 
-/** Spark's only selectable approval preset. Legacy Full Access and external
- *  custom policies remain visible so the user can restore this safe default. */
-const APPROVAL_OPTIONS = [{ mode: "approve", icon: Hand }] as const;
+/** Native OpenCode permission presets. Custom policies remain visible but are
+ * report-only until the user selects one of these named contracts. */
+const APPROVAL_OPTIONS = [
+  { mode: "balanced", icon: Hand },
+  { mode: "full", icon: Zap },
+] as const;
 
 /**
  * The "Ask anything" composer. Static mock sessions pass no `onSend`; the live
@@ -91,8 +94,7 @@ export function Composer({
   onStop?: () => void;
   /** Defaults to `t("composer.placeholder.default")` ("Ask anything"). */
   placeholder?: string;
-  /** The approval control shows only when the live surface can restore Spark's
-   *  manual-approval preset; static mock sessions omit it. */
+  /** The native permission control is present only on live OpenCode sessions. */
   approvalMode?: ApprovalMode;
   onApprovalModeChange?: (mode: ApprovalMode) => void;
   /** Runtime-backed General Research mode/agent/model controls. */
@@ -103,9 +105,9 @@ export function Composer({
   // Approval-mode copy keyed by mode — APPROVAL_OPTIONS itself stays static
   // (icons only) so it can live at module scope outside the component.
   const approvalCopy: Record<ApprovalMode, { label: string; description: string }> = {
-    approve: {
-      label: t("composer.approval.approve.label"),
-      description: t("composer.approval.approve.description"),
+    balanced: {
+      label: t("composer.approval.balanced.label"),
+      description: t("composer.approval.balanced.description"),
     },
     full: {
       label: t("composer.approval.full.label"),
@@ -513,13 +515,9 @@ export function Composer({
                 <div className="px-2 pb-1 pt-1.5 text-xs text-muted">
                   {t("composer.approval.menuTitle")}
                 </div>
-                {approvalMode !== "approve" && (
+                {approvalMode === "custom" && (
                   <div className="flex items-start gap-2 rounded-input bg-surface-2 px-2 py-1.5">
-                    {approvalMode === "full" ? (
-                      <Zap size={13} className="mt-0.5 shrink-0 text-warn" />
-                    ) : (
-                      <SlidersHorizontal size={13} className="mt-0.5 shrink-0 text-warn" />
-                    )}
+                    <SlidersHorizontal size={13} className="mt-0.5 shrink-0 text-warn" />
                     <span className="min-w-0 flex-1">
                       <span className="block text-xs text-text">{approvalCopy[approvalMode].label}</span>
                       <span className="block text-xs text-muted">
@@ -560,7 +558,7 @@ export function Composer({
               title={t("composer.approval.title")}
               className={cn(
                 "flex h-7 items-center gap-1.5 rounded-full px-2.5 text-xs hover:bg-surface-2 hover:text-text",
-                approvalMode === "approve" ? "text-muted" : "text-warn",
+                approvalMode === "balanced" ? "text-muted" : "text-warn",
               )}
               onClick={() => setApprovalOpen((o) => !o)}
             >

@@ -122,10 +122,9 @@ interface RuntimeState {
   defaultModel: string | null;
   /** Apply a new default model and transparently reconnect (see impl). */
   setDefaultModel: (model: string) => Promise<void>;
-  /** Native approval state. `full` and `custom` are report-only legacy/user
-   *  states; only the safe `approve` policy can be selected and persisted. */
+  /** Native OpenCode permission preset; custom policies are report-only. */
   approvalMode: ApprovalMode;
-  /** Persist the safe manual-approval policy (restarts and reconnects). */
+  /** Persist Balanced or Full Access (restarts and reconnects). */
   setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   /** Persist the network-proxy setting (restarts the sidecar) and reconnect. */
   setProxySetting: (mode: ProxyMode, url: string) => Promise<void>;
@@ -809,7 +808,7 @@ function clearEndpointNamespace(): void {
     selectedAgent: null,
     commands: [],
     defaultModel: null,
-    approvalMode: "approve",
+    approvalMode: "balanced",
     error: null,
     questions: [],
     permissions: [],
@@ -1135,7 +1134,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   selectedAgent: savedAgent(),
   commands: [],
   defaultModel: null,
-  approvalMode: "approve",
+  approvalMode: "balanced",
   tools: [],
   hiddenExamples: initialHidden(),
   error: null,
@@ -1302,16 +1301,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   setApprovalMode: async (mode) => {
     if (!RUNTIME_POLICY.allowApprovalModeChanges) {
       set({
-        approvalMode: "approve",
+        approvalMode: "balanced",
         error: "Approval mode changes are disabled by the runtime policy.",
       });
       return;
     }
-    if (mode !== "approve") {
+    if (mode === "custom") {
       const error = new Error(
-        mode === "full"
-          ? "Full Access is a legacy unsafe mode; switch to Manual approval."
-          : "Custom approval policies are report-only and cannot be selected in Spark Agent.",
+        "Custom permission policies are report-only and cannot be selected in Spark Agent.",
       );
       set({ error: error.message });
       throw error;
@@ -1408,7 +1405,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // Scope skill discovery to the sidecar's workspace (null in browser dev).
     const [directory, configuredApprovalMode] = await Promise.all([
       workspacePath(),
-      loadApprovalMode().catch(() => "approve" as const),
+      loadApprovalMode().catch(() => "balanced" as const),
     ]);
     if (activeOperation !== connectionGeneration) return;
     set({

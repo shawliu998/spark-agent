@@ -407,16 +407,6 @@ export function LiveSessionPage() {
             {connected && executionMode === "general" && isEmpty && !sessionId && (
               <WorkflowStarters onPick={(p) => void onSend(p)} />
             )}
-            {executionMode === "sandbox" && (
-              <div className="rounded-card border border-warn/30 bg-warn/10 px-4 py-3">
-                <div className="text-sm font-medium text-text">
-                  {t("workspaceArtifacts.sandboxTitle")}
-                </div>
-                <p className="mt-1 text-xs text-muted">
-                  {t("workspaceArtifacts.sandboxBody")}
-                </p>
-              </div>
-            )}
             {historyLoading && <ThreadSkeleton />}
             {!historyLoading && thread && <BlockList blocks={thread.blocks} handlers={handlers} />}
             {working && (

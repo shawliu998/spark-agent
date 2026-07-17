@@ -56,13 +56,14 @@ describe("ResearchSessionControls", () => {
       target: { value: "openrouter/openai/gpt-5" },
     });
     fireEvent.change(screen.getByLabelText("Execution mode"), {
-      target: { value: "sandbox" },
+      target: { value: "verified" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Open research skills" }));
 
     expect(onAgentChange).toHaveBeenCalledWith("critique");
     expect(onModelChange).toHaveBeenCalledWith("openrouter/openai/gpt-5");
-    expect(onModeChange).toHaveBeenCalledWith("sandbox");
+    expect(onModeChange).toHaveBeenCalledWith("verified");
+    expect(screen.queryByRole("option", { name: /sandbox/i })).not.toBeInTheDocument();
     expect(onOpenSkills).toHaveBeenCalledOnce();
   });
 

@@ -20,9 +20,9 @@ afterEach(() => useRuntimeStore.setState(RUNTIME_DEFAULTS));
 
 describe("Composer strings (i18n)", () => {
   it("renders the default placeholder with the manual-approval control", () => {
-    render(<Composer onSend={() => {}} approvalMode="approve" onApprovalModeChange={() => {}} />);
+    render(<Composer onSend={() => {}} approvalMode="balanced" onApprovalModeChange={() => {}} />);
     expect(screen.getByPlaceholderText("Ask anything")).toBeInTheDocument();
-    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Manual approval");
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Balanced");
   });
 });
 

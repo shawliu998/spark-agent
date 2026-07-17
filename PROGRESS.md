@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 14:35 · feat(openscience-client-parity): completed Foundation Phase 1 with General Research defaulting to native Balanced/Full Access permission presets, removed the fake Sandbox choice, kept Verified separate from science-core-free General sessions, and refreshed the preserved upstream audit at OpenScience `e9844a4`; 173 focused Desktop, 16 Rust preset, 8 Python profile tests, and TypeScript pass, while strengthened `/agent` bypass tests produced the expected fail-closed rejection but the final assertion-text rerun was skipped by instruction, and packaged preset switching plus hard workspace confinement remain open.
+
 2026-07-17 14:24 · feat(openscience-parity-batch1): integrated the folder-backed Home/onboarding shell and deterministic synthetic research demo, retargeted the bundled demo action/resource to `examples/research-demo`, and aligned its portable metadata with project schema v1; 7 focused Desktop tests, Desktop typecheck, 5 project Rust tests, demo, JSON, Rust formatting, and diff checks pass.
 
 2026-07-17 14:15 · fix(client-shell): restored New Session navigation, added last-session project resume, six General Research templates, and schema-v1 id/workspacePath migration; formatting, JSON, and diff checks pass, while Rust tests remain blocked before compilation by the missing bundled OpenCode sidecar resource.

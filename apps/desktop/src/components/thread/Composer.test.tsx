@@ -278,28 +278,30 @@ describe("approval mode switch", () => {
     expect(screen.queryByLabelText("Approval mode")).toBeNull();
   });
 
-  it("offers only the manual-approval preset", () => {
+  it("offers Balanced and Full Access as native presets", () => {
     const onChange = vi.fn();
-    render(<Composer onSend={vi.fn()} approvalMode="approve" onApprovalModeChange={onChange} />);
+    render(<Composer onSend={vi.fn()} approvalMode="balanced" onApprovalModeChange={onChange} />);
     fireEvent.click(screen.getByLabelText("Approval mode"));
     const options = screen.getAllByRole("menuitemradio");
-    expect(options).toHaveLength(1);
-    expect(options[0]).toHaveTextContent("Manual approval");
-    expect(screen.queryByText("Legacy Full Access")).toBeNull();
-    fireEvent.mouseDown(options[0]!);
-    expect(onChange).not.toHaveBeenCalled();
+    expect(options).toHaveLength(2);
+    expect(options[0]).toHaveTextContent("Balanced");
+    expect(options[1]).toHaveTextContent("Full Access");
+    fireEvent.mouseDown(options[1]!);
+    expect(onChange).toHaveBeenCalledWith("full");
   });
 
-  it("shows legacy Full Access only as a warning with manual remediation", () => {
+  it("states that Full Access keeps command and remote approvals enabled", () => {
     const onChange = vi.fn();
     render(<Composer onSend={vi.fn()} approvalMode="full" onApprovalModeChange={onChange} />);
-    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Legacy Full Access");
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Full Access");
     fireEvent.click(screen.getByLabelText("Approval mode"));
-    expect(screen.getByText("Unsafe legacy mode; switch to Manual approval")).toBeInTheDocument();
+    expect(
+      screen.getByText(/commands, network, installs, and deletion still ask/i),
+    ).toBeInTheDocument();
     const options = screen.getAllByRole("menuitemradio");
-    expect(options).toHaveLength(1);
+    expect(options).toHaveLength(2);
     fireEvent.mouseDown(options[0]!);
-    expect(onChange).toHaveBeenCalledWith("approve");
+    expect(onChange).toHaveBeenCalledWith("balanced");
   });
 
   it("shows an external custom policy without offering it as a Spark preset", () => {
@@ -308,11 +310,11 @@ describe("approval mode switch", () => {
     expect(screen.getByLabelText("Approval mode")).toHaveTextContent("External custom policy");
     fireEvent.click(screen.getByLabelText("Approval mode"));
     expect(
-      screen.getByText("Not managed by Spark; switch to Manual approval to restore the safe default"),
+      screen.getByText(/Not managed by Spark; choose Balanced or Full Access/i),
     ).toBeInTheDocument();
     const options = screen.getAllByRole("menuitemradio");
-    expect(options).toHaveLength(1);
+    expect(options).toHaveLength(2);
     fireEvent.mouseDown(options[0]!);
-    expect(onChange).toHaveBeenCalledWith("approve");
+    expect(onChange).toHaveBeenCalledWith("balanced");
   });
 });

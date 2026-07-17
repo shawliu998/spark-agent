@@ -74,28 +74,23 @@ export async function importOpenCodeLogin(): Promise<ImportOpenCodeLoginResult> 
   return invoke<ImportOpenCodeLoginResult>("import_opencode_login");
 }
 
-/** Persisted approval state reported by the bundled OpenCode runtime. Custom
- * means a user-authored policy that Spark preserves but cannot summarize as a
- * built-in preset. Full and custom are report-only; only approve is writable. */
-export type ApprovalMode = "approve" | "full" | "custom";
+/** Persisted native OpenCode permission state. Custom means a user-authored
+ * policy that Spark preserves but cannot summarize as a built-in preset. */
+export type ApprovalMode = "balanced" | "full" | "custom";
 
-/** The approval mode OpenCode's config currently holds ("approve" until changed). */
+/** The permission preset OpenCode's config currently holds (Balanced by default). */
 export async function getApprovalMode(): Promise<ApprovalMode> {
-  if (!isTauri) return "approve";
+  if (!isTauri) return "balanced";
   const { invoke } = await import("@tauri-apps/api/core");
   const mode = await invoke<string>("get_approval_mode");
-  if (mode === "approve" || mode === "full" || mode === "custom") return mode;
+  if (mode === "balanced" || mode === "full" || mode === "custom") return mode;
   throw new Error(`Unsupported approval mode returned by the runtime: ${mode}`);
 }
 
 /** Switch the approval mode; the sidecar restarts — the caller must reconnect. */
 export async function setApprovalMode(mode: ApprovalMode): Promise<RuntimeRestartResult> {
-  if (mode !== "approve") {
-    throw new Error(
-      mode === "full"
-        ? "Full Access is a legacy unsafe mode; switch to Manual approval."
-        : "Custom approval policies are report-only and cannot be selected in Spark Agent.",
-    );
+  if (mode === "custom") {
+    throw new Error("Custom permission policies are report-only and cannot be selected in Spark Agent.");
   }
   if (!isTauri) return { runtimeUrl: null };
   const { invoke } = await import("@tauri-apps/api/core");

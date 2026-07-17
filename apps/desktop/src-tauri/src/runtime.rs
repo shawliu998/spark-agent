@@ -2359,11 +2359,32 @@ fn require_not_allowed(
     }
 }
 
-fn validate_resolved_agents(agents: &[ResolvedAgent], truncate_glob: &str) -> Result<(), String> {
+fn require_allowed(agent: &ResolvedAgent, permission: &str, pattern: &str) -> Result<(), String> {
+    match resolved_permission_action(&agent.permission, permission, pattern) {
+        Some("allow") => Ok(()),
+        Some(action) => Err(format!(
+            "agent {:?} resolves {permission:?} {pattern:?} to {action:?}, expected allow",
+            agent.name
+        )),
+        None => Err(format!(
+            "agent {:?} has no resolved rule for {permission:?} {pattern:?}",
+            agent.name
+        )),
+    }
+}
+
+fn validate_resolved_agents(agents: &[ResolvedAgent], permission_mode: &str) -> Result<(), String> {
     if agents.is_empty() {
         return Err("OpenCode returned no resolved agents".into());
     }
-    let normalized_truncate = truncate_glob.replace('\\', "/");
+    if !matches!(
+        permission_mode,
+        crate::opencode_config::MODE_BALANCED | crate::opencode_config::MODE_FULL
+    ) {
+        return Err(format!(
+            "unsupported effective permission mode {permission_mode:?}"
+        ));
+    }
     for agent in agents {
         for rule in &agent.permission {
             if !matches!(rule.action.as_str(), "allow" | "ask" | "deny") {
@@ -2375,8 +2396,10 @@ fn validate_resolved_agents(agents: &[ResolvedAgent], truncate_glob: &str) -> Re
         }
 
         // OPENCODE_PERMISSION is merged after project/global config. Agent
-        // frontmatter is appended later, so this exact wildcard ask is the
-        // boundary after which only explicitly safe allowances may appear.
+        // frontmatter is appended later, so reject any appended allowance
+        // outside the small preset-specific safe set. This catches specific
+        // command, remote, MCP, and unknown-tool bypasses without treating
+        // Full Access's explicit workspace edit allowance as approval-off.
         let floor_index = agent
             .permission
             .iter()
@@ -2387,18 +2410,17 @@ fn validate_resolved_agents(agents: &[ResolvedAgent], truncate_glob: &str) -> Re
                     agent.name
                 )
             })?;
-
-        for (index, rule) in agent.permission.iter().enumerate() {
-            if index <= floor_index || rule.action != "allow" {
+        for rule in agent.permission.iter().skip(floor_index + 1) {
+            if rule.action != "allow" {
                 continue;
             }
             let safe_workspace_permission = matches!(
                 rule.permission.as_str(),
                 "read" | "glob" | "grep" | "list" | "lsp" | "question" | "skill" | "task"
             );
-            let pinned_truncate_exception = rule.permission == "external_directory"
-                && rule.pattern.replace('\\', "/") == normalized_truncate;
-            if !safe_workspace_permission && !pinned_truncate_exception {
+            let full_workspace_edit = permission_mode == crate::opencode_config::MODE_FULL
+                && matches!(rule.permission.as_str(), "edit" | "apply_patch");
+            if !safe_workspace_permission && !full_workspace_edit {
                 return Err(format!(
                     "agent {:?} appends an unsafe allow after the approval floor: permission {:?}, pattern {:?}",
                     agent.name, rule.permission, rule.pattern
@@ -2445,9 +2467,10 @@ fn validate_resolved_agents(agents: &[ResolvedAgent], truncate_glob: &str) -> Re
         }
 
         for (permission, pattern) in [
-            ("bash", "*"),
-            ("edit", "*"),
-            ("apply_patch", "*"),
+            ("bash", "pwd"),
+            ("bash", "rm -rf output"),
+            ("bash", "pip install pandas"),
+            ("bash", "curl https://example.com"),
             ("webfetch", "*"),
             ("websearch", "*"),
             ("mcp", "*"),
@@ -2480,24 +2503,28 @@ fn validate_resolved_agents(agents: &[ResolvedAgent], truncate_glob: &str) -> Re
             }
         }
     }
+
+    let research = agents
+        .iter()
+        .find(|agent| agent.name == "research")
+        .ok_or_else(|| "OpenCode returned no research agent".to_string())?;
+    if permission_mode == crate::opencode_config::MODE_FULL {
+        for (permission, pattern) in [("edit", "report.md"), ("apply_patch", "report.md")] {
+            require_allowed(research, permission, pattern)?;
+        }
+    } else {
+        for (permission, pattern) in [("edit", "report.md"), ("apply_patch", "report.md")] {
+            require_not_allowed(research, permission, pattern)?;
+        }
+    }
     Ok(())
 }
 
-fn truncation_glob(app: &AppHandle) -> Result<String, String> {
-    Ok(runtime_root(app)?
-        .join("xdg-data")
-        .join("opencode")
-        .join("tool-output")
-        .join("*")
-        .to_string_lossy()
-        .to_string())
-}
-
 fn validate_runtime_permission_floor(
-    app: &AppHandle,
     port: u16,
     workspace: &Path,
     timeout: Duration,
+    permission_mode: &str,
 ) -> Result<(), String> {
     let mut url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/agent"))
         .map_err(|error| format!("could not build OpenCode agent URL: {error}"))?;
@@ -2525,7 +2552,7 @@ fn validate_runtime_permission_floor(
     }
     let agents: Vec<ResolvedAgent> = serde_json::from_str(&body)
         .map_err(|error| format!("invalid OpenCode agent permission response: {error}"))?;
-    validate_resolved_agents(&agents, &truncation_glob(app)?)
+    validate_resolved_agents(&agents, permission_mode)
         .map_err(|error| format!("OpenCode permission floor rejected the workspace: {error}"))
 }
 
@@ -2656,7 +2683,7 @@ fn spawn_sidecar(
     // lifecycle is held by every caller before this function acquires config.
     // Keep config locked only through profile preparation and process spawn;
     // readiness may legitimately wait on a macOS TCC prompt for minutes.
-    let (mut events, process) = {
+    let (mut events, process, permission_mode) = {
         let _config_guard = state.config.lock().unwrap();
         let root = runtime_root(app)?;
         let cfg = root.join("xdg-config");
@@ -2705,7 +2732,11 @@ fn spawn_sidecar(
             crate::science_mcp::managed_connector_execution_enabled(),
             &write_private_atomic,
         )?;
-        let permission_floor = crate::opencode_config::effective_permission_floor_json()?;
+        let permission_config = read_optional_config(&cfg_file)?;
+        let permission_mode =
+            crate::opencode_config::effective_permission_mode(&permission_config)?;
+        let permission_floor =
+            crate::opencode_config::effective_permission_floor_json(&permission_config)?;
         // OAuth and non-secret connector state still live under the private
         // runtime root. Repair owner-only access on every start.
         tighten_private(&root);
@@ -2769,8 +2800,10 @@ fn spawn_sidecar(
         for (key, value) in provider_env {
             cmd = cmd.env(key, value);
         }
-        cmd.spawn()
-            .map_err(|e| format!("failed to spawn opencode: {e}"))?
+        let (events, process) = cmd
+            .spawn()
+            .map_err(|e| format!("failed to spawn opencode: {e}"))?;
+        (events, process, permission_mode)
     };
 
     let pid = process.pid();
@@ -2838,10 +2871,10 @@ fn spawn_sidecar(
         Err(SIDECAR_START_TIMEOUT_ERROR.into())
     } else {
         validate_runtime_permission_floor(
-            app,
             port,
             &workspace_dir(app)?,
             remaining.min(SIDECAR_POLICY_TIMEOUT),
+            permission_mode,
         )
     };
     if let Err(policy_error) = policy_validation {
@@ -3233,7 +3266,14 @@ pub fn set_workspace(
                 .lock()
                 .unwrap()
                 .ok_or("OpenCode runtime has no published port")?;
-            validate_runtime_permission_floor(&app, port, &canon, SIDECAR_POLICY_TIMEOUT)?;
+            let config = read_optional_config(&effective_config_file(&app)?)?;
+            let permission_mode = crate::opencode_config::effective_permission_mode(&config)?;
+            validate_runtime_permission_floor(
+                port,
+                &canon,
+                SIDECAR_POLICY_TIMEOUT,
+                permission_mode,
+            )?;
         }
 
         // Startup/profile mutations use the same lock. Publish the workspace
@@ -3313,7 +3353,9 @@ pub fn validate_runtime_permissions(
             .lock()
             .unwrap()
             .ok_or("OpenCode runtime has no published port")?;
-        validate_runtime_permission_floor(&app, port, &requested, SIDECAR_POLICY_TIMEOUT)
+        let config = read_optional_config(&effective_config_file(&app)?)?;
+        let permission_mode = crate::opencode_config::effective_permission_mode(&config)?;
+        validate_runtime_permission_floor(port, &requested, SIDECAR_POLICY_TIMEOUT, permission_mode)
     })
 }
 
@@ -3922,11 +3964,12 @@ mod tests {
         assert!(sdk_types.lines().any(|line| line == expected_declaration));
     }
 
-    fn resolved_agents_with(extra_rules: Vec<serde_json::Value>) -> Vec<ResolvedAgent> {
-        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
+    fn resolved_research_agent(
+        permission_mode: &str,
+        extra_rules: Vec<serde_json::Value>,
+    ) -> Vec<ResolvedAgent> {
         let mut rules = vec![
             serde_json::json!({"permission":"*","pattern":"*","action":"allow"}),
-            serde_json::json!({"permission":"*","pattern":"*","action":"ask"}),
             serde_json::json!({"permission":"read","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"read","pattern":"*.env","action":"ask"}),
             serde_json::json!({"permission":"read","pattern":"*.env.*","action":"ask"}),
@@ -3939,19 +3982,42 @@ mod tests {
             serde_json::json!({"permission":"question","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"skill","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"task","pattern":"*","action":"allow"}),
-            serde_json::json!({"permission":"edit","pattern":"*","action":"ask"}),
-            serde_json::json!({"permission":"apply_patch","pattern":"*","action":"ask"}),
-            serde_json::json!({"permission":"bash","pattern":"*","action":"ask"}),
-            serde_json::json!({"permission":"webfetch","pattern":"*","action":"ask"}),
-            serde_json::json!({"permission":"websearch","pattern":"*","action":"ask"}),
+            serde_json::json!({"permission":"edit","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"apply_patch","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"bash","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"external_directory","pattern":"*","action":"deny"}),
         ];
+        if permission_mode == crate::opencode_config::MODE_BALANCED {
+            rules.extend([
+                serde_json::json!({"permission":"*","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"edit","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"apply_patch","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"webfetch","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"websearch","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"mcp","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"external_directory","pattern":"*","action":"deny"}),
+            ]);
+        } else {
+            rules.extend([
+                serde_json::json!({"permission":"*","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"edit","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"apply_patch","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"bash","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"webfetch","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"websearch","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"mcp","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"external_directory","pattern":"*","action":"deny"}),
+            ]);
+        }
+        rules.extend([
+            serde_json::json!({"permission":"read","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"read","pattern":"*.env","action":"ask"}),
+            serde_json::json!({"permission":"read","pattern":"*.env.*","action":"ask"}),
+            serde_json::json!({"permission":"read","pattern":"*.env.example","action":"allow"}),
+            serde_json::json!({"permission":"read","pattern":"mcp:*","action":"ask"}),
+        ]);
         rules.extend(extra_rules);
-        rules.push(serde_json::json!({
-            "permission":"external_directory",
-            "pattern":truncate,
-            "action":"allow"
-        }));
         serde_json::from_value(serde_json::json!([{
             "name": "research",
             "permission": rules
@@ -3960,30 +4026,37 @@ mod tests {
     }
 
     #[test]
-    fn resolved_agent_floor_accepts_safe_and_more_restrictive_rules() {
-        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
-        validate_resolved_agents(&resolved_agents_with(Vec::new()), truncate).unwrap();
+    fn resolved_agent_validation_accepts_balanced_and_full_native_policies() {
         validate_resolved_agents(
-            &resolved_agents_with(vec![
-                serde_json::json!({"permission":"bash","pattern":"*","action":"deny"}),
-                serde_json::json!({"permission":"*","pattern":"*","action":"deny"}),
-            ]),
-            truncate,
+            &resolved_research_agent(crate::opencode_config::MODE_BALANCED, Vec::new()),
+            crate::opencode_config::MODE_BALANCED,
+        )
+        .unwrap();
+        validate_resolved_agents(
+            &resolved_research_agent(crate::opencode_config::MODE_FULL, Vec::new()),
+            crate::opencode_config::MODE_FULL,
         )
         .unwrap();
     }
 
     #[test]
-    fn resolved_agent_floor_rejects_late_high_risk_and_concrete_tool_allows() {
-        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
-        for permission in ["bash", "edit", "webfetch", "paper-search_search_crossref"] {
+    fn balanced_validation_rejects_late_network_unknown_and_dangerous_allows() {
+        for (permission, pattern) in [
+            ("bash", "rm *"),
+            ("bash", "pip install *"),
+            ("webfetch", "*"),
+            ("spark-policy-unknown-tool", "*"),
+        ] {
             let error = validate_resolved_agents(
-                &resolved_agents_with(vec![serde_json::json!({
-                    "permission": permission,
-                    "pattern": "*",
-                    "action": "allow"
-                })]),
-                truncate,
+                &resolved_research_agent(
+                    crate::opencode_config::MODE_BALANCED,
+                    vec![serde_json::json!({
+                        "permission": permission,
+                        "pattern": pattern,
+                        "action": "allow"
+                    })],
+                ),
+                crate::opencode_config::MODE_BALANCED,
             )
             .unwrap_err();
             assert!(error.contains("unsafe allow"), "{permission}: {error}");
@@ -3991,24 +4064,51 @@ mod tests {
     }
 
     #[test]
-    fn resolved_agent_floor_rejects_sensitive_read_and_external_bypasses() {
-        let truncate = "/private/runtime/xdg-data/opencode/tool-output/*";
+    fn full_validation_rejects_approval_off_for_commands_and_remote_tools() {
+        for (permission, pattern) in [
+            ("bash", "*"),
+            ("webfetch", "*"),
+            ("websearch", "*"),
+            ("mcp", "*"),
+        ] {
+            let error = validate_resolved_agents(
+                &resolved_research_agent(
+                    crate::opencode_config::MODE_FULL,
+                    vec![serde_json::json!({
+                        "permission": permission,
+                        "pattern": pattern,
+                        "action": "allow"
+                    })],
+                ),
+                crate::opencode_config::MODE_FULL,
+            )
+            .unwrap_err();
+            assert!(error.contains("unsafe allow"), "{permission}: {error}");
+        }
+    }
+
+    #[test]
+    fn resolved_agent_validation_rejects_sensitive_read_and_external_bypasses() {
         let read_error = validate_resolved_agents(
-            &resolved_agents_with(vec![
-                serde_json::json!({"permission":"read","pattern":"*","action":"allow"}),
-            ]),
-            truncate,
+            &resolved_research_agent(
+                crate::opencode_config::MODE_BALANCED,
+                vec![serde_json::json!({"permission":"read","pattern":"*","action":"allow"})],
+            ),
+            crate::opencode_config::MODE_BALANCED,
         )
         .unwrap_err();
         assert!(read_error.contains("read allow after the sensitive-file floor"));
 
         let external_error = validate_resolved_agents(
-            &resolved_agents_with(vec![serde_json::json!({
-                "permission":"external_directory",
-                "pattern":"/tmp/*",
-                "action":"allow"
-            })]),
-            truncate,
+            &resolved_research_agent(
+                crate::opencode_config::MODE_BALANCED,
+                vec![serde_json::json!({
+                    "permission":"external_directory",
+                    "pattern":"*",
+                    "action":"allow"
+                })],
+            ),
+            crate::opencode_config::MODE_BALANCED,
         )
         .unwrap_err();
         assert!(external_error.contains("unsafe allow"));
@@ -5649,15 +5749,14 @@ fn remove_key_from_config(text: &str, section: &str, key: &str) -> Result<String
     serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())
 }
 
-/// Report an exact persisted policy. Legacy Full Access and arbitrary custom
-/// policies remain distinguishable for warning/remediation; only Manual
-/// approval is writable through Spark Agent.
+/// Report an exact persisted native preset. Arbitrary custom policies remain
+/// distinguishable and are preserved at rest.
 #[tauri::command]
 pub fn get_approval_mode(app: AppHandle) -> Result<String, String> {
     let path = effective_config_file(&app)?;
     let existing = read_optional_config(&path)?;
     Ok(crate::opencode_config::permission_mode_of(&existing)?
-        .unwrap_or(crate::opencode_config::MODE_APPROVE)
+        .unwrap_or(crate::opencode_config::MODE_BALANCED)
         .to_string())
 }
 

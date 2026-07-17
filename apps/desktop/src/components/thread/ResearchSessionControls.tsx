@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import type { AgentInfo, ProviderInfo } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
 
-export type ResearchExecutionMode = "general" | "sandbox" | "verified";
+export type ResearchExecutionMode = "general" | "verified";
 
 export interface RuntimeModelOption {
   value: string;
@@ -95,7 +95,6 @@ export function ResearchSessionControls({
           className={cn(selectClass, "max-w-[132px]")}
         >
           <option value="general">{t("researchControls.mode.general")}</option>
-          <option value="sandbox">{t("researchControls.mode.sandbox")}</option>
           <option value="verified">{t("researchControls.mode.verified")}</option>
         </select>
         <ChevronDown

@@ -40,18 +40,18 @@
       "aria": "审批模式",
       "title": "代理操作如何获得批准",
       "menuAria": "审批模式",
-      "menuTitle": "Spark 操作必须手动审批",
-      "approve": {
-        "label": "手动审批",
-        "description": "每条 Shell 命令、补丁应用和网页请求执行前均会询问"
+      "menuTitle": "选择 OpenCode 原生权限预设",
+      "balanced": {
+        "label": "均衡",
+        "description": "允许读取和搜索；编辑、命令、网络及 MCP 操作均会询问"
       },
       "full": {
-        "label": "旧版完全访问",
-        "description": "不安全的旧版模式；请切换到手动审批"
+        "label": "完全访问",
+        "description": "预先允许工作区编辑；命令、网络、安装和删除仍会询问"
       },
       "custom": {
         "label": "外部自定义策略",
-        "description": "不由 Spark 管理；请切换到手动审批以恢复安全默认值"
+        "description": "不由 Spark 管理；请选择均衡或完全访问预设"
       }
     },
     "error": {
@@ -65,14 +65,13 @@
     "cleared": "聊天记录已清空。文件内容仍保留在同一个文件夹下。"
   },
   "researchControls": {
-    "mode": { "aria": "执行模式", "general": "通用研究", "sandbox": "沙盒研究", "verified": "验证工作流" },
+    "mode": { "aria": "执行模式", "general": "通用研究", "verified": "验证工作流" },
     "agent": { "aria": "科研 Agent", "empty": "没有可用 Agent", "primaryGroup": "主要 Agent", "subagentGroup": "子 Agent", "otherGroup": "其他 Agent" },
     "model": { "aria": "模型", "empty": "没有可用模型" },
     "skills": { "aria": "打开科研技能", "title": "浏览 OpenCode 返回的技能", "count": "{{count}} 个技能" }
   },
   "workspaceArtifacts": {
-    "heading": "工作区产物", "count": "已发现 {{count}} 个", "refreshAria": "刷新工作区产物",
-    "sandboxTitle": "尚未配置沙盒研究运行时。", "sandboxBody": "请选择通用研究直接使用 OpenCode，或选择验证工作流。"
+    "heading": "工作区产物", "count": "已发现 {{count}} 个", "refreshAria": "刷新工作区产物"
   },
   "starters": {
     "newSession": "新建会话",

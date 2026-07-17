@@ -40,18 +40,18 @@
       "aria": "Approval mode",
       "title": "How agent actions get approved",
       "menuAria": "Approval modes",
-      "menuTitle": "Spark actions require manual approval",
-      "approve": {
-        "label": "Manual approval",
-        "description": "Asks before every shell command, patch application, and web request"
+      "menuTitle": "Choose a native OpenCode permission preset",
+      "balanced": {
+        "label": "Balanced",
+        "description": "Reads and searches freely; asks before edits, commands, web requests, and MCP tools"
       },
       "full": {
-        "label": "Legacy Full Access",
-        "description": "Unsafe legacy mode; switch to Manual approval"
+        "label": "Full Access",
+        "description": "Pre-approves workspace edits; commands, network, installs, and deletion still ask"
       },
       "custom": {
         "label": "External custom policy",
-        "description": "Not managed by Spark; switch to Manual approval to restore the safe default"
+        "description": "Not managed by Spark; choose Balanced or Full Access to use a named native preset"
       }
     },
     "error": {
@@ -65,14 +65,13 @@
     "cleared": "Chat context cleared. Files stay in the same folder."
   },
   "researchControls": {
-    "mode": { "aria": "Execution mode", "general": "General Research", "sandbox": "Sandbox Research", "verified": "Verified Workflows" },
+    "mode": { "aria": "Execution mode", "general": "General Research", "verified": "Verified Workflows" },
     "agent": { "aria": "Research agent", "empty": "No agents available", "primaryGroup": "Primary agents", "subagentGroup": "Sub-agents", "otherGroup": "Other agents" },
     "model": { "aria": "Model", "empty": "No models available" },
     "skills": { "aria": "Open research skills", "title": "Browse skills reported by OpenCode", "count": "{{count}} skills" }
   },
   "workspaceArtifacts": {
-    "heading": "Workspace artifacts", "count": "{{count}} discovered", "refreshAria": "Refresh workspace artifacts",
-    "sandboxTitle": "Sandbox Research is not configured yet.", "sandboxBody": "Choose General Research to use OpenCode now, or Verified Workflows for a structured workflow."
+    "heading": "Workspace artifacts", "count": "{{count}} discovered", "refreshAria": "Refresh workspace artifacts"
   },
   "starters": {
     "newSession": "New session",
