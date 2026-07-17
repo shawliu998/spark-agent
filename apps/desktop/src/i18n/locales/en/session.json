@@ -80,6 +80,17 @@
     },
     "skills": { "aria": "Open research skills", "title": "Browse skills reported by OpenCode", "count": "{{count}} skills" }
   },
+  "parallelTasks": {
+    "aria": "Parallel tasks",
+    "title": "Task center",
+    "subtitle": "Monitor independent research tasks",
+    "new": "New task",
+    "empty": "No research tasks yet.",
+    "listAria": "Research tasks",
+    "runtimeDefault": "Runtime default",
+    "current": "Current task",
+    "status": { "running": "Running", "waiting": "Waiting", "complete": "Complete" }
+  },
   "workspaceArtifacts": {
     "heading": "Workspace artifacts", "count": "{{count}} discovered", "refreshAria": "Refresh workspace artifacts"
   },
@@ -126,6 +137,10 @@
     "runsToggle": {
       "label": "Runs",
       "title": "This session's experiment runs — beside the chat"
+    },
+    "tasksToggle": {
+      "label": "Tasks",
+      "title": "Monitor parallel research tasks"
     },
     "notebook": {
       "openTitle": "Open {{path}} — the agent works on this notebook in this session"

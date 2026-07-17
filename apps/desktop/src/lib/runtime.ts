@@ -113,6 +113,13 @@ export interface PaneState {
   showRuns: boolean;
 }
 
+export interface SessionExecution {
+  agent: string | null;
+  model: string | null;
+  route: ModelRouteDecision | null;
+  startedAt: number;
+}
+
 interface RuntimeState {
   status: RuntimeStatus;
   serverUrl: string;
@@ -134,6 +141,8 @@ interface RuntimeState {
   /** Auto chooses a reported model per task; manual uses defaultModel. */
   modelRoutingMode: ModelRoutingMode;
   lastModelRoute: ModelRouteDecision | null;
+  /** Actual per-session selection for task-center display and provenance. */
+  sessionExecutions: Record<string, SessionExecution>;
   setModelRoutingMode: (mode: ModelRoutingMode) => void;
   /** Apply a new default model and transparently reconnect (see impl). */
   setDefaultModel: (model: string) => Promise<void>;
@@ -824,6 +833,7 @@ function clearEndpointNamespace(): void {
     commands: [],
     defaultModel: null,
     lastModelRoute: null,
+    sessionExecutions: {},
     approvalMode: "balanced",
     error: null,
     questions: [],
@@ -877,6 +887,7 @@ async function performTurn(
   ) => Promise<void>,
   syncTurn: boolean,
   shell = false,
+  execution?: Omit<SessionExecution, "startedAt">,
 ): Promise<string | null> {
   if (!client) {
     set({ error: "Not connected to the OpenCode runtime." });
@@ -997,6 +1008,14 @@ async function performTurn(
         : null;
     await validateRuntimePermissions(get().workspace);
     assertStillConnected();
+    if (execution) {
+      set((s) => ({
+        sessionExecutions: {
+          ...s.sessionExecutions,
+          [sid]: { ...execution, startedAt: Date.now() },
+        },
+      }));
+    }
     runningSessionOwners.set(sid, turnOwner);
     latestSessionTurnOwners.set(sid, turnOwner);
     const interruptFence = interruptedTurnFences.get(sid);
@@ -1152,6 +1171,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   defaultModel: null,
   modelRoutingMode: savedModelRoutingMode(),
   lastModelRoute: null,
+  sessionExecutions: {},
   approvalMode: "balanced",
   tools: [],
   hiddenExamples: initialHidden(),
@@ -1675,7 +1695,11 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         const input = provenanceInputFromEvent(event);
         if (input) {
           recordedProvenance.add(event.callId);
-          void recordProvenance(input, sid, get().defaultModel);
+          void recordProvenance(
+            input,
+            sid,
+            get().sessionExecutions[sid]?.model ?? get().defaultModel,
+          );
         }
       }
       // A completed experiment execution (bash running code) becomes a run —
@@ -1684,7 +1708,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         const run = runInputFromEvent(event);
         if (run) {
           recordedRuns.add(event.callId);
-          void recordRun(run, sid, get().defaultModel);
+          void recordRun(run, sid, get().sessionExecutions[sid]?.model ?? get().defaultModel);
         }
       }
       if (event.type === "session.idle") {
@@ -2189,6 +2213,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           assertStillConnected,
         ),
       false,
+      false,
+      { agent: agent ?? null, model: model ?? null, route },
     );
   },
 
@@ -2207,6 +2233,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       (turnClient, sid) => turnClient.runShell(sid, command, agent),
       true,
       true,
+      { agent, model: null, route: null },
     );
   },
 
@@ -2235,6 +2262,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
           ? turnClient.runCommand(sid, name, args, options)
           : turnClient.runCommand(sid, name, args),
       true,
+      false,
+      { agent: agent ?? null, model: model ?? null, route },
     );
   },
 
@@ -2421,11 +2450,14 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       delete runningSessions[id];
       const panes = { ...s.panes };
       delete panes[id];
+      const sessionExecutions = { ...s.sessionExecutions };
+      delete sessionExecutions[id];
       return {
         sessions: s.sessions.filter((x) => x.id !== id),
         threads,
         runningSessions,
         panes,
+        sessionExecutions,
         currentId: s.currentId === id ? null : s.currentId,
       };
     });

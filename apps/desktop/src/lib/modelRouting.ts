@@ -54,8 +54,8 @@ const STANDARD_SIGNALS = [
 ];
 
 const MODEL_PREFERENCES: Record<TaskComplexity, string[]> = {
-  quick: ["kimi-k3", "kimi k3", "moonshot", "mini", "flash", "haiku", "free", "terra"],
-  standard: ["kimi-k3", "kimi k3", "moonshot", "terra", "codex", "sonnet"],
+  quick: ["luna", "kimi-k3", "kimi k3", "moonshot", "terra", "mini", "flash", "haiku", "free"],
+  standard: ["terra", "kimi-k3", "kimi k3", "moonshot", "luna", "codex", "sonnet"],
   deep: ["gpt-5.6-sol", "codex sol", " sol", "opus", "reasoning", "deepseek-r1", "o3"],
 };
 

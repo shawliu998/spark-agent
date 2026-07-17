@@ -360,6 +360,7 @@ beforeEach(async () => {
     providers: [],
     modelRoutingMode: "manual",
     lastModelRoute: null,
+    sessionExecutions: {},
   });
   await useRuntimeStore.getState().connect();
   expect(useRuntimeStore.getState().status).toBe("ready");
@@ -440,6 +441,11 @@ describe("General Research runtime selection", () => {
     expect(useRuntimeStore.getState().lastModelRoute).toMatchObject({
       tier: "deep",
       model: "openai/gpt-5.6-sol",
+    });
+    expect(useRuntimeStore.getState().sessionExecutions.ses_auto).toMatchObject({
+      agent: "research",
+      model: "openai/gpt-5.6-sol",
+      route: { tier: "deep", model: "openai/gpt-5.6-sol" },
     });
   });
 

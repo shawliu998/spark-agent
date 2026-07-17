@@ -3,17 +3,18 @@ import { classifyTaskComplexity, routeModelForTask } from "./modelRouting";
 
 const providers = [
   {
-    id: "moonshot",
-    name: "Moonshot",
-    models: [{ id: "kimi-k3", name: "Kimi K3" }],
-  },
-  {
     id: "openai",
     name: "OpenAI",
     models: [
+      { id: "gpt-5.6-luna", name: "Codex Luna" },
       { id: "gpt-5.6-terra", name: "Codex Terra" },
       { id: "gpt-5.6-sol", name: "Codex Sol" },
     ],
+  },
+  {
+    id: "moonshot",
+    name: "Moonshot",
+    models: [{ id: "kimi-k3", name: "Kimi K3" }],
   },
 ];
 
@@ -24,14 +25,14 @@ describe("task-aware model routing", () => {
     expect(classifyTaskComplexity("规划整体架构并做最终验收")).toBe("deep");
   });
 
-  it("routes ordinary work to Kimi K3 and planning to Sol", () => {
+  it("routes quick work to Luna, implementation to Terra, and planning to Sol", () => {
     expect(routeModelForTask("Summarize this note", providers, null)).toMatchObject({
       tier: "quick",
-      model: "moonshot/kimi-k3",
+      model: "openai/gpt-5.6-luna",
     });
     expect(routeModelForTask("实现导入和测试", providers, null)).toMatchObject({
       tier: "standard",
-      model: "moonshot/kimi-k3",
+      model: "openai/gpt-5.6-terra",
     });
     expect(routeModelForTask("做架构规划和验收", providers, null)).toMatchObject({
       tier: "deep",

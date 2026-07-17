@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { FlaskConical, FolderOpen, Loader2, NotebookPen, PanelLeft, PlugZap } from "lucide-react";
+import { FlaskConical, FolderOpen, ListTodo, Loader2, NotebookPen, PanelLeft, PlugZap } from "lucide-react";
 import type { RuntimeStatus } from "@ai4s/shared";
 import { DRAFT_KEY, rootSessionOf, subagentActivity, useRuntimeStore } from "@/lib/runtime";
 import { queryRuns } from "@/lib/runs";
@@ -19,6 +19,7 @@ import {
   type ResearchExecutionMode,
 } from "@/components/thread/ResearchSessionControls";
 import { WorkspaceArtifactShelf } from "@/components/thread/WorkspaceArtifactShelf";
+import { ParallelTaskCenter } from "@/components/thread/ParallelTaskCenter";
 import { InspectorShell } from "@/components/inspector/InspectorShell";
 import { MaximizePaneButton, RightPane } from "@/components/inspector/RightPane";
 import { SessionFilesPane } from "./FilesPage";
@@ -55,6 +56,7 @@ export function LiveSessionPage() {
     defaultModel,
     modelRoutingMode,
     lastModelRoute,
+    sessionExecutions,
     connect,
     openSession,
     startDraft,
@@ -81,6 +83,7 @@ export function LiveSessionPage() {
     Awaited<ReturnType<typeof discoverWorkspaceArtifacts>>
   >([]);
   const [artifactRefresh, setArtifactRefresh] = useState(0);
+  const [showTaskCenter, setShowTaskCenter] = useState(false);
   const clearingLocalCommand = useRef(false);
   const mounted = useRef(false);
   useEffect(() => {
@@ -164,6 +167,9 @@ export function LiveSessionPage() {
   // working indicator, so a sent message is never silently "nowhere".
   const running = !!(currentId && runningSessions[currentId]);
   const working = sending || running;
+  const runningTaskCount = sessions.filter(
+    (session) => !session.parentId && runningSessions[session.id],
+  ).length;
 
   // General sessions own ordinary workspace files directly. Re-scan on open,
   // workspace switch, explicit refresh, and after every completed turn so
@@ -226,6 +232,20 @@ export function LiveSessionPage() {
     activeRequest && activeRequest.sessionId !== currentId
       ? (sessions.find((s) => s.id === activeRequest.sessionId)?.title ?? t("live.subagentFallback"))
       : undefined;
+  const waitingSessions = useMemo(() => {
+    const waiting: Record<string, true> = {};
+    for (const request of [...questions, ...permissions]) {
+      waiting[rootSessionOf(sessionParents, request.sessionId)] = true;
+    }
+    return waiting;
+  }, [permissions, questions, sessionParents]);
+  const sessionModels = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(sessionExecutions).map(([id, execution]) => [id, execution.model ?? undefined]),
+      ),
+    [sessionExecutions],
+  );
 
   // Notebooks the agent touched in THIS session — the conversation ↔ notebook map.
   const sessionNotebooks = (thread?.blocks ?? []).filter(
@@ -354,6 +374,23 @@ export function LiveSessionPage() {
               <span>{t("live.runsToggle.label")}</span>
             </button>
           )}
+          <button
+            onClick={() => setShowTaskCenter((open) => !open)}
+            className={cn(
+              "flex items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-surface-2",
+              showTaskCenter ? "bg-surface-2 text-text" : "text-muted",
+            )}
+            title={t("live.tasksToggle.title", { defaultValue: "Monitor parallel research tasks" })}
+            aria-pressed={showTaskCenter}
+          >
+            <ListTodo size={13} />
+            <span>{t("live.tasksToggle.label", { defaultValue: "Tasks" })}</span>
+            {runningTaskCount > 0 && (
+              <span className="rounded-full bg-accent px-1.5 text-[10px] text-accent-fg">
+                {runningTaskCount}
+              </span>
+            )}
+          </button>
           <ConnBadge status={displayStatus} />
           {uniqueNotebooks.map((nb) => (
             <button
@@ -507,11 +544,38 @@ export function LiveSessionPage() {
         </div>
       </div>
 
-      {(activeArtifact || showFiles || showRuns) && (
+      {(showTaskCenter || activeArtifact || showFiles || showRuns) && (
         <RightPane
-          onClose={activeArtifact ? closeArtifact : showRuns ? () => setShowRuns(false) : () => setShowFiles(false)}
+          onClose={
+            showTaskCenter
+              ? () => setShowTaskCenter(false)
+              : activeArtifact
+                ? closeArtifact
+                : showRuns
+                  ? () => setShowRuns(false)
+                  : () => setShowFiles(false)
+          }
         >
-          {activeArtifact ? (
+          {showTaskCenter ? (
+            <div className="h-full overflow-y-auto border-l border-border bg-bg p-4">
+              <ParallelTaskCenter
+                sessions={sessions.filter((session) => !session.parentId)}
+                currentId={currentId}
+                runningSessions={runningSessions}
+                waitingSessions={waitingSessions}
+                sessionModels={sessionModels}
+                onOpen={(id) => {
+                  setShowTaskCenter(false);
+                  navigate(`/live/${id}`);
+                }}
+                onNew={() => {
+                  setShowTaskCenter(false);
+                  startDraft();
+                  navigate("/live");
+                }}
+              />
+            </div>
+          ) : activeArtifact ? (
             <InspectorShell
               inspector={fileInspectorFromBlock(activeArtifact)}
               onClose={closeArtifact}
