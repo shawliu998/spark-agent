@@ -4,6 +4,7 @@ import { SessionPage } from "./routes/SessionPage";
 import { LiveSessionPage } from "./routes/LiveSessionPage";
 import { SkillsPage } from "./routes/SkillsPage";
 import { NotebooksPage } from "./routes/NotebooksPage";
+import { LabNotebookPage } from "./routes/LabNotebookPage";
 import { FilesPage } from "./routes/FilesPage";
 import { RunsPage } from "./routes/RunsPage";
 import { SettingsPage } from "./routes/SettingsPage";
@@ -23,6 +24,7 @@ export const routes: RouteObject[] = [
       { path: "example/:sessionId", element: <SessionPage /> },
       { path: "skills", element: <SkillsPage /> },
       { path: "notebooks", element: <NotebooksPage /> },
+      { path: "lab-notebook", element: <LabNotebookPage /> },
       { path: "files", element: <FilesPage /> },
       { path: "runs", element: <RunsPage /> },
       ...productRoutes,

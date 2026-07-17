@@ -37,6 +37,7 @@
       "addCellLabel": "셀 추가"
     }
   },
+  "labNotebook": {"title":"Living research notebook","description":"A recoverable, workspace-local record of explicit scientific findings, decisions, and limitations.","path":"Stored at","refresh":"Refresh","refreshAria":"Refresh living research notebook","exportMarkdown":"Markdown","exportJson":"JSON","type":"Type","session":"Session","all":"All","empty":"No notebook entries match these filters."},
   "files": {
     "loading": "불러오는 중…",
     "folderEmpty": "이 폴더는 비어 있습니다.",

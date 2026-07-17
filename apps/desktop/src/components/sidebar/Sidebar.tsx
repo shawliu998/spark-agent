@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { Files, FlaskConical, FolderTree, Home, NotebookPen, PanelLeft, Plus, Settings, Trash2 } from "lucide-react";
+import { Files, FlaskConical, FolderTree, Home, NotebookPen, PanelLeft, Plus, ScrollText, Settings, Trash2 } from "lucide-react";
 import type { Project } from "@ai4s/shared";
 import { cn } from "@/lib/cn";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -157,6 +157,7 @@ export function Sidebar({ project }: { project: Project }) {
           );
         })}
         <NavRow icon={<NotebookPen size={16} />} label={t("items.notebooks")} onClick={() => navigate("/notebooks")} />
+        <NavRow icon={<ScrollText size={16} />} label={t("items.labNotebook")} onClick={() => navigate("/lab-notebook")} />
         <NavRow icon={<FolderTree size={16} />} label={t("items.files")} onClick={() => navigate("/files")} />
         <NavRow icon={<FlaskConical size={16} />} label={t("items.runs")} onClick={() => navigate("/runs")} />
         <NavRow icon={<Files size={16} />} label={t("items.skills")} onClick={() => navigate("/skills")} />

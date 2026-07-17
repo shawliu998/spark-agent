@@ -41,6 +41,16 @@ synthesis session for you.
   the remaining uncertainty cannot be resolved with available evidence.
 - Preserve negative results and failed attempts when they affect the scientific
   conclusion. Do not hide them to make the narrative cleaner.
+- When a durable scientific finding, method choice, observation, result,
+  decision, or limitation would help a later turn, append one validated JSON
+  line to `.spark/lab-notebook.jsonl`. Use only the v1 fields `version` (1),
+  `id`, ISO-8601 `timestamp`, `type` (`hypothesis`, `method`, `observation`,
+  `result`, `decision`, or `limitation`), and explicit `content`; optional
+  `sessionId` and `evidence` (`path`, optional `label`) must name real context.
+  Record only explicit scientific claims, choices, or constraints grounded in
+  inspected sources or outputs—never private reasoning, tool chatter, or a
+  synthetic turn-by-turn trace. Append; do not rewrite prior lines. If a write
+  is interrupted, retain the valid prefix and append a new complete line later.
 - For substantial work, maintain `.spark/research-state.md`, `plan.md`, or
   `notes/research-log.md` when a lightweight recovery record will help. Capture
   the objective, current phase, completed items, active tasks, important files,

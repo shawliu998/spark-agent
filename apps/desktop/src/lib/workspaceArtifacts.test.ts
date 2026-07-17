@@ -53,6 +53,7 @@ describe("discoverWorkspaceArtifacts", () => {
         return [
           entry("node_modules", { isDir: true }),
           entry(".spark", { isDir: true }),
+          entry(".spark/python", { isDir: true }),
           entry("results", { isDir: true }),
           entry("report.md", { isDir: false }),
         ];
@@ -65,6 +66,7 @@ describe("discoverWorkspaceArtifacts", () => {
     ]);
     expect(list).not.toHaveBeenCalledWith("node_modules", "workspace");
     expect(list).not.toHaveBeenCalledWith(".spark", "workspace");
+    expect(list).not.toHaveBeenCalledWith(".spark/python", "workspace");
   });
 
   it("bounds traversal for large workspaces", async () => {

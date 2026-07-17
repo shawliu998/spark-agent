@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 18:20 · feat(living-research-notebook): added a recoverable workspace-local `.spark/lab-notebook.jsonl` v1 journal, Research Agent guidance for explicit evidence-grounded entries, a session/type-filtered desktop viewer with Markdown/JSON export, and artifact-discovery exclusion coverage; profile tests, JSON/i18n parity, and diff checks pass, while desktop Vitest/typecheck/lint remain blocked because this worktree has no `node_modules`.
+
 2026-07-17 18:20 · docs(reuse-audit): added the evidence-based reuse matrix for Spark, OpenCode, scientific tooling, OpenScience, and unresolved candidates; confirmed taskPlanning/modelRouting are not default General Research coupling, with no safe code removal warranted.
 
 2026-07-17 18:12 · test(notebook): added a portable autonomous nbconvert fallback gate that proves deterministic notebook creation and desktop discovery, executes through managed project Python when provisioned, and otherwise reports an explicit runtime skip; 11 focused Notebook/Desktop tests pass.
