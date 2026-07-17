@@ -163,10 +163,17 @@ def main() -> int:
                 return 0
             finally:
                 process.terminate()
-                process.wait(timeout=5)
-    except (OSError, RuntimeError, urllib.error.URLError, TimeoutError) as error:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+    except (OSError, urllib.error.URLError, TimeoutError) as error:
         print(f"SKIP: paper-search-mcp live gate unavailable: {error}")
         return 0
+    except RuntimeError as error:
+        print(f"ERROR: paper-search-mcp live gate failed: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
