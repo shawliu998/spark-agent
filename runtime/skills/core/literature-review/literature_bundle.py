@@ -83,6 +83,10 @@ def _source_records(payload: Any, fallback: str) -> Iterable[tuple[str, dict[str
 
 
 def _normalize(source: str, record: dict[str, Any]) -> dict[str, str]:
+    source_name = _first(record, "source", "provider", "database") or source
+    source_lower = source_name.lower()
+    paper_id = _first(record, "paper_id", "id")
+    identifier_key = "arXiv ID" if "arxiv" in source_lower else "PMID" if "pubmed" in source_lower else ""
     abstract = _first(record, "abstract", "summary", "description", "snippet")
     inverted = record.get("abstract_inverted_index")
     if not abstract and isinstance(inverted, dict):
@@ -92,10 +96,10 @@ def _normalize(source: str, record: dict[str, Any]) -> dict[str, str]:
         "title": _first(record, "title", "name", "display_name"),
         "authors": _authors(record),
         "year": _year(record),
-        "source": _first(record, "source", "provider", "database") or source,
+        "source": source_name,
         "DOI": _doi(_first(record, "doi", "DOI")),
-        "PMID": _first(record, "pmid", "PMID", "pubmed_id", "uid"),
-        "arXiv ID": _arxiv(_first(record, "arxiv_id", "arxiv", "arXiv ID")),
+        "PMID": _first(record, "pmid", "PMID", "pubmed_id", "uid") or (paper_id if identifier_key == "PMID" else ""),
+        "arXiv ID": _arxiv(_first(record, "arxiv_id", "arxiv", "arXiv ID")) or (_arxiv(paper_id) if identifier_key == "arXiv ID" else ""),
         "URL": _first(record, "url", "URL", "landing_page_url", "link"),
         "abstract or summary": abstract,
         "selection status": _first(record, "selection_status", "status") or "included",

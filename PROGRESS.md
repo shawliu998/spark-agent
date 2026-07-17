@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 18:45 · test(literature-live): added the pinned paper-search-mcp stdio live gate with credential-free arXiv/PubMed searches, registry identifier validation, temporary corpus/BibTeX/report artifact checks, and three deterministic offline tests; offline tests pass and this environment reports an explicit skip because paper-search-mcp==0.1.4 is not installed.
+
 2026-07-17 18:30 · feat(kdense-skills): added a pinned, MIT-provenance curated 30-skill K-Dense adapter that verifies its archive and deploys through the existing OpenCode global skill directory without executing upstream scripts, installing dependencies, or overwriting user/project skills.
 
 2026-07-17 18:20 · feat(living-research-notebook): added a recoverable workspace-local `.spark/lab-notebook.jsonl` v1 journal, Research Agent guidance for explicit evidence-grounded entries, a session/type-filtered desktop viewer with Markdown/JSON export, and artifact-discovery exclusion coverage; profile tests, JSON/i18n parity, and diff checks pass, while desktop Vitest/typecheck/lint remain blocked because this worktree has no `node_modules`.
