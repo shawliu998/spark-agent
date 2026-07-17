@@ -1,0 +1,21 @@
+{
+  "name": "research-demo",
+  "title": "Synthetic Research Demo",
+  "description": "A deterministic synthetic research project that demonstrates Spark Agent output generation without making real scientific claims.",
+  "synthetic": true,
+  "workspace": {
+    "root": ".",
+    "rawData": "data/raw/synthetic_observations.csv",
+    "analysisScript": "scripts/analysis.py"
+  },
+  "artifacts": [
+    "figures/synthetic_condition_trends.png",
+    "reports/summary.csv",
+    "reports/report.md",
+    "references/references.bib",
+    "notebooks/analysis.ipynb"
+  ],
+  "validation": {
+    "command": "pnpm demo:research"
+  }
+}

@@ -30,6 +30,7 @@
     "test:foundation": "bash scripts/quality/check-foundation.sh",
     "test:foundation:live": "bash scripts/quality/check-foundation.sh --live",
     "test:release-assets": "bash scripts/quality/check-release-assets.sh",
+    "demo:research": "python3 examples/research-demo/scripts/validate.py",
     "quality": "bash scripts/quality/run-all.sh",
     "test": "pnpm test:desktop",
     "typecheck": "pnpm typecheck:desktop",
