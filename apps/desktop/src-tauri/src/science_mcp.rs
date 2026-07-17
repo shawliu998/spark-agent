@@ -2,13 +2,17 @@
 // credential-bearing execution decision stay native. Keyed connectors are
 // reached through a main-process Unix-domain-socket broker; OpenCode only
 // starts Apple's fixed /usr/bin/nc relay and never receives a connector key.
+#[cfg(any(target_os = "macos", test))]
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const CONNECTOR_OWNER_ENV: &str = "SPARK_SCIENCE_CONNECTOR_OWNER";
+#[cfg(any(target_os = "macos", test))]
 pub(crate) const CONNECTOR_OWNER_V1: &str = "spark-agent/v1";
 
+#[cfg(target_os = "macos")]
 const CONNECTOR_SERVICE: &str = "io.github.shawliu998.sparkagent.opencode-connector";
 const NC_PATH: &str = "/usr/bin/nc";
 const NC_UNIX_FLAG: &str = "-U";
@@ -135,6 +139,7 @@ fn keyed_connector_spec(connector_id: &str) -> Result<ScienceConnectorSpec, Stri
     Ok(spec)
 }
 
+#[cfg(target_os = "macos")]
 fn keyed_connector_specs() -> impl Iterator<Item = ScienceConnectorSpec> {
     SCIENCE_CONNECTORS
         .iter()
@@ -192,6 +197,7 @@ fn python_bin(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(python_bin_in(&shared_env_dir(app)?))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn relay_command(socket_path: &Path, connector_id: &str) -> Result<Vec<String>, String> {
     keyed_connector_spec(connector_id)?;
     if !socket_path.is_absolute() {
@@ -309,6 +315,7 @@ pub(crate) fn legacy_managed_connector_command(
     Ok(vec![executable.to_string_lossy().to_string()])
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn command_matches(value: Option<&Value>, expected: &[String]) -> bool {
     value.and_then(Value::as_array).is_some_and(|actual| {
         actual.len() == expected.len()
@@ -319,6 +326,7 @@ fn command_matches(value: Option<&Value>, expected: &[String]) -> bool {
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn validate_connector_relay_config(
     config_text: &str,
     connector_id: &str,
@@ -375,6 +383,7 @@ fn validate_connector_relay_config(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn effective_opencode_config(app_data_dir: &Path) -> Result<PathBuf, String> {
     if !app_data_dir.is_absolute() {
         return Err("Spark app-data path is not absolute".to_string());
@@ -394,6 +403,7 @@ fn effective_opencode_config(app_data_dir: &Path) -> Result<PathBuf, String> {
     Err("effective OpenCode config is unavailable".to_string())
 }
 
+#[cfg(target_os = "macos")]
 fn read_verified_effective_config(app_data_dir: &Path) -> Result<String, String> {
     let path = effective_opencode_config(app_data_dir)?;
     let metadata = std::fs::symlink_metadata(&path)
@@ -414,6 +424,7 @@ fn read_verified_effective_config(app_data_dir: &Path) -> Result<String, String>
         .map_err(|_| "effective OpenCode config could not be read".to_string())
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ConnectorChildTarget {
     connector_id: &'static str,
@@ -422,6 +433,7 @@ struct ConnectorChildTarget {
     api_key_env: &'static str,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn connector_child_target(
     app_data_dir: &Path,
     connector_id: &str,

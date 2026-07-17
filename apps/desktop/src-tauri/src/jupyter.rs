@@ -913,6 +913,7 @@ fn canonical_workspace(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(canonical)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn lsof_output_proves_listener(output: &[u8], pid: u32, port: u16) -> bool {
     let Ok(output) = std::str::from_utf8(output) else {
         return false;
