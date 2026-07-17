@@ -59,7 +59,9 @@ export function LiveSessionPage() {
     modelRoutingMode,
     lastModelRoute,
     sessionExecutions,
+    taskPlans,
     launchTaskBatch,
+    synthesizeTaskPlan,
     taskBatchLaunching,
     connect,
     openSession,
@@ -251,6 +253,59 @@ export function LiveSessionPage() {
       ),
     [sessionExecutions],
   );
+  const failedSessions = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(sessionExecutions)
+          .filter(([, execution]) => execution.startError)
+          .map(([id, execution]) => [id, execution.startError!]),
+      ),
+    [sessionExecutions],
+  );
+  const recoveringSessions = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(sessionExecutions)
+          .filter(([, execution]) => execution.recoveryUnknown)
+          .map(([id]) => [id, true as const]),
+      ),
+    [sessionExecutions],
+  );
+  const taskSessionIds = useMemo(
+    () =>
+      new Set(
+        Object.entries(sessionExecutions)
+          .filter(([, execution]) => !!execution.kind)
+          .map(([id]) => id),
+      ),
+    [sessionExecutions],
+  );
+  const latestPlanId = useMemo(() => {
+    const latest = Object.values(sessionExecutions)
+      .filter((execution) => execution.planId && execution.kind === "task")
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    return latest?.planId ?? null;
+  }, [sessionExecutions]);
+  const canSynthesizeLatestPlan = useMemo(() => {
+    if (!latestPlanId) return false;
+    const entries = Object.entries(sessionExecutions).filter(
+      ([, execution]) => execution.planId === latestPlanId,
+    );
+    const tasks = entries.filter(([, execution]) => execution.kind === "task");
+    const hasSynthesis = entries.some(
+      ([, execution]) => execution.kind === "synthesis" && !execution.startError,
+    );
+    const durablePlan = taskPlans.find((plan) => plan.planId === latestPlanId);
+    return (
+      tasks.length >= 2 &&
+      (!durablePlan || tasks.length === durablePlan.tasks.length) &&
+      !hasSynthesis &&
+      tasks.every(
+        ([id, execution]) =>
+          !execution.startError && !runningSessions[id] && !waitingSessions[id],
+      )
+    );
+  }, [latestPlanId, runningSessions, sessionExecutions, taskPlans, waitingSessions]);
 
   // Notebooks the agent touched in THIS session — the conversation ↔ notebook map.
   const sessionNotebooks = (thread?.blocks ?? []).filter(
@@ -581,11 +636,28 @@ export function LiveSessionPage() {
                 />
               ) : (
                 <ParallelTaskCenter
-                  sessions={sessions.filter((session) => !session.parentId)}
+                  sessions={sessions.filter(
+                    (session) => !session.parentId && taskSessionIds.has(session.id),
+                  )}
                   currentId={currentId}
                   runningSessions={runningSessions}
                   waitingSessions={waitingSessions}
+                  failedSessions={failedSessions}
+                  recoveringSessions={recoveringSessions}
                   sessionModels={sessionModels}
+                  canSynthesize={canSynthesizeLatestPlan}
+                  synthesizing={taskBatchLaunching}
+                  onSynthesize={
+                    latestPlanId
+                      ? async () => {
+                          const id = await synthesizeTaskPlan(latestPlanId);
+                          if (id) {
+                            closeTaskCenter();
+                            navigate(`/live/${id}`);
+                          }
+                        }
+                      : undefined
+                  }
                   onOpen={(id) => {
                     closeTaskCenter();
                     navigate(`/live/${id}`);

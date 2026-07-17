@@ -85,11 +85,13 @@
     "title": "任务中心",
     "subtitle": "查看独立科研任务的状态",
     "new": "新建任务",
+    "synthesize": "综合结果",
     "empty": "还没有科研任务。",
     "listAria": "科研任务",
     "runtimeDefault": "运行时默认模型",
+    "requestedModel": "请求模型",
     "current": "当前任务",
-    "status": { "running": "运行中", "waiting": "等待处理", "complete": "已完成" }
+    "status": { "running": "运行中", "waiting": "等待处理", "recovering": "恢复状态中", "complete": "已完成", "failed": "启动失败" }
   },
   "taskPlan": {
     "aria": "任务计划",

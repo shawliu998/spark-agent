@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   sendPrompt: vi.fn(),
   sendPromptOptions: vi.fn(),
   sendWaits: [] as Promise<void>[],
+  sendPromptEmitsIdle: false,
   failPrompts: 0,
   /** Fire a normalized event into the store, as the SSE stream would. */
   fireEvent: (_e: unknown) => {},
@@ -117,6 +118,14 @@ const mocks = vi.hoisted(() => ({
   }),
   /** Constructor options every OpenCodeClient was created with. */
   clientOpts: [] as Record<string, unknown>[],
+  listedSessions: [] as unknown[],
+  taskPlans: [] as unknown[],
+  createTaskPlanRecord: vi.fn(async () => {}),
+  recordTaskSession: vi.fn(async () => {}),
+  recordTaskSessionStatus: vi.fn(async () => {}),
+  recordTaskStartFailure: vi.fn(async () => {}),
+  recordTaskSynthesis: vi.fn(async () => {}),
+  listTaskPlans: vi.fn(async () => mocks.taskPlans),
 }));
 
 vi.mock("./tauri", () => ({
@@ -143,6 +152,14 @@ vi.mock("./tauri", () => ({
   runtimePassword: async () => "pw-test",
 }));
 vi.mock("./kernel", () => ({ kernelReset: mocks.kernelReset }));
+vi.mock("./taskPlans", () => ({
+  createTaskPlanRecord: mocks.createTaskPlanRecord,
+  recordTaskSession: mocks.recordTaskSession,
+  recordTaskSessionStatus: mocks.recordTaskSessionStatus,
+  recordTaskStartFailure: mocks.recordTaskStartFailure,
+  recordTaskSynthesis: mocks.recordTaskSynthesis,
+  listTaskPlans: mocks.listTaskPlans,
+}));
 vi.mock("@ai4s/sdk", () => {
   class OpenCodeClient {
     private statusCb: (s: string) => void = () => {};
@@ -173,7 +190,7 @@ vi.mock("@ai4s/sdk", () => {
       this.statusCb("ready");
     }
     async listSessions() {
-      return [];
+      return mocks.listedSessions;
     }
     async listSkills() {
       return [{ name: "stub" }];
@@ -210,6 +227,9 @@ vi.mock("@ai4s/sdk", () => {
       if (mocks.failPrompts > 0) {
         mocks.failPrompts--;
         throw new Error("prompt rejected");
+      }
+      if (mocks.sendPromptEmitsIdle) {
+        mocks.fireEvent({ type: "session.idle", sessionId: sid });
       }
     }
     async listCommands() {
@@ -327,6 +347,7 @@ beforeEach(async () => {
   mocks.createSessionDirectories = [];
   mocks.createWaits = [];
   mocks.sendWaits = [];
+  mocks.sendPromptEmitsIdle = false;
   mocks.failPrompts = 0;
   mocks.failShell = false;
   mocks.failCommand = false;
@@ -345,6 +366,8 @@ beforeEach(async () => {
   mocks.clientOpen = false;
   mocks.mutationSawClosedClient = false;
   mocks.currentModel = null;
+  mocks.taskPlans = [];
+  mocks.listedSessions = [];
   useRuntimeStore.setState({
     status: "offline",
     serverUrl: "http://127.0.0.1:1",
@@ -364,6 +387,7 @@ beforeEach(async () => {
     modelRoutingMode: "manual",
     lastModelRoute: null,
     sessionExecutions: {},
+    taskPlans: [],
   });
   await useRuntimeStore.getState().connect();
   expect(useRuntimeStore.getState().status).toBe("ready");
@@ -473,8 +497,8 @@ describe("General Research runtime selection", () => {
     });
 
     const ids = await useRuntimeStore.getState().launchTaskBatch("Assess the result", [
-      { title: "Summarize sources", prompt: "Gather the relevant evidence." },
-      { title: "Review architecture", prompt: "Review risks and acceptance criteria." },
+      { id: "evidence", title: "Summarize sources", prompt: "Gather the relevant evidence." },
+      { id: "review", title: "Review architecture", prompt: "Review risks and acceptance criteria." },
     ]);
 
     expect(ids).toEqual(["ses_evidence", "ses_review"]);
@@ -494,6 +518,266 @@ describe("General Research runtime selection", () => {
       "openai/gpt-5.6-sol",
     );
     expect(useRuntimeStore.getState().taskBatchLaunching).toBe(false);
+    expect(mocks.createTaskPlanRecord).toHaveBeenCalledOnce();
+    expect(mocks.recordTaskSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not relock a batch task when idle arrives before prompt POST resolves", async () => {
+    mocks.createdSessionIds = ["ses_fast", "ses_slow"];
+    mocks.sendPromptEmitsIdle = true;
+    useRuntimeStore.setState({ workspacePinned: true, workspace: "/ws/base" });
+
+    await useRuntimeStore.getState().launchTaskBatch("Compare evidence", [
+      { id: "fast", title: "Fast", prompt: "Summarize one source." },
+      { id: "slow", title: "Slow", prompt: "Summarize another source." },
+    ]);
+
+    expect(useRuntimeStore.getState().runningSessions).toEqual({});
+  });
+
+  it("blocks endpoint replacement while a task batch is launching", async () => {
+    const gate = deferred();
+    mocks.createdSessionIds = ["ses_old", "ses_second"];
+    mocks.sendWaits = [gate.promise];
+    useRuntimeStore.setState({ workspacePinned: true, workspace: "/ws/base" });
+
+    const launch = useRuntimeStore.getState().launchTaskBatch("Compare evidence", [
+      { id: "a", title: "A", prompt: "Summarize source A." },
+      { id: "b", title: "B", prompt: "Summarize source B." },
+    ]);
+    await vi.waitFor(() => expect(mocks.sendPrompt).toHaveBeenCalledWith("ses_old"));
+    const originalUrl = useRuntimeStore.getState().serverUrl;
+    useRuntimeStore.getState().setServerUrl("http://127.0.0.1:29999");
+    expect(useRuntimeStore.getState().serverUrl).toBe(originalUrl);
+    expect(useRuntimeStore.getState().error).toMatch(/active task/);
+    gate.resolve();
+
+    await expect(launch).resolves.toEqual(["ses_old", "ses_second"]);
+    expect(useRuntimeStore.getState().taskBatchLaunching).toBe(false);
+  });
+
+  it("recovers only journaled plan sessions and their terminal state", async () => {
+    mocks.listedSessions = [
+      { id: "ses_task", title: "Evidence", directory: "/ws/base" },
+      { id: "ses_chat", title: "Ordinary chat", directory: "/ws/base" },
+    ];
+    mocks.messages = [
+      { role: "assistant", completed: 10, parts: [{ type: "text", text: "Done" }] },
+    ];
+    mocks.taskPlans = [
+      {
+        schemaVersion: 1,
+        planId: "plan_1",
+        objective: "Assess evidence",
+        createdAt: 1,
+        tasks: [
+          {
+            id: "evidence",
+            title: "Evidence",
+            prompt: "Gather evidence",
+            sessions: [
+              {
+                sessionId: "ses_task",
+                agent: "research",
+                requestedModel: "openai/gpt-5.6-terra",
+                routeTier: "standard",
+                matchedPreference: "terra",
+                status: "completed",
+                error: null,
+                recordedAt: 2,
+              },
+            ],
+            startFailures: [],
+          },
+        ],
+        syntheses: [],
+      },
+    ];
+
+    await useRuntimeStore.getState().refreshSessions();
+    await useRuntimeStore.getState().refreshTaskPlans();
+
+    expect(useRuntimeStore.getState().sessionExecutions.ses_task).toMatchObject({
+      planId: "plan_1",
+      kind: "task",
+      model: "openai/gpt-5.6-terra",
+    });
+    expect(useRuntimeStore.getState().sessionExecutions.ses_chat).toBeUndefined();
+    expect(useRuntimeStore.getState().runningSessions.ses_task).toBeUndefined();
+  });
+
+  it("fails closed when a running plan session cannot be reconciled", async () => {
+    mocks.listedSessions = [{ id: "ses_unknown", title: "Evidence", directory: "/ws/base" }];
+    mocks.failMessages = true;
+    mocks.taskPlans = [
+      {
+        schemaVersion: 1,
+        planId: "plan_unknown",
+        objective: "Assess evidence",
+        createdAt: 1,
+        tasks: [
+          {
+            id: "evidence",
+            title: "Evidence",
+            prompt: "Gather evidence",
+            sessions: [
+              {
+                sessionId: "ses_unknown",
+                agent: "research",
+                requestedModel: null,
+                routeTier: null,
+                matchedPreference: null,
+                status: "running",
+                error: null,
+                recordedAt: 2,
+              },
+            ],
+            startFailures: [],
+          },
+        ],
+        syntheses: [],
+      },
+    ];
+
+    await useRuntimeStore.getState().refreshSessions();
+    await useRuntimeStore.getState().refreshTaskPlans();
+
+    expect(useRuntimeStore.getState().runningSessions.ses_unknown).toBe(true);
+    expect(useRuntimeStore.getState().sessionExecutions.ses_unknown.recoveryUnknown).toBe(true);
+    await expect(useRuntimeStore.getState().setProxySetting("none", "")).rejects.toThrow(
+      /active task/,
+    );
+  });
+
+  it("blocks runtime-restarting settings while a journaled plan task is active", async () => {
+    useRuntimeStore.setState({
+      runningSessions: { ses_task: true },
+      sessionExecutions: {
+        ses_task: {
+          agent: "research",
+          model: null,
+          route: null,
+          startedAt: 1,
+          planId: "plan_1",
+          kind: "task",
+        },
+      },
+    });
+
+    await expect(useRuntimeStore.getState().setProxySetting("none", "")).rejects.toThrow(
+      /active task/,
+    );
+    expect(mocks.setProxySetting).not.toHaveBeenCalled();
+  });
+
+  it("keeps a task failed when an idle event follows its provider error", async () => {
+    useRuntimeStore.setState({
+      sessions: [{ id: "ses_failed", title: "Failed task", directory: "/ws/base" }],
+      threads: { ses_failed: { blocks: [], index: {}, loaded: true } },
+      runningSessions: { ses_failed: true },
+      sessionExecutions: {
+        ses_failed: {
+          agent: "research",
+          model: null,
+          route: null,
+          startedAt: 1,
+          planId: "plan_failed",
+          objective: "Assess evidence",
+          kind: "task",
+        },
+      },
+    });
+
+    mocks.fireEvent({ type: "error", sessionId: "ses_failed", message: "provider failed" });
+    mocks.fireEvent({ type: "session.idle", sessionId: "ses_failed" });
+
+    expect(useRuntimeStore.getState().sessionExecutions.ses_failed).toMatchObject({
+      startError: "provider failed",
+      terminalStatus: "failed",
+    });
+    expect(useRuntimeStore.getState().runningSessions.ses_failed).toBeUndefined();
+    expect(mocks.recordTaskSessionStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "ses_failed",
+        status: "failed",
+        error: "provider failed",
+      }),
+    );
+    expect(mocks.recordTaskSessionStatus).not.toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "ses_failed", status: "completed" }),
+    );
+  });
+
+  it("synthesizes completed task handoffs in a new deep-model session", async () => {
+    mocks.createdSessionIds = ["ses_synthesis"];
+    mocks.messages = [
+      {
+        role: "assistant",
+        completed: 10,
+        parts: [{ type: "text", text: "Evidence handoff with limitations." }],
+      },
+    ];
+    useRuntimeStore.setState({
+      workspace: "/ws/base",
+      workspacePinned: true,
+      sessions: [
+        { id: "ses_a", title: "Evidence", directory: "/ws/base" },
+        { id: "ses_b", title: "Review", directory: "/ws/base" },
+      ],
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          models: [{ id: "gpt-5.6-sol", name: "Codex Sol" }],
+        },
+      ],
+      selectedAgent: "research",
+      modelRoutingMode: "auto",
+      sessionExecutions: {
+        ses_a: {
+          agent: "research",
+          model: "openai/gpt-5.6-luna",
+          route: null,
+          startedAt: 1,
+          planId: "plan_1",
+          objective: "Assess the result",
+          taskTitle: "Evidence",
+          kind: "task",
+        },
+        ses_b: {
+          agent: "research",
+          model: "openai/gpt-5.6-sol",
+          route: null,
+          startedAt: 2,
+          planId: "plan_1",
+          objective: "Assess the result",
+          taskTitle: "Review",
+          kind: "task",
+        },
+      },
+      runningSessions: {},
+    });
+
+    const id = await useRuntimeStore.getState().synthesizeTaskPlan("plan_1");
+
+    expect(id).toBe("ses_synthesis");
+    expect(mocks.getMessages).toHaveBeenCalledTimes(2);
+    expect(mocks.sendPromptOptions).toHaveBeenCalledWith({
+      agent: "research",
+      model: "openai/gpt-5.6-sol",
+    });
+    expect(useRuntimeStore.getState().sessionExecutions.ses_synthesis).toMatchObject({
+      planId: "plan_1",
+      kind: "synthesis",
+      model: "openai/gpt-5.6-sol",
+    });
+    expect(useRuntimeStore.getState().threads.ses_synthesis.blocks[0]).toMatchObject({
+      kind: "user",
+      text: expect.stringContaining("Evidence handoff with limitations."),
+    });
+    expect(mocks.recordTaskSynthesis).toHaveBeenCalledWith(
+      expect.objectContaining({ planId: "plan_1", sessionId: "ses_synthesis" }),
+    );
   });
 
   it("fails closed before posting when resolved agent permissions are unsafe", async () => {

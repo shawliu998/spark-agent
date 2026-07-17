@@ -19,6 +19,7 @@ mod runs;
 mod runs_index;
 mod runtime;
 mod science_mcp;
+mod task_plans;
 mod tools;
 mod updates;
 mod uv;
@@ -51,6 +52,7 @@ pub fn run() {
         .manage(PreviewState::default())
         .manage(ProvenanceState::default())
         .manage(runs::RunState::default())
+        .manage(task_plans::TaskPlanState::default())
         .invoke_handler(tauri::generate_handler![
             runtime::start_runtime,
             runtime::runtime_password,
@@ -109,6 +111,12 @@ pub fn run() {
             runs::record_run,
             runs::list_runs,
             runs::read_run_log,
+            task_plans::create_task_plan,
+            task_plans::record_task_session,
+            task_plans::record_task_session_status,
+            task_plans::record_task_start_failure,
+            task_plans::record_task_synthesis,
+            task_plans::list_task_plans,
             runs_index::query_runs_cmd,
             science_mcp::science_mcp_python,
             science_mcp::setup_science_mcp,

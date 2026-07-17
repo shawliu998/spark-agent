@@ -85,11 +85,13 @@
     "title": "Task center",
     "subtitle": "Monitor independent research tasks",
     "new": "New task",
+    "synthesize": "Synthesize",
     "empty": "No research tasks yet.",
     "listAria": "Research tasks",
     "runtimeDefault": "Runtime default",
+    "requestedModel": "Requested",
     "current": "Current task",
-    "status": { "running": "Running", "waiting": "Waiting", "complete": "Complete" }
+    "status": { "running": "Running", "waiting": "Waiting", "recovering": "Recovering", "complete": "Complete", "failed": "Failed" }
   },
   "taskPlan": {
     "aria": "Task plan",

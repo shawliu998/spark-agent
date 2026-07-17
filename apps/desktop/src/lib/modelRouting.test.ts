@@ -47,4 +47,22 @@ describe("task-aware model routing", () => {
       matchedPreference: null,
     });
   });
+
+  it("degrades deep work to an available standard model before a quick default", () => {
+    const withoutSol = [
+      {
+        id: "openai",
+        name: "OpenAI",
+        models: [
+          { id: "gpt-5.6-luna", name: "Codex Luna" },
+          { id: "gpt-5.6-terra", name: "Codex Terra" },
+        ],
+      },
+    ];
+    expect(routeModelForTask("做架构规划和验收", withoutSol, "openai/gpt-5.6-luna")).toMatchObject({
+      tier: "deep",
+      model: "openai/gpt-5.6-terra",
+      matchedPreference: "terra",
+    });
+  });
 });

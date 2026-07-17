@@ -67,9 +67,11 @@
   "researchControls": {
     "mode": { "aria": "Ausführungsmodus", "general": "Allgemeine Forschung", "verified": "Verifizierte Workflows" },
     "agent": { "aria": "Forschungsagent", "empty": "Keine Agenten verfügbar", "primaryGroup": "Primäre Agenten", "subagentGroup": "Unteragenten", "otherGroup": "Weitere Agenten" },
-    "model": { "aria": "Modell", "empty": "Keine Modelle verfügbar" },
+    "model": { "aria": "Modell", "empty": "Keine Modelle verfügbar", "auto": "Auto · task-aware", "runtimeDefault": "runtime default", "autoRoute": { "quick": "Auto · quick → {{model}}", "standard": "Auto · standard → {{model}}", "deep": "Auto · deep → {{model}}" } },
     "skills": { "aria": "Forschungsskills öffnen", "title": "Von OpenCode gemeldete Skills anzeigen", "count": "{{count}} Skills" }
   },
+  "parallelTasks": { "aria": "Parallel tasks", "title": "Task center", "subtitle": "Monitor independent research tasks", "new": "New task", "synthesize": "Synthesize", "empty": "No research tasks yet.", "listAria": "Research tasks", "runtimeDefault": "Runtime default", "requestedModel": "Requested", "current": "Current task", "status": { "running": "Running", "waiting": "Waiting", "recovering": "Recovering", "complete": "Complete", "failed": "Failed" } },
+  "taskPlan": { "aria": "Task plan", "title": "Plan parallel tasks", "subtitle": "Break a research goal into independent tasks.", "objective": "Objective", "objectivePlaceholder": "What should this research accomplish?", "taskCount": "{{count}} of 5 tasks", "generate": "Generate", "generating": "Generating…", "generateError": "Could not generate a task plan. Try again.", "taskList": "Planned tasks", "taskNumber": "Task {{number}}", "remove": "Remove task {{number}}", "titleLabel": "Task {{number}} title", "titlePlaceholder": "Task title", "promptLabel": "Task {{number}} prompt", "promptPlaceholder": "Instructions for this task", "add": "Add task", "launch": "Launch tasks", "launching": "Launching…", "launchError": "Could not launch this plan. Try again." },
   "workspaceArtifacts": {
     "heading": "Arbeitsbereichsartefakte", "count": "{{count}} gefunden", "refreshAria": "Arbeitsbereichsartefakte aktualisieren"
   },
@@ -117,6 +119,7 @@
       "label": "Durchläufe",
       "title": "Die Experimentdurchläufe dieser Sitzung — neben dem Chat"
     },
+    "tasksToggle": { "label": "Tasks", "title": "Plan, launch, and monitor parallel research tasks" },
     "notebook": {
       "openTitle": "{{path}} öffnen — der Agent arbeitet in dieser Sitzung an diesem Notebook"
     },

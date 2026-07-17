@@ -1,26 +1,35 @@
-import { CheckCircle2, Circle, Clock3, Cpu, LoaderCircle, Plus } from "lucide-react";
+import { CheckCircle2, Circle, Clock3, Cpu, LoaderCircle, Plus, Sparkles, XCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SessionMeta } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
 
-export type ParallelTaskStatus = "running" | "waiting" | "complete";
+export type ParallelTaskStatus = "running" | "waiting" | "recovering" | "complete" | "failed";
 
 export interface ParallelTaskCenterProps {
   sessions: SessionMeta[];
   currentId: string | null;
   runningSessions: Record<string, true>;
   waitingSessions?: Record<string, true>;
+  failedSessions?: Record<string, string>;
+  recoveringSessions?: Record<string, true>;
   sessionModels?: Record<string, string | undefined>;
   onOpen: (sessionId: string) => void;
   onNew: () => void;
+  canSynthesize?: boolean;
+  synthesizing?: boolean;
+  onSynthesize?: () => void;
 }
 
 function taskStatus(
   session: SessionMeta,
   runningSessions: Record<string, true>,
   waitingSessions: Record<string, true>,
+  failedSessions: Record<string, string>,
+  recoveringSessions: Record<string, true>,
 ): ParallelTaskStatus {
+  if (failedSessions[session.id]) return "failed";
   if (waitingSessions[session.id]) return "waiting";
+  if (recoveringSessions[session.id]) return "recovering";
   if (runningSessions[session.id]) return "running";
   return "complete";
 }
@@ -28,6 +37,7 @@ function taskStatus(
 function StatusIcon({ status }: { status: ParallelTaskStatus }) {
   if (status === "running") return <LoaderCircle size={15} className="animate-spin text-accent" />;
   if (status === "complete") return <CheckCircle2 size={15} className="text-emerald-600 dark:text-emerald-400" />;
+  if (status === "failed") return <XCircle size={15} className="text-danger" />;
   return <Clock3 size={15} className="text-muted" />;
 }
 
@@ -39,9 +49,14 @@ export function ParallelTaskCenter({
   currentId,
   runningSessions,
   waitingSessions = {},
+  failedSessions = {},
+  recoveringSessions = {},
   sessionModels = {},
   onOpen,
   onNew,
+  canSynthesize = false,
+  synthesizing = false,
+  onSynthesize,
 }: ParallelTaskCenterProps) {
   const { t } = useTranslation("session");
   const orderedSessions = [...sessions].sort((a, b) => {
@@ -58,14 +73,31 @@ export function ParallelTaskCenter({
             {t("parallelTasks.subtitle", { defaultValue: "Monitor independent research tasks" })}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={onNew}
-          className="inline-flex items-center gap-1.5 rounded-input bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        >
-          <Plus size={14} />
-          {t("parallelTasks.new", { defaultValue: "New task" })}
-        </button>
+        <div className="flex items-center gap-2">
+          {onSynthesize && (
+            <button
+              type="button"
+              onClick={onSynthesize}
+              disabled={!canSynthesize || synthesizing}
+              className="inline-flex items-center gap-1.5 rounded-input border border-border px-2.5 py-1.5 text-xs font-medium text-text hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {synthesizing ? (
+                <LoaderCircle size={14} className="animate-spin" />
+              ) : (
+                <Sparkles size={14} />
+              )}
+              {t("parallelTasks.synthesize", { defaultValue: "Synthesize" })}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onNew}
+            className="inline-flex items-center gap-1.5 rounded-input bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <Plus size={14} />
+            {t("parallelTasks.new", { defaultValue: "New task" })}
+          </button>
+        </div>
       </header>
 
       {orderedSessions.length === 0 ? (
@@ -75,13 +107,28 @@ export function ParallelTaskCenter({
       ) : (
         <ul className="divide-y divide-border" aria-label={t("parallelTasks.listAria", { defaultValue: "Research tasks" })}>
           {orderedSessions.map((session) => {
-            const status = taskStatus(session, runningSessions, waitingSessions);
+            const status = taskStatus(
+              session,
+              runningSessions,
+              waitingSessions,
+              failedSessions,
+              recoveringSessions,
+            );
             const isCurrent = currentId === session.id;
             const routedModel =
               sessionModels[session.id] ??
               t("parallelTasks.runtimeDefault", { defaultValue: "Runtime default" });
             const statusLabel = t(`parallelTasks.status.${status}`, {
-              defaultValue: status === "running" ? "Running" : status === "complete" ? "Complete" : "Waiting",
+              defaultValue:
+                status === "running"
+                  ? "Running"
+                  : status === "complete"
+                    ? "Complete"
+                    : status === "failed"
+                      ? "Failed"
+                      : status === "recovering"
+                        ? "Recovering"
+                      : "Waiting",
             });
             return (
               <li key={session.id}>
@@ -101,7 +148,9 @@ export function ParallelTaskCenter({
                       <span>{statusLabel}</span>
                       <span aria-hidden={true}>·</span>
                       <Cpu size={12} aria-hidden={true} />
-                      <span className="truncate">{routedModel}</span>
+                      <span className="truncate">
+                        {t("parallelTasks.requestedModel", { defaultValue: "Requested" })}: {routedModel}
+                      </span>
                     </span>
                   </span>
                   {isCurrent && <Circle size={8} fill="currentColor" className="shrink-0 text-accent" aria-label={t("parallelTasks.current", { defaultValue: "Current task" })} />}

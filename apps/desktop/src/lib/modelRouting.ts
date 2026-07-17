@@ -89,7 +89,10 @@ export function routeModelForTask(
       search: `${provider.id} ${provider.name} ${model.id} ${model.name}`.toLowerCase(),
     })),
   );
-  for (const preference of MODEL_PREFERENCES[tier]) {
+  const fallbackTiers: TaskComplexity[] =
+    tier === "deep" ? ["deep", "standard", "quick"] : tier === "standard" ? ["standard", "quick"] : ["quick"];
+  const preferences = [...new Set(fallbackTiers.flatMap((candidate) => MODEL_PREFERENCES[candidate]))];
+  for (const preference of preferences) {
     const match = models.find((model) => model.search.includes(preference));
     if (match) return { tier, model: match.value, matchedPreference: preference.trim() };
   }
