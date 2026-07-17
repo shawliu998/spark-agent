@@ -19,6 +19,7 @@ Major reused or bundled components include:
 - ai4s-skills — MIT; its license is copied into the bundled skill resource.
 - OpenCode — MIT; source: <https://github.com/anomalyco/opencode>
 - uv — Apache-2.0 or MIT; source: <https://github.com/astral-sh/uv>
+- ripgrep — Unlicense or MIT; source: <https://github.com/BurntSushi/ripgrep>
 - PaperQA2 — Apache-2.0; source: <https://github.com/Future-House/paper-qa>
 - Jupyter nbclient — BSD-3-Clause; source: <https://github.com/jupyter/nbclient>
 

@@ -3450,6 +3450,7 @@ export function foldEvent(
             ].join("\n")
           : undefined);
       const { verb, title } = toolPresentation(event.tool, event.title, event.input);
+      const detail = event.output ?? event.error;
       const block: ThreadBlock = {
         kind: "tool-call",
         title,
@@ -3464,8 +3465,8 @@ export function foldEvent(
         ...(event.status === "running" && event.partialOutput
           ? { partialOutput: capTail(foldCarriageReturns(event.partialOutput), LIVE_TAIL_MAX) }
           : {}),
-        ...(event.output?.trim()
-          ? { output: capTail(foldCarriageReturns(event.output), DETAIL_MAX).replace(/\s+$/, "") }
+        ...(detail?.trim()
+          ? { output: capTail(foldCarriageReturns(detail), DETAIL_MAX).replace(/\s+$/, "") }
           : {}),
         ...(startedAt ? { startedAt } : {}),
         ...(endedAt ? { endedAt } : {}),
@@ -3587,6 +3588,7 @@ export function historyToThread(messages: HistoryMessage[], commands?: CommandIn
           const command = str(p.state?.input?.command);
           const filePath = str(p.state?.input?.filePath) || str(p.state?.input?.path);
           const content = str(p.state?.input?.content);
+          const detail = p.state?.output || p.state?.error;
           const diff =
             str(p.state?.metadata?.diff) ||
             (EDIT_TOOLS.has(p.tool ?? "") &&
@@ -3609,8 +3611,8 @@ export function historyToThread(messages: HistoryMessage[], commands?: CommandIn
             ...(filePath ? { filePath: tidyToolTitle(filePath) } : {}),
             ...(content ? { content: capHead(content, DETAIL_MAX) } : {}),
             ...(diff ? { diff: capHead(diff, DETAIL_MAX) } : {}),
-            ...(p.state?.output?.trim()
-              ? { output: capTail(foldCarriageReturns(p.state.output), DETAIL_MAX).replace(/\s+$/, "") }
+            ...(detail?.trim()
+              ? { output: capTail(foldCarriageReturns(detail), DETAIL_MAX).replace(/\s+$/, "") }
               : {}),
             ...(typeof p.state?.time?.start === "number" ? { startedAt: p.state.time.start } : {}),
             ...(typeof p.state?.time?.end === "number" ? { endedAt: p.state.time.end } : {}),

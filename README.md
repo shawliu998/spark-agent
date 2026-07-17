@@ -130,6 +130,7 @@ cd spark-agent
 pnpm install --frozen-lockfile
 bash scripts/dev/fetch-opencode.sh
 bash scripts/dev/fetch-uv.sh
+bash scripts/dev/fetch-ripgrep.sh
 pnpm --filter @ai4s/desktop tauri dev
 ```
 

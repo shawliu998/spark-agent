@@ -245,6 +245,17 @@ fn sensitive_shell_rules(bash: &mut serde_json::Map<String, Value>) {
 fn autonomous_bash_permission() -> Value {
     let mut bash = command_rules(AUTONOMOUS_ASK_BASH, "ask");
     for pattern in [
+        // Interpreter APIs are still shell commands from OpenCode's point of
+        // view. Cover common deletion calls so `Path.unlink()` cannot bypass
+        // the same approval boundary as an explicit `rm`.
+        "*unlink(*",
+        "*os.remove(*",
+        "*shutil.rmtree(*",
+        "*.rmdir(*",
+        "*rmSync(*",
+        "*rmdirSync(*",
+        "*fs.rm(*",
+        "*fs.promises.rm(*",
         "find * -delete*",
         "* find * -delete*",
         "* .env*",
@@ -484,8 +495,32 @@ fn full_permission_with_mcp(_mcp: Option<&Value>) -> Value {
     full_permission()
 }
 
+fn prior_autonomous_permission() -> Value {
+    // Exact Autonomous policy from before interpreter-level deletion calls
+    // gained approval rules. Recognize it only for one-way migration so an
+    // existing Autonomous selection does not fall back to the Balanced floor.
+    let mut permission = full_permission();
+    let bash = permission["bash"]
+        .as_object_mut()
+        .expect("Autonomous bash permission is an object");
+    for pattern in [
+        "*unlink(*",
+        "*os.remove(*",
+        "*shutil.rmtree(*",
+        "*.rmdir(*",
+        "*rmSync(*",
+        "*rmdirSync(*",
+        "*fs.rm(*",
+        "*fs.promises.rm(*",
+    ] {
+        bash.remove(pattern);
+    }
+    permission
+}
+
 fn is_full_permission(permission: &Value, mcp: Option<&Value>) -> bool {
     if permission == &full_permission()
+        || permission == &prior_autonomous_permission()
         || permission == &prior_full_permission()
         || is_legacy_full(permission)
     {
@@ -729,6 +764,9 @@ mod tests {
         assert_eq!(v["permission"]["bash"]["rm *"], "ask");
         assert_eq!(v["permission"]["bash"]["git push *"], "ask");
         assert_eq!(v["permission"]["bash"]["pip install *"], "ask");
+        assert_eq!(v["permission"]["bash"]["*unlink(*"], "ask");
+        assert_eq!(v["permission"]["bash"]["*shutil.rmtree(*"], "ask");
+        assert_eq!(v["permission"]["bash"]["*rmSync(*"], "ask");
         assert_eq!(v["permission"]["bash"]["sudo *"], "deny");
         assert_eq!(v["permission"]["bash"]["systemctl *"], "deny");
         assert_eq!(
@@ -893,6 +931,20 @@ mod tests {
         let existing = json!({
             "model": "keep/me",
             "permission": prior_full_permission(),
+        });
+        let template = json!({"permission": balanced_permission()});
+        let merged = merge_profile_defaults(&existing.to_string(), &template.to_string()).unwrap();
+        let value: Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["model"], "keep/me");
+        assert_eq!(value["permission"], full_permission());
+        assert_eq!(permission_mode_of(&merged).unwrap(), Some(MODE_FULL));
+    }
+
+    #[test]
+    fn profile_merge_migrates_prior_autonomous_policy_after_safety_tightening() {
+        let existing = json!({
+            "model": "keep/me",
+            "permission": prior_autonomous_permission(),
         });
         let template = json!({"permission": balanced_permission()});
         let merged = merge_profile_defaults(&existing.to_string(), &template.to_string()).unwrap();

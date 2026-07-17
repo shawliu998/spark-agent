@@ -29,7 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/opencode", "binaries/uv"],
+    "externalBin": ["binaries/opencode", "binaries/uv", "binaries/rg"],
     "macOS": {
       "minimumSystemVersion": "13.0"
     },

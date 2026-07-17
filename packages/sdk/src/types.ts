@@ -29,6 +29,8 @@ export interface ToolUpdatedEvent {
   input?: Record<string, unknown>;
   /** Tool result text, when the tool returned one. */
   output?: string;
+  /** Tool failure text. OpenCode stores failures separately from output. */
+  error?: string;
   /** Accumulated stdout tail while the tool is still running (bash streams it
    *  via `state.metadata.output` on every update — verified on 1.17.13). */
   partialOutput?: string;
@@ -176,6 +178,7 @@ export interface HistoryPart {
     title?: string;
     input?: Record<string, unknown>;
     output?: string;
+    error?: string;
     /** Epoch ms the tool started/finished — persisted with the part. */
     time?: { start?: number; end?: number };
     /** Tool-specific extras (bash stdout tail, edit diff, task session link). */
@@ -276,6 +279,10 @@ export interface OpenCodeToolPart {
   type: "tool";
   callID: string;
   tool: string;
-  state: { status: "pending" | "running" | "completed" | "error"; title?: string };
+  state: {
+    status: "pending" | "running" | "completed" | "error";
+    title?: string;
+    error?: string;
+  };
 }
 export type OpenCodePart = OpenCodeTextPart | OpenCodeToolPart | { type: string };

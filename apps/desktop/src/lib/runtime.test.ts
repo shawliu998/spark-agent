@@ -191,6 +191,24 @@ describe("foldEvent", () => {
     expect(s2.blocks[0]).not.toHaveProperty("partialOutput");
   });
 
+  it("shows a failed tool's error detail", () => {
+    const s = foldAll([
+      {
+        type: "tool.updated",
+        sessionId: S,
+        callId: "c1",
+        tool: "skill",
+        status: "failed",
+        error: "ripgrep execution failed",
+      },
+    ]);
+    expect(s.blocks[0]).toMatchObject({
+      kind: "tool-call",
+      status: "failed",
+      output: "ripgrep execution failed",
+    });
+  });
+
   it("keeps distinct parts as separate blocks in arrival order", () => {
     const s = foldAll([
       { type: "text.updated", sessionId: S, partId: "p1", text: "planning" },
@@ -382,5 +400,25 @@ describe("historyToThread", () => {
     ];
     const t = historyToThread(msgs);
     expect(t.blocks.every((b) => b.kind !== "status-line")).toBe(true);
+  });
+
+  it("restores a failed tool's persisted error detail", () => {
+    const msgs: HistoryMessage[] = [
+      {
+        role: "assistant",
+        parts: [
+          {
+            type: "tool",
+            tool: "skill",
+            state: { status: "error", title: "notebook-analysis", error: "ripgrep execution failed" },
+          },
+        ],
+      },
+    ];
+    expect(historyToThread(msgs).blocks[0]).toMatchObject({
+      kind: "tool-call",
+      status: "failed",
+      output: "ripgrep execution failed",
+    });
   });
 });

@@ -92,14 +92,16 @@ write_transaction_journal_fixture() {
   printf '%s\n' "$phase" >"$lock/phase"
 }
 
-[[ "${#SIDECAR_ASSET_MANIFEST[@]}" -eq 12 ]] || \
-  fail "expected 12 sidecar manifest records, found ${#SIDECAR_ASSET_MANIFEST[@]}"
+[[ "${#SIDECAR_ASSET_MANIFEST[@]}" -eq 18 ]] || \
+  fail "expected 18 sidecar manifest records, found ${#SIDECAR_ASSET_MANIFEST[@]}"
 
 seen_keys=$'\n'
 opencode_triples=$'\n'
 uv_triples=$'\n'
+ripgrep_triples=$'\n'
 opencode_count=0
 uv_count=0
+ripgrep_count=0
 for record in "${SIDECAR_ASSET_MANIFEST[@]}"; do
   IFS='|' read -r tool version triple asset digest extra <<<"$record"
   [[ -n "$tool" && -n "$version" && -n "$triple" && -n "$asset" &&
@@ -131,11 +133,17 @@ for record in "${SIDECAR_ASSET_MANIFEST[@]}"; do
       uv_triples+="${triple}"$'\n'
       uv_count=$((uv_count + 1))
       ;;
+    ripgrep)
+      [[ "$ripgrep_triples" != *$'\n'"$triple"$'\n'* ]] || \
+        fail "duplicate ripgrep target triple: $triple"
+      ripgrep_triples+="${triple}"$'\n'
+      ripgrep_count=$((ripgrep_count + 1))
+      ;;
     *) fail "unknown tool in sidecar manifest: $tool" ;;
   esac
 done
-[[ "$opencode_count" -eq 6 && "$uv_count" -eq 6 ]] || \
-  fail "expected six OpenCode and six uv assets"
+[[ "$opencode_count" -eq 6 && "$uv_count" -eq 6 && "$ripgrep_count" -eq 6 ]] || \
+  fail "expected six OpenCode, six uv, and six ripgrep assets"
 
 sdk_opencode_version="$(sed -n 's/^export const OPENCODE_VERSION = "\([^"]*\)";$/\1/p' \
   "$ROOT/packages/sdk/src/types.ts")"
@@ -244,7 +252,7 @@ printf '%s\n' \
   'exit 98' \
   >"$unknown_target_bin/curl"
 chmod 755 "$unknown_target_bin/curl"
-for fetch_script in fetch-opencode.sh fetch-uv.sh; do
+for fetch_script in fetch-opencode.sh fetch-uv.sh fetch-ripgrep.sh; do
   marker="$test_root/${fetch_script}.curl-invoked"
   if PATH="$unknown_target_bin:$PATH" UNKNOWN_TARGET_CURL_MARKER="$marker" \
     bash "$ROOT/scripts/dev/$fetch_script" unknown-target >/dev/null 2>&1; then
@@ -886,6 +894,7 @@ bash -n \
   "$ROOT/scripts/dev/sidecar-integrity.sh" \
   "$ROOT/scripts/dev/fetch-opencode.sh" \
   "$ROOT/scripts/dev/fetch-uv.sh" \
+  "$ROOT/scripts/dev/fetch-ripgrep.sh" \
   "$ROOT/scripts/dev/fetch-skills.sh" \
   "$ROOT/scripts/dev/fetch-kdense-skills.sh" \
   "$ROOT/scripts/quality/check-release-assets.sh"

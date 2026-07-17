@@ -1780,6 +1780,23 @@ fn is_python_cache_entry(path: &Path, is_dir: bool) -> bool {
     })
 }
 
+/// Tauri places external binaries beside the app executable. Put that directory
+/// first so child processes can resolve bundled helpers such as `rg` without a
+/// runtime download. Keep the inherited/user PATH entries after it.
+fn with_executable_dir(base: String) -> String {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|executable| executable.parent().map(Path::to_path_buf))
+    else {
+        return base;
+    };
+    let mut parts = vec![dir.clone()];
+    parts.extend(std::env::split_paths(&base).filter(|part| part != &dir));
+    std::env::join_paths(parts)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or(base)
+}
+
 /// PATH for the sidecar (and everything the agent runs through it). Apps
 /// launched from Finder/Dock/a desktop entry get a minimal PATH, so the agent
 /// would not find the user's Python/conda/Homebrew tools. Prepend the
@@ -1827,7 +1844,7 @@ pub(crate) fn enriched_path() -> String {
     if !base.is_empty() {
         parts.push(base);
     }
-    parts.join(":")
+    with_executable_dir(parts.join(":"))
 }
 
 /// Windows twin of the unix version above: GUI apps inherit a PATH without the
@@ -1861,7 +1878,7 @@ pub(crate) fn enriched_path() -> String {
     if !base.is_empty() {
         parts.push(base);
     }
-    parts.join(";")
+    with_executable_dir(parts.join(";"))
 }
 
 /// A `std::process::Command` that never pops a console window on Windows.
@@ -3573,7 +3590,7 @@ mod tests {
         sidecar_health_ready, skill_manifest_name, start_once, start_with_port_retry,
         sync_managed_agent_pack, sync_managed_skill_pack, sync_skill_pack, terminate_checked,
         termination_outcome, validate_proxy_url, validate_resolved_agents,
-        validate_runtime_permission_floor, wait_until_ready, with_lifecycle,
+        validate_runtime_permission_floor, wait_until_ready, with_executable_dir, with_lifecycle,
         write_managed_profile_registry, write_private_atomic, ManagedProfileRegistry,
         ResolvedAgent, SpawnAttemptError, EXPECTED_OPENCODE_VERSION, MANAGED_SCIENCE_MCP_DIR,
         UV_PYTHON_DIR,
@@ -3623,6 +3640,27 @@ mod tests {
             std::path::Path::new("opencode")
         )
         .is_err());
+    }
+
+    #[test]
+    fn executable_directory_is_first_and_not_duplicated_on_path() {
+        let executable = std::env::current_exe().unwrap();
+        let executable_dir = executable.parent().unwrap().to_path_buf();
+        let base = std::env::join_paths([
+            std::path::PathBuf::from("/first"),
+            executable_dir.clone(),
+            std::path::PathBuf::from("/last"),
+        ])
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+        let resolved = with_executable_dir(base);
+        let parts: Vec<_> = std::env::split_paths(&resolved).collect();
+        assert_eq!(parts.first(), Some(&executable_dir));
+        assert_eq!(
+            parts.iter().filter(|part| *part == &executable_dir).count(),
+            1
+        );
     }
 
     #[test]

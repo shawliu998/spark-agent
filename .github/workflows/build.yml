@@ -103,6 +103,10 @@ jobs:
         shell: bash
         run: bash scripts/dev/fetch-uv.sh ${{ matrix.target }}
 
+      - name: Fetch bundled ripgrep sidecar
+        shell: bash
+        run: bash scripts/dev/fetch-ripgrep.sh ${{ matrix.target }}
+
       - name: Verify release version and asset integrity policy
         shell: bash
         env:
