@@ -13,6 +13,7 @@ mod large_file;
 mod modal;
 mod opencode_config;
 mod preview_server;
+mod project_python;
 mod projects;
 mod provenance;
 mod runs;
@@ -84,6 +85,8 @@ pub fn run() {
             jupyter::setup_jupyter,
             jupyter::start_jupyter,
             jupyter::open_jupyter_lab,
+            project_python::project_python_status,
+            project_python::setup_project_python,
             runtime::configure_opencode,
             runtime::get_approval_mode,
             runtime::set_approval_mode,

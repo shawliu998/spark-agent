@@ -210,6 +210,25 @@ export async function setupJupyter(): Promise<void> {
   await invoke("setup_jupyter");
 }
 
+export interface ProjectPythonStatus {
+  installed: boolean;
+  path: string;
+}
+
+/** Status of the active project's isolated `.spark/python` research environment. */
+export async function projectPythonStatus(): Promise<ProjectPythonStatus | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ProjectPythonStatus>("project_python_status");
+}
+
+/** Provision the active project's pinned research environment with bundled uv. */
+export async function setupProjectPython(): Promise<ProjectPythonStatus> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ProjectPythonStatus>("setup_project_python");
+}
+
 /** Start the managed headless jupyter-lab (idempotent). */
 export async function startJupyter(): Promise<JupyterStatus> {
   if (!isTauri) throw new Error("not running in the desktop app");
@@ -277,7 +296,7 @@ export async function setPythonPath(path: string): Promise<void> {
 
 /** One live output line from a uv provisioning run (jupyter / science MCP). */
 export interface SetupProgress {
-  task: "jupyter" | "science";
+  task: "jupyter" | "science" | "project-python";
   line: string;
 }
 
