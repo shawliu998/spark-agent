@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 15:21 · fix(native-runtime-smoke): completed a credential-free pinned OpenCode loop and packaged macOS UI smoke, fixed the Tauri async-context blocking-client startup panic, and allowed only OpenCode's exact app-private tool-output directory through the resolved permission floor; focused Rust regressions, debug app build, Runtime Ready, demo activation, and eight bundled artifacts pass.
+
 2026-07-17 14:40 · feat(openscience-parity-integration): merged the native safe permission presets, folder-backed Home/onboarding shell, six General Research templates, recent-session resume, and bundled synthetic research demo on `codex/openscience-parity-batch1`; 156 focused Desktop, 23 Rust, 8 profile tests, Desktop typecheck, deterministic demo, and diff checks pass.
 
 2026-07-17 14:35 · feat(openscience-client-parity): completed Foundation Phase 1 with General Research defaulting to native Balanced/Full Access permission presets, removed the fake Sandbox choice, kept Verified separate from science-core-free General sessions, and refreshed the preserved upstream audit at OpenScience `e9844a4`; 173 focused Desktop, 16 Rust preset, 8 Python profile tests, and TypeScript pass, while strengthened `/agent` bypass tests produced the expected fail-closed rejection but the final assertion-text rerun was skipped by instruction, and packaged preset switching plus hard workspace confinement remain open.

@@ -435,6 +435,16 @@ fn opencode_auth_file(app: &AppHandle) -> Result<PathBuf, String> {
         .join("auth.json"))
 }
 
+fn managed_tool_output_permission_pattern(app: &AppHandle) -> Result<String, String> {
+    Ok(runtime_root(app)?
+        .join("xdg-data")
+        .join("opencode")
+        .join("tool-output")
+        .join("*")
+        .to_string_lossy()
+        .replace('\\', "/"))
+}
+
 /// The config file to edit in place: the server may have rewritten the config
 /// as opencode.jsonc — prefer whichever exists, fall back to opencode.json.
 fn effective_config_file(app: &AppHandle) -> Result<PathBuf, String> {
@@ -2373,7 +2383,11 @@ fn require_allowed(agent: &ResolvedAgent, permission: &str, pattern: &str) -> Re
     }
 }
 
-fn validate_resolved_agents(agents: &[ResolvedAgent], permission_mode: &str) -> Result<(), String> {
+fn validate_resolved_agents(
+    agents: &[ResolvedAgent],
+    permission_mode: &str,
+    managed_tool_output_pattern: &str,
+) -> Result<(), String> {
     if agents.is_empty() {
         return Err("OpenCode returned no resolved agents".into());
     }
@@ -2420,7 +2434,14 @@ fn validate_resolved_agents(agents: &[ResolvedAgent], permission_mode: &str) -> 
             );
             let full_workspace_edit = permission_mode == crate::opencode_config::MODE_FULL
                 && matches!(rule.permission.as_str(), "edit" | "apply_patch");
-            if !safe_workspace_permission && !full_workspace_edit {
+            // OpenCode appends access to its own XDG tool-output directory so
+            // large tool results can be read back. Spark owns that exact
+            // private path; similar paths and every other external allow still
+            // fail closed.
+            let managed_tool_output = rule.permission == "external_directory"
+                && rule.pattern.replace('\\', "/")
+                    == managed_tool_output_pattern.replace('\\', "/");
+            if !safe_workspace_permission && !full_workspace_edit && !managed_tool_output {
                 return Err(format!(
                     "agent {:?} appends an unsafe allow after the approval floor: permission {:?}, pattern {:?}",
                     agent.name, rule.permission, rule.pattern
@@ -2525,6 +2546,33 @@ fn validate_runtime_permission_floor(
     workspace: &Path,
     timeout: Duration,
     permission_mode: &str,
+    managed_tool_output_pattern: &str,
+) -> Result<(), String> {
+    // `start_runtime` is dispatched by Tauri on its async runtime. Reqwest's
+    // blocking client owns an internal runtime and panics when dropped from an
+    // async context, so keep its complete lifecycle on a scoped OS thread.
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                validate_runtime_permission_floor_blocking(
+                    port,
+                    workspace,
+                    timeout,
+                    permission_mode,
+                    managed_tool_output_pattern,
+                )
+            })
+            .join()
+            .map_err(|_| "OpenCode permission validation worker panicked".to_string())?
+    })
+}
+
+fn validate_runtime_permission_floor_blocking(
+    port: u16,
+    workspace: &Path,
+    timeout: Duration,
+    permission_mode: &str,
+    managed_tool_output_pattern: &str,
 ) -> Result<(), String> {
     let mut url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}/agent"))
         .map_err(|error| format!("could not build OpenCode agent URL: {error}"))?;
@@ -2552,7 +2600,7 @@ fn validate_runtime_permission_floor(
     }
     let agents: Vec<ResolvedAgent> = serde_json::from_str(&body)
         .map_err(|error| format!("invalid OpenCode agent permission response: {error}"))?;
-    validate_resolved_agents(&agents, permission_mode)
+    validate_resolved_agents(&agents, permission_mode, managed_tool_output_pattern)
         .map_err(|error| format!("OpenCode permission floor rejected the workspace: {error}"))
 }
 
@@ -2875,6 +2923,7 @@ fn spawn_sidecar(
             &workspace_dir(app)?,
             remaining.min(SIDECAR_POLICY_TIMEOUT),
             permission_mode,
+            &managed_tool_output_permission_pattern(app)?,
         )
     };
     if let Err(policy_error) = policy_validation {
@@ -3273,6 +3322,7 @@ pub fn set_workspace(
                 &canon,
                 SIDECAR_POLICY_TIMEOUT,
                 permission_mode,
+                &managed_tool_output_permission_pattern(&app)?,
             )?;
         }
 
@@ -3355,7 +3405,13 @@ pub fn validate_runtime_permissions(
             .ok_or("OpenCode runtime has no published port")?;
         let config = read_optional_config(&effective_config_file(&app)?)?;
         let permission_mode = crate::opencode_config::effective_permission_mode(&config)?;
-        validate_runtime_permission_floor(port, &requested, SIDECAR_POLICY_TIMEOUT, permission_mode)
+        validate_runtime_permission_floor(
+            port,
+            &requested,
+            SIDECAR_POLICY_TIMEOUT,
+            permission_mode,
+            &managed_tool_output_permission_pattern(&app)?,
+        )
     })
 }
 
@@ -3452,10 +3508,11 @@ mod tests {
         resolve_provisioning_proxy_env, resolve_proxy_env, seatbelt_path_literal, server_password,
         sidecar_health_ready, skill_manifest_name, start_once, start_with_port_retry,
         sync_managed_agent_pack, sync_managed_skill_pack, sync_skill_pack, terminate_checked,
-        termination_outcome, validate_proxy_url, validate_resolved_agents, wait_until_ready,
-        with_lifecycle, write_managed_profile_registry, write_private_atomic,
-        ManagedProfileRegistry, ResolvedAgent, SpawnAttemptError, EXPECTED_OPENCODE_VERSION,
-        MANAGED_SCIENCE_MCP_DIR, UV_PYTHON_DIR,
+        termination_outcome, validate_proxy_url, validate_resolved_agents,
+        validate_runtime_permission_floor, wait_until_ready, with_lifecycle,
+        write_managed_profile_registry, write_private_atomic, ManagedProfileRegistry,
+        ResolvedAgent, SpawnAttemptError, EXPECTED_OPENCODE_VERSION, MANAGED_SCIENCE_MCP_DIR,
+        UV_PYTHON_DIR,
     };
     use std::cell::{Cell, RefCell};
     use std::fs;
@@ -4026,17 +4083,108 @@ mod tests {
     }
 
     #[test]
+    fn policy_http_client_is_safe_inside_an_async_runtime() {
+        let agents = resolved_research_agent(crate::opencode_config::MODE_BALANCED, Vec::new());
+        let body = serde_json::json!([{
+            "name": &agents[0].name,
+            "permission": agents[0]
+                .permission
+                .iter()
+                .map(|rule| serde_json::json!({
+                    "permission": &rule.permission,
+                    "pattern": &rule.pattern,
+                    "action": &rule.action,
+                }))
+                .collect::<Vec<_>>(),
+        }])
+        .to_string();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 512];
+            while !request.ends_with(b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                assert_ne!(read, 0);
+                request.extend_from_slice(&chunk[..read]);
+            }
+            assert!(String::from_utf8(request)
+                .unwrap()
+                .starts_with("GET /agent?directory="));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                validate_runtime_permission_floor(
+                    port,
+                    std::path::Path::new("/tmp/spark policy"),
+                    Duration::from_secs(2),
+                    crate::opencode_config::MODE_BALANCED,
+                    "/private/spark/xdg-data/opencode/tool-output/*",
+                )
+                .unwrap();
+            });
+        server.join().unwrap();
+    }
+
+    #[test]
     fn resolved_agent_validation_accepts_balanced_and_full_native_policies() {
         validate_resolved_agents(
             &resolved_research_agent(crate::opencode_config::MODE_BALANCED, Vec::new()),
             crate::opencode_config::MODE_BALANCED,
+            "/private/spark/xdg-data/opencode/tool-output/*",
         )
         .unwrap();
         validate_resolved_agents(
             &resolved_research_agent(crate::opencode_config::MODE_FULL, Vec::new()),
             crate::opencode_config::MODE_FULL,
+            "/private/spark/xdg-data/opencode/tool-output/*",
         )
         .unwrap();
+    }
+
+    #[test]
+    fn resolved_agent_validation_accepts_only_the_managed_tool_output_directory() {
+        let managed = "/private/spark/xdg-data/opencode/tool-output/*";
+        let managed_rule = serde_json::json!({
+            "permission":"external_directory",
+            "pattern": managed,
+            "action":"allow"
+        });
+        validate_resolved_agents(
+            &resolved_research_agent(
+                crate::opencode_config::MODE_BALANCED,
+                vec![managed_rule.clone()],
+            ),
+            crate::opencode_config::MODE_BALANCED,
+            managed,
+        )
+        .unwrap();
+
+        let error = validate_resolved_agents(
+            &resolved_research_agent(
+                crate::opencode_config::MODE_BALANCED,
+                vec![serde_json::json!({
+                    "permission":"external_directory",
+                    "pattern":"/private/spark/xdg-data/opencode/tool-output-copy/*",
+                    "action":"allow"
+                })],
+            ),
+            crate::opencode_config::MODE_BALANCED,
+            managed,
+        )
+        .unwrap_err();
+        assert!(error.contains("unsafe allow"));
     }
 
     #[test]
@@ -4057,6 +4205,7 @@ mod tests {
                     })],
                 ),
                 crate::opencode_config::MODE_BALANCED,
+                "/private/spark/xdg-data/opencode/tool-output/*",
             )
             .unwrap_err();
             assert!(error.contains("unsafe allow"), "{permission}: {error}");
@@ -4081,6 +4230,7 @@ mod tests {
                     })],
                 ),
                 crate::opencode_config::MODE_FULL,
+                "/private/spark/xdg-data/opencode/tool-output/*",
             )
             .unwrap_err();
             assert!(error.contains("unsafe allow"), "{permission}: {error}");
@@ -4095,6 +4245,7 @@ mod tests {
                 vec![serde_json::json!({"permission":"read","pattern":"*","action":"allow"})],
             ),
             crate::opencode_config::MODE_BALANCED,
+            "/private/spark/xdg-data/opencode/tool-output/*",
         )
         .unwrap_err();
         assert!(read_error.contains("read allow after the sensitive-file floor"));
@@ -4109,6 +4260,7 @@ mod tests {
                 })],
             ),
             crate::opencode_config::MODE_BALANCED,
+            "/private/spark/xdg-data/opencode/tool-output/*",
         )
         .unwrap_err();
         assert!(external_error.contains("unsafe allow"));
