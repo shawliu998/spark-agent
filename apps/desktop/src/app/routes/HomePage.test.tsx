@@ -9,6 +9,6 @@ describe("HomePage", () => {
     render(<MemoryRouter><HomePage /></MemoryRouter>);
     expect(screen.getByRole("button", { name: "New Research Project" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Folder" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open Climate Trends Demo" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Synthetic Research Demo" })).toBeInTheDocument();
   });
 });

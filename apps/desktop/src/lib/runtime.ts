@@ -969,7 +969,8 @@ async function performTurn(
         moveScrollMemory(`chat:${DRAFT_KEY}`, `chat:${id}`);
       // Project metadata is deliberately folder-local. OpenCode remains the
       // session authority; this is only a best-effort association for Home.
-      if (get().workspace) void updateProjectLastSession(get().workspace, id).catch(() => {});
+      const projectWorkspace = get().workspace;
+      if (projectWorkspace) void updateProjectLastSession(projectWorkspace, id).catch(() => {});
       void get().refreshSessions();
     }
     const sid = id;
