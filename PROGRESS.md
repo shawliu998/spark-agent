@@ -4,7 +4,7 @@
 
 2026-07-17 18:30 · feat(kdense-skills): added a pinned, MIT-provenance curated 30-skill K-Dense adapter that verifies its archive and deploys through the existing OpenCode global skill directory without executing upstream scripts, installing dependencies, or overwriting user/project skills.
 
-2026-07-17 18:20 · feat(living-research-notebook): added a recoverable workspace-local `.spark/lab-notebook.jsonl` v1 journal, Research Agent guidance for explicit evidence-grounded entries, a session/type-filtered desktop viewer with Markdown/JSON export, and artifact-discovery exclusion coverage; profile tests, JSON/i18n parity, and diff checks pass, while desktop Vitest/typecheck/lint remain blocked because this worktree has no `node_modules`.
+2026-07-17 18:20 · feat(living-research-notebook): added a recoverable workspace-local `.spark/lab-notebook.jsonl` v1 journal, Research Agent guidance for explicit evidence-grounded entries, a session/type-filtered desktop viewer with Markdown/JSON export, and artifact-discovery exclusion coverage; 684 Desktop tests, typecheck, lint, build, profile tests, and diff checks pass after integration.
 
 2026-07-17 18:20 · docs(reuse-audit): added the evidence-based reuse matrix for Spark, OpenCode, scientific tooling, OpenScience, and unresolved candidates; confirmed taskPlanning/modelRouting are not default General Research coupling, with no safe code removal warranted.
 
