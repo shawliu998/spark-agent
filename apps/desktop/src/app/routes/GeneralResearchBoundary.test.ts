@@ -19,4 +19,10 @@ describe("General Research API boundary", () => {
     expect(liveSessionSource).toContain('mode === "verified"');
     expect(liveSessionSource).toContain('navigate("/research")');
   });
+
+  it("keeps project templates outside the Verified workflow boundary", () => {
+    const projectsSource = readFileSync(resolve(process.cwd(), "src/lib/projects.ts"), "utf8");
+    expect(projectsSource).not.toContain("scienceCore");
+    expect(projectsSource).not.toContain("useResearchWorkflow");
+  });
 });

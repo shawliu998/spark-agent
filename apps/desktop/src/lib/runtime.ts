@@ -48,6 +48,7 @@ import { deriveArtifact } from "./artifacts";
 import { provenanceInputFromEvent, recordProvenance } from "./provenance";
 import { recordRun, runInputFromEvent } from "./runs";
 import { splitReview } from "./review";
+import { updateProjectLastSession } from "./projects";
 import i18n from "@/i18n";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -966,6 +967,9 @@ async function performTurn(
       });
       if (conversationNavigationGeneration === navigationAtStart)
         moveScrollMemory(`chat:${DRAFT_KEY}`, `chat:${id}`);
+      // Project metadata is deliberately folder-local. OpenCode remains the
+      // session authority; this is only a best-effort association for Home.
+      if (get().workspace) void updateProjectLastSession(get().workspace, id).catch(() => {});
       void get().refreshSessions();
     }
     const sid = id;
@@ -2031,7 +2035,10 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       return;
     // Stamp the (now-active) workspace with this session's id so skill-recorded
     // remote runs attach to the session, not just the global Runs view.
-    if (dir) void markSession(id).catch(() => {});
+    if (dir) {
+      void markSession(id).catch(() => {});
+      void updateProjectLastSession(dir, id).catch(() => {});
+    }
     const sessionClient = client;
     if (!sessionClient) return;
     const requestRecoverySeq = sseSeq;

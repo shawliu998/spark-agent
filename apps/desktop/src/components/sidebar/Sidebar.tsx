@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { Files, FlaskConical, FolderTree, NotebookPen, PanelLeft, Plus, Settings, Trash2 } from "lucide-react";
+import { Files, FlaskConical, FolderTree, Home, NotebookPen, PanelLeft, Plus, Settings, Trash2 } from "lucide-react";
 import type { Project } from "@ai4s/shared";
 import { cn } from "@/lib/cn";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -28,7 +28,7 @@ export function Sidebar({ project }: { project: Project }) {
   const { t } = useTranslation("nav");
   const navigate = useNavigate();
   const location = useLocation();
-  const { sessions, hiddenExamples, startDraft, deleteSession, hideExample } = useRuntimeStore();
+  const { sessions, hiddenExamples, deleteSession, hideExample } = useRuntimeStore();
   const showUpdateBadge = useUpdateStore((s) => s.showBadge);
   const { sidebarCollapsed, sidebarWidth, setSidebarCollapsed, setSidebarWidth, toggleSidebar } =
     useUiStore();
@@ -62,8 +62,7 @@ export function Sidebar({ project }: { project: Project }) {
   };
 
   const startNew = () => {
-    startDraft();
-    navigate("/live");
+    navigate("/home");
   };
 
   const rows: Row[] = [
@@ -143,6 +142,7 @@ export function Sidebar({ project }: { project: Project }) {
       </div>
 
       <nav className="flex flex-col px-3">
+        <NavRow icon={<Home size={16} />} label="Home" onClick={() => navigate("/home")} />
         <NavRow icon={<Plus size={16} />} label={t("items.new")} onClick={startNew} />
         {productNavigation.map((item) => {
           const Icon = item.icon;
