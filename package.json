@@ -30,6 +30,7 @@
     "test:foundation": "bash scripts/quality/check-foundation.sh",
     "test:foundation:live": "bash scripts/quality/check-foundation.sh --live",
     "test:autonomous:live": "python3 -B tests/autonomous/live_provider_smoke.py",
+    "test:notebook": "python3 -B tests/notebook/notebook_fallback.py && pnpm --filter @ai4s/desktop exec vitest run src/lib/notebook-file.test.ts src/lib/workspaceArtifacts.test.ts",
     "test:release-assets": "bash scripts/quality/check-release-assets.sh",
     "demo:research": "python3 examples/research-demo/scripts/validate.py",
     "quality": "bash scripts/quality/run-all.sh",
