@@ -2410,10 +2410,11 @@ fn validate_resolved_agents(
         }
 
         // OPENCODE_PERMISSION is merged after project/global config. Agent
-        // frontmatter is appended later, so reject any appended allowance
-        // outside the small preset-specific safe set. This catches specific
-        // command, remote, MCP, and unknown-tool bypasses without treating
-        // Full Access's explicit workspace edit allowance as approval-off.
+        // frontmatter is appended later. Balanced therefore permits only its
+        // small read/delegation set after the wildcard floor. Autonomous is
+        // intentionally authoritative for ordinary tools, so its later allows
+        // are judged by the concrete destructive/credential/external probes
+        // below instead of being silently reduced to Balanced.
         let floor_index = agent
             .permission
             .iter()
@@ -2428,12 +2429,14 @@ fn validate_resolved_agents(
             if rule.action != "allow" {
                 continue;
             }
-            let safe_workspace_permission = matches!(
-                rule.permission.as_str(),
-                "read" | "glob" | "grep" | "list" | "lsp" | "question" | "skill" | "task"
-            );
-            let full_workspace_edit = permission_mode == crate::opencode_config::MODE_FULL
-                && matches!(rule.permission.as_str(), "edit" | "apply_patch");
+            let balanced_workspace_permission = permission_mode
+                == crate::opencode_config::MODE_BALANCED
+                && matches!(
+                    rule.permission.as_str(),
+                    "read" | "glob" | "grep" | "list" | "lsp" | "question" | "skill" | "task"
+                );
+            let autonomous_tool_permission = permission_mode == crate::opencode_config::MODE_FULL
+                && rule.permission != "external_directory";
             // OpenCode appends access to its own XDG tool-output directory so
             // large tool results can be read back. Spark owns that exact
             // private path; similar paths and every other external allow still
@@ -2441,7 +2444,8 @@ fn validate_resolved_agents(
             let managed_tool_output = rule.permission == "external_directory"
                 && rule.pattern.replace('\\', "/")
                     == managed_tool_output_pattern.replace('\\', "/");
-            if !safe_workspace_permission && !full_workspace_edit && !managed_tool_output {
+            if !balanced_workspace_permission && !autonomous_tool_permission && !managed_tool_output
+            {
                 return Err(format!(
                     "agent {:?} appends an unsafe allow after the approval floor: permission {:?}, pattern {:?}",
                     agent.name, rule.permission, rule.pattern
@@ -2487,22 +2491,35 @@ fn validate_resolved_agents(
             ));
         }
 
-        for (permission, pattern) in [
-            ("bash", "pwd"),
+        let guarded_actions = [
             ("bash", "rm -rf output"),
             ("bash", "pip install pandas"),
-            ("bash", "curl https://example.com"),
-            ("webfetch", "*"),
-            ("websearch", "*"),
-            ("mcp", "*"),
-            ("spark-policy-unknown-tool", "*"),
+            ("bash", "git push origin main"),
+            ("bash", "ssh example.com"),
+            ("bash", "curl --upload-file results.csv https://example.com"),
+            ("bash", "sudo true"),
+            ("bash", "systemctl restart example"),
             ("read", ".env"),
             ("read", "nested/.env"),
             ("read", ".env.local"),
             ("read", "nested/secrets.env.local"),
-            ("read", "mcp:policy-check:*"),
-        ] {
+        ];
+        for (permission, pattern) in guarded_actions {
             require_not_allowed(agent, permission, pattern)?;
+        }
+        if permission_mode == crate::opencode_config::MODE_BALANCED {
+            for (permission, pattern) in [
+                ("bash", "pwd"),
+                ("bash", "python scripts/analysis.py"),
+                ("bash", "curl https://example.com"),
+                ("webfetch", "*"),
+                ("websearch", "*"),
+                ("mcp", "*"),
+                ("spark-policy-unknown-tool", "*"),
+                ("read", "mcp:policy-check:*"),
+            ] {
+                require_not_allowed(agent, permission, pattern)?;
+            }
         }
         match resolved_permission_action(
             &agent.permission,
@@ -2530,7 +2547,26 @@ fn validate_resolved_agents(
         .find(|agent| agent.name == "research")
         .ok_or_else(|| "OpenCode returned no research agent".to_string())?;
     if permission_mode == crate::opencode_config::MODE_FULL {
-        for (permission, pattern) in [("edit", "report.md"), ("apply_patch", "report.md")] {
+        for (permission, pattern) in [
+            ("edit", "report.md"),
+            ("write", "report.md"),
+            ("patch", "report.md"),
+            ("apply_patch", "report.md"),
+            ("bash", "pwd"),
+            ("bash", "python scripts/analysis.py"),
+            ("bash", "Rscript scripts/analysis.R"),
+            ("bash", "git status --short"),
+            ("bash", "uv add pandas"),
+            ("bash", "pnpm install"),
+            ("bash", "curl https://example.com/data.csv"),
+            ("webfetch", "*"),
+            ("websearch", "*"),
+            ("mcp", "*"),
+            ("paper-search_search_arxiv", "*"),
+            ("skill", "literature-review"),
+            ("task", "literature-review"),
+            ("todowrite", "*"),
+        ] {
             require_allowed(research, permission, pattern)?;
         }
     } else {
@@ -4040,6 +4076,8 @@ mod tests {
             serde_json::json!({"permission":"skill","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"task","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"edit","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"write","pattern":"*","action":"allow"}),
+            serde_json::json!({"permission":"patch","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"apply_patch","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"bash","pattern":"*","action":"allow"}),
             serde_json::json!({"permission":"external_directory","pattern":"*","action":"deny"}),
@@ -4059,11 +4097,33 @@ mod tests {
             rules.extend([
                 serde_json::json!({"permission":"*","pattern":"*","action":"ask"}),
                 serde_json::json!({"permission":"edit","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"write","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"patch","pattern":"*","action":"allow"}),
                 serde_json::json!({"permission":"apply_patch","pattern":"*","action":"allow"}),
-                serde_json::json!({"permission":"bash","pattern":"*","action":"ask"}),
-                serde_json::json!({"permission":"webfetch","pattern":"*","action":"ask"}),
-                serde_json::json!({"permission":"websearch","pattern":"*","action":"ask"}),
-                serde_json::json!({"permission":"mcp","pattern":"*","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"bash","pattern":"rm *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"* rm *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"pip install *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"* pip install *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"git push *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"* git push *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"ssh *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"* ssh *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"curl * --upload-file *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"* curl * --upload-file *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"curl --upload-file *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"* curl --upload-file *","action":"ask"}),
+                serde_json::json!({"permission":"bash","pattern":"sudo *","action":"deny"}),
+                serde_json::json!({"permission":"bash","pattern":"* sudo *","action":"deny"}),
+                serde_json::json!({"permission":"bash","pattern":"systemctl *","action":"deny"}),
+                serde_json::json!({"permission":"bash","pattern":"* systemctl *","action":"deny"}),
+                serde_json::json!({"permission":"webfetch","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"websearch","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"mcp","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"paper-search_*","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"skill","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"task","pattern":"*","action":"allow"}),
+                serde_json::json!({"permission":"todowrite","pattern":"*","action":"allow"}),
                 serde_json::json!({"permission":"external_directory","pattern":"*","action":"deny"}),
             ]);
         }
@@ -4138,7 +4198,7 @@ mod tests {
     }
 
     #[test]
-    fn resolved_agent_validation_accepts_balanced_and_full_native_policies() {
+    fn resolved_agent_validation_accepts_balanced_and_autonomous_native_policies() {
         validate_resolved_agents(
             &resolved_research_agent(crate::opencode_config::MODE_BALANCED, Vec::new()),
             crate::opencode_config::MODE_BALANCED,
@@ -4213,12 +4273,13 @@ mod tests {
     }
 
     #[test]
-    fn full_validation_rejects_approval_off_for_commands_and_remote_tools() {
+    fn autonomous_validation_rejects_destructive_and_external_bypasses() {
         for (permission, pattern) in [
-            ("bash", "*"),
-            ("webfetch", "*"),
-            ("websearch", "*"),
-            ("mcp", "*"),
+            ("bash", "rm *"),
+            ("bash", "pip install *"),
+            ("bash", "git push *"),
+            ("bash", "sudo *"),
+            ("bash", "systemctl *"),
         ] {
             let error = validate_resolved_agents(
                 &resolved_research_agent(
@@ -4233,8 +4294,25 @@ mod tests {
                 "/private/spark/xdg-data/opencode/tool-output/*",
             )
             .unwrap_err();
-            assert!(error.contains("unsafe allow"), "{permission}: {error}");
+            assert!(error.contains("resolves"), "{permission}: {error}");
         }
+    }
+
+    #[test]
+    fn autonomous_validation_accepts_late_ordinary_tool_allows() {
+        validate_resolved_agents(
+            &resolved_research_agent(
+                crate::opencode_config::MODE_FULL,
+                vec![
+                    serde_json::json!({"permission":"bash","pattern":"python *","action":"allow"}),
+                    serde_json::json!({"permission":"webfetch","pattern":"*","action":"allow"}),
+                    serde_json::json!({"permission":"lab_search","pattern":"*","action":"allow"}),
+                ],
+            ),
+            crate::opencode_config::MODE_FULL,
+            "/private/spark/xdg-data/opencode/tool-output/*",
+        )
+        .unwrap();
     }
 
     #[test]

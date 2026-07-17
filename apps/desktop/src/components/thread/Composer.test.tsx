@@ -278,25 +278,28 @@ describe("approval mode switch", () => {
     expect(screen.queryByLabelText("Approval mode")).toBeNull();
   });
 
-  it("offers Balanced and Full Access as native presets", () => {
+  it("offers Balanced and Autonomous while preserving the full storage alias", () => {
     const onChange = vi.fn();
     render(<Composer onSend={vi.fn()} approvalMode="balanced" onApprovalModeChange={onChange} />);
     fireEvent.click(screen.getByLabelText("Approval mode"));
     const options = screen.getAllByRole("menuitemradio");
     expect(options).toHaveLength(2);
     expect(options[0]).toHaveTextContent("Balanced");
-    expect(options[1]).toHaveTextContent("Full Access");
+    expect(options[1]).toHaveTextContent("Autonomous");
     fireEvent.mouseDown(options[1]!);
     expect(onChange).toHaveBeenCalledWith("full");
   });
 
-  it("states that Full Access keeps command and remote approvals enabled", () => {
+  it("shows the Autonomous disclosure and guarded-operation boundary", () => {
     const onChange = vi.fn();
     render(<Composer onSend={vi.fn()} approvalMode="full" onApprovalModeChange={onChange} />);
-    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Full Access");
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Autonomous");
+    expect(screen.getByRole("note")).toHaveTextContent(
+      /can edit project files, run local commands, install project dependencies/i,
+    );
     fireEvent.click(screen.getByLabelText("Approval mode"));
     expect(
-      screen.getByText(/commands, network, installs, and deletion still ask/i),
+      screen.getByText(/ordinary project research proceeds automatically/i),
     ).toBeInTheDocument();
     const options = screen.getAllByRole("menuitemradio");
     expect(options).toHaveLength(2);
@@ -310,7 +313,7 @@ describe("approval mode switch", () => {
     expect(screen.getByLabelText("Approval mode")).toHaveTextContent("External custom policy");
     fireEvent.click(screen.getByLabelText("Approval mode"));
     expect(
-      screen.getByText(/Not managed by Spark; choose Balanced or Full Access/i),
+      screen.getByText(/Not managed by Spark; choose Balanced or Autonomous/i),
     ).toBeInTheDocument();
     const options = screen.getAllByRole("menuitemradio");
     expect(options).toHaveLength(2);

@@ -52,8 +52,8 @@ export interface ComposerCommand {
   source?: string;
 }
 
-/** Native OpenCode permission presets. Custom policies remain visible but are
- * report-only until the user selects one of these named contracts. */
+/** Native OpenCode permission presets. `full` is the persisted compatibility
+ * alias for Autonomous; custom policies remain visible but report-only. */
 const APPROVAL_OPTIONS = [
   { mode: "balanced", icon: Hand },
   { mode: "full", icon: Zap },
@@ -598,6 +598,11 @@ export function Composer({
           </button>
         )}
       </div>
+      {approvalMode === "full" && (
+        <p role="note" className="px-1.5 pt-1 text-[11px] leading-4 text-muted">
+          {t("composer.approval.full.notice")}
+        </p>
+      )}
     </div>
   );
 }

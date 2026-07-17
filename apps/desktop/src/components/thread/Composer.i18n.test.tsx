@@ -24,6 +24,14 @@ describe("Composer strings (i18n)", () => {
     expect(screen.getByPlaceholderText("Ask anything")).toBeInTheDocument();
     expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Balanced");
   });
+
+  it("renders the Autonomous label and concise disclosure for the full alias", () => {
+    render(<Composer onSend={() => {}} approvalMode="full" onApprovalModeChange={() => {}} />);
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Autonomous");
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Destructive or external operations still require confirmation",
+    );
+  });
 });
 
 describe("WorkflowStarters strings (i18n)", () => {

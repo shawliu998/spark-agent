@@ -74,8 +74,8 @@ export async function importOpenCodeLogin(): Promise<ImportOpenCodeLoginResult> 
   return invoke<ImportOpenCodeLoginResult>("import_opencode_login");
 }
 
-/** Persisted native OpenCode permission state. Custom means a user-authored
- * policy that Spark preserves but cannot summarize as a built-in preset. */
+/** Persisted native OpenCode permission state. `full` is the compatibility
+ * value for Autonomous. Custom is preserved but not selectable in Spark. */
 export type ApprovalMode = "balanced" | "full" | "custom";
 
 /** The permission preset OpenCode's config currently holds (Balanced by default). */
@@ -87,7 +87,7 @@ export async function getApprovalMode(): Promise<ApprovalMode> {
   throw new Error(`Unsupported approval mode returned by the runtime: ${mode}`);
 }
 
-/** Switch the approval mode; the sidecar restarts — the caller must reconnect. */
+/** Switch the native preset; `full` selects Autonomous and restarts the sidecar. */
 export async function setApprovalMode(mode: ApprovalMode): Promise<RuntimeRestartResult> {
   if (mode === "custom") {
     throw new Error("Custom permission policies are report-only and cannot be selected in Spark Agent.");

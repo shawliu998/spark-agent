@@ -2,8 +2,9 @@
 // Used by the runtime command, which writes it into an app-private config dir.
 use serde_json::{json, Value};
 
-/// User-facing OpenCode permission presets. Both are persisted as native
-/// OpenCode permission objects; arbitrary user-authored objects remain custom.
+/// User-facing OpenCode permission presets. `full` remains the persisted/API
+/// compatibility value for the Autonomous preset; arbitrary user-authored
+/// objects remain custom.
 pub const MODE_BALANCED: &str = "balanced";
 pub const MODE_FULL: &str = "full";
 pub const MODE_CUSTOM: &str = "custom";
@@ -57,9 +58,8 @@ fn legacy_approve_permission() -> Value {
     })
 }
 
-/// Destructive or system-changing commands still require approval in both
-/// presets. OpenCode command permissions are glob based and last-match-wins,
-/// so every token gets direct and embedded rules for compound commands.
+/// Exact destructive list used by the prior Balanced policy. Keep it stable so
+/// Spark-owned configs from that release can be recognized during migration.
 const DESTRUCTIVE_BASH: &[&str] = &[
     "rm",
     "rmdir",
@@ -124,6 +124,89 @@ const BALANCED_BASH: &[&str] = &[
     "kubectl",
 ];
 
+/// Autonomous still asks before destructive changes, ambiguous global Python
+/// installs, credentials, remote uploads/connections, system package managers,
+/// and cloud/cluster execution. Project-local dependency managers remain part
+/// of the ordinary research path.
+const AUTONOMOUS_ASK_BASH: &[&str] = &[
+    "rm",
+    "rmdir",
+    "unlink",
+    "shred",
+    "truncate",
+    "git clean",
+    "git reset --hard",
+    "git push",
+    "git remote add",
+    "chmod",
+    "chown",
+    "kill",
+    "pkill",
+    "killall",
+    "pip install",
+    "pip3 install",
+    "python -m pip install",
+    "python3 -m pip install",
+    "uv tool install",
+    "uv python install",
+    "conda install",
+    "conda create",
+    "mamba install",
+    "cargo install",
+    "gem install",
+    "brew install",
+    "apt install",
+    "apt-get install",
+    "dnf install",
+    "yum install",
+    "pacman",
+    "apk add",
+    "npm install -g",
+    "npm i -g",
+    "npm -g install",
+    "pnpm add -g",
+    "yarn global add",
+    "bun add -g",
+    "env",
+    "printenv",
+    "security",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "nc",
+    "telnet",
+    "ftp",
+    "modal",
+    "sbatch",
+    "aws",
+    "gcloud",
+    "az",
+    "kubectl",
+    "docker push",
+    "podman push",
+];
+
+/// These operations have no ordinary research justification in a project
+/// workspace and are denied rather than delegated to an approval click.
+const AUTONOMOUS_DENY_BASH: &[&str] = &[
+    "sudo",
+    "su",
+    "dd",
+    "diskutil",
+    "mkfs",
+    "newfs",
+    "launchctl",
+    "systemctl",
+    "crontab",
+    "security export",
+    "security dump-keychain",
+    "rm -rf /",
+    "rm -rf ~",
+    "rm -rf $HOME",
+    "find / -delete",
+];
+
 fn command_rules(tokens: &[&str], action: &str) -> serde_json::Map<String, Value> {
     let mut bash = serde_json::Map::new();
     bash.insert("*".to_string(), json!("allow"));
@@ -156,6 +239,99 @@ fn sensitive_shell_rules(bash: &mut serde_json::Map<String, Value>) {
     ] {
         bash.insert(pattern.to_string(), json!("ask"));
     }
+}
+
+fn autonomous_bash_permission() -> Value {
+    let mut bash = command_rules(AUTONOMOUS_ASK_BASH, "ask");
+    for pattern in [
+        "find * -delete*",
+        "* find * -delete*",
+        "* .env*",
+        "* */.env*",
+        "curl * -T *",
+        "* curl * -T *",
+        "curl -T *",
+        "* curl -T *",
+        "curl * --upload-file *",
+        "* curl * --upload-file *",
+        "curl --upload-file *",
+        "* curl --upload-file *",
+        "curl * --data *",
+        "* curl * --data *",
+        "curl --data *",
+        "* curl --data *",
+        "curl * --data-binary *",
+        "* curl * --data-binary *",
+        "curl --data-binary *",
+        "* curl --data-binary *",
+        "curl * -d *",
+        "* curl * -d *",
+        "curl -d *",
+        "* curl -d *",
+        "curl * -X POST *",
+        "* curl * -X POST *",
+        "curl -X POST *",
+        "* curl -X POST *",
+        "curl * --request POST *",
+        "* curl * --request POST *",
+        "curl --request POST *",
+        "* curl --request POST *",
+        "wget * --post-file *",
+        "* wget * --post-file *",
+    ] {
+        bash.insert(pattern.to_string(), json!("ask"));
+    }
+    for pattern in [
+        "* ~/.ssh/*",
+        "* ~/.aws/*",
+        "* ~/.config/gcloud/*",
+        "* ~/.azure/*",
+        "* ~/.kube/*",
+        "*> ../*",
+        "*>> ../*",
+        "* > ../*",
+        "* >> ../*",
+        "cp * ../*",
+        "* cp * ../*",
+        "mv * ../*",
+        "* mv * ../*",
+        "tee ../*",
+        "* tee ../*",
+        "touch ../*",
+        "* touch ../*",
+        "mkdir ../*",
+        "* mkdir ../*",
+        "*> /*",
+        "*>> /*",
+        "cp * /*",
+        "* cp * /*",
+        "mv * /*",
+        "* mv * /*",
+        "tee /*",
+        "* tee /*",
+        "OPENCODE_PERMISSION=*",
+        "* OPENCODE_PERMISSION=*",
+        "unset OPENCODE_PERMISSION*",
+        "* unset OPENCODE_PERMISSION*",
+    ] {
+        bash.insert(pattern.to_string(), json!("deny"));
+    }
+    for token in AUTONOMOUS_DENY_BASH {
+        bash.insert(format!("{token} *"), json!("deny"));
+        bash.insert(format!("* {token} *"), json!("deny"));
+    }
+
+    // Ambiguous global pip installs ask, but the two conventional managed
+    // project environments are explicit and remain autonomous.
+    for pattern in [
+        ".spark/python/bin/pip install *",
+        "./.spark/python/bin/pip install *",
+        ".venv/bin/pip install *",
+        "./.venv/bin/pip install *",
+    ] {
+        bash.insert(pattern.to_string(), json!("allow"));
+    }
+    Value::Object(bash)
 }
 
 fn prior_balanced_permission() -> Value {
@@ -233,9 +409,9 @@ fn balanced_permission() -> Value {
     })
 }
 
-fn full_permission() -> Value {
-    // Full Access is workspace-oriented, not approval-off: only native
-    // workspace edits are pre-approved. Commands and remote tools still ask.
+fn prior_full_permission() -> Value {
+    // Exact Full Access policy shipped before the Autonomous preset. It is
+    // recognized only so an existing selection migrates without user action.
     json!({
         "*": "ask",
         "read": {
@@ -258,6 +434,86 @@ fn full_permission() -> Value {
     })
 }
 
+fn full_permission() -> Value {
+    // `full` is the storage compatibility alias for Autonomous. Unknown tools
+    // still ask, while ordinary project research is allowed explicitly and
+    // bash keeps narrow ask/deny edges for destructive or external actions.
+    json!({
+        "*": "ask",
+        "read": {
+            "*": "allow",
+            "*.env": "ask",
+            "*.env.*": "ask",
+            "*.env.example": "allow"
+        },
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "lsp": "allow",
+        "edit": "allow",
+        "write": "allow",
+        "patch": "allow",
+        "multiedit": "allow",
+        "apply_patch": "allow",
+        "bash": autonomous_bash_permission(),
+        "external_directory": "deny",
+        "mcp": "allow",
+        "paper-search_*": "allow",
+        "doom_loop": "ask",
+        "question": "allow",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "codesearch": "allow",
+        "skill": "allow",
+        "task": "allow",
+        "todowrite": "allow",
+        "todoread": "allow",
+        "plan_enter": "allow",
+        "plan_exit": "allow"
+    })
+}
+
+fn full_permission_with_mcp(mcp: Option<&Value>) -> Value {
+    let mut permission = full_permission()
+        .as_object()
+        .expect("Autonomous permission is an object")
+        .clone();
+    if let Some(servers) = mcp.and_then(Value::as_object) {
+        for server in servers.keys() {
+            // OpenCode exposes MCP permissions under the concrete tool id
+            // (`server_tool`). Seed every configured server prefix so custom
+            // credential-free research tools do not fall back to wildcard ask.
+            permission.insert(format!("{server}_*"), json!("allow"));
+        }
+    }
+    Value::Object(permission)
+}
+
+fn is_full_permission(permission: &Value, mcp: Option<&Value>) -> bool {
+    if permission == &full_permission()
+        || permission == &prior_full_permission()
+        || is_legacy_full(permission)
+    {
+        return true;
+    }
+    let Some(mut normalized) = permission.as_object().cloned() else {
+        return false;
+    };
+    if let Some(servers) = mcp.and_then(Value::as_object) {
+        let base = full_permission();
+        let base = base
+            .as_object()
+            .expect("Autonomous permission is an object");
+        for server in servers.keys() {
+            let key = format!("{server}_*");
+            if !base.contains_key(&key) && normalized.get(&key) == Some(&json!("allow")) {
+                normalized.remove(&key);
+            }
+        }
+    }
+    Value::Object(normalized) == full_permission()
+}
+
 fn legacy_full_permission() -> Value {
     json!({ "*": "allow" })
 }
@@ -278,8 +534,9 @@ pub fn effective_permission_mode(existing: &str) -> Result<&'static str, String>
 }
 
 pub fn effective_permission_floor_json(existing: &str) -> Result<String, String> {
+    let root = parse_config(existing, "OpenCode config")?;
     let permission = match effective_permission_mode(existing)? {
-        MODE_FULL => full_permission(),
+        MODE_FULL => full_permission_with_mcp(root.get("mcp")),
         MODE_BALANCED => balanced_permission(),
         _ => unreachable!("effective_permission_mode returns a selectable mode"),
     };
@@ -289,12 +546,12 @@ pub fn effective_permission_floor_json(existing: &str) -> Result<String, String>
 /// Apply an explicit native OpenCode permission preset; unrelated config keys
 /// (providers, models, MCP, user options) are preserved structurally.
 pub fn set_permission_mode(existing: &str, mode: &str) -> Result<String, String> {
+    let mut root = parse_config(existing, "existing OpenCode config")?;
     let permission = match mode {
         MODE_BALANCED => balanced_permission(),
-        MODE_FULL => full_permission(),
+        MODE_FULL => full_permission_with_mcp(root.get("mcp")),
         other => return Err(format!("unknown approval mode \"{other}\"")),
     };
-    let mut root = parse_config(existing, "existing OpenCode config")?;
     config_object_mut(&mut root, "existing OpenCode config")?
         .insert("permission".to_string(), permission);
     serde_json::to_string_pretty(&root).map_err(|e| e.to_string())
@@ -316,7 +573,7 @@ pub fn permission_mode_of(existing: &str) -> Result<Option<&'static str>, String
         || permission == &legacy_approve_permission()
     {
         Ok(Some(MODE_BALANCED))
-    } else if permission == &full_permission() || is_legacy_full(permission) {
+    } else if is_full_permission(permission, root.get("mcp")) {
         Ok(Some(MODE_FULL))
     } else {
         Ok(Some(MODE_CUSTOM))
@@ -331,6 +588,7 @@ pub fn merge_profile_defaults(existing: &str, template: &str) -> Result<String, 
     let mut root = parse_config(existing, "existing OpenCode config")?;
     let defaults = parse_config(template, "bundled OpenCode profile")?;
     let root_obj = config_object_mut(&mut root, "existing OpenCode config")?;
+    let autonomous_permission = full_permission_with_mcp(root_obj.get("mcp"));
     let defaults_obj = defaults
         .as_object()
         .ok_or_else(|| "bundled OpenCode profile must be a JSON object".to_string())?;
@@ -346,8 +604,8 @@ pub fn merge_profile_defaults(existing: &str, template: &str) -> Result<String, 
                     || current == &prior_balanced_permission()
                 {
                     root_obj.insert(key.clone(), balanced_permission());
-                } else if is_legacy_full(current) {
-                    root_obj.insert(key.clone(), full_permission());
+                } else if is_full_permission(current, root_obj.get("mcp")) {
+                    root_obj.insert(key.clone(), autonomous_permission.clone());
                 }
             }
             Some(_) => {}
@@ -464,16 +722,31 @@ mod tests {
     }
 
     #[test]
-    fn full_mode_only_preapproves_workspace_edits() {
+    fn full_storage_alias_encodes_the_autonomous_native_policy() {
         let out = set_permission_mode("", MODE_FULL).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["permission"]["*"], "ask");
         assert_eq!(v["permission"]["edit"], "allow");
+        assert_eq!(v["permission"]["write"], "allow");
+        assert_eq!(v["permission"]["patch"], "allow");
         assert_eq!(v["permission"]["apply_patch"], "allow");
-        assert_eq!(v["permission"]["bash"], "ask");
-        assert_eq!(v["permission"]["webfetch"], "ask");
-        assert_eq!(v["permission"]["websearch"], "ask");
-        assert_eq!(v["permission"]["mcp"], "ask");
+        assert_eq!(v["permission"]["bash"]["*"], "allow");
+        assert_eq!(v["permission"]["bash"]["rm *"], "ask");
+        assert_eq!(v["permission"]["bash"]["git push *"], "ask");
+        assert_eq!(v["permission"]["bash"]["pip install *"], "ask");
+        assert_eq!(v["permission"]["bash"]["sudo *"], "deny");
+        assert_eq!(v["permission"]["bash"]["systemctl *"], "deny");
+        assert_eq!(
+            v["permission"]["bash"][".spark/python/bin/pip install *"],
+            "allow"
+        );
+        assert_eq!(v["permission"]["webfetch"], "allow");
+        assert_eq!(v["permission"]["websearch"], "allow");
+        assert_eq!(v["permission"]["mcp"], "allow");
+        assert_eq!(v["permission"]["paper-search_*"], "allow");
+        assert_eq!(v["permission"]["skill"], "allow");
+        assert_eq!(v["permission"]["task"], "allow");
+        assert_eq!(v["permission"]["todowrite"], "allow");
         assert_eq!(v["permission"]["external_directory"], "deny");
         assert_eq!(v["permission"]["read"]["*.env"], "ask");
     }
@@ -486,6 +759,36 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["model"], "anthropic/claude");
         assert_eq!(v["provider"]["openai"]["options"]["apiKey"], "k");
+    }
+
+    #[test]
+    fn autonomous_allows_each_configured_mcp_server_prefix() {
+        let existing = r#"{
+          "mcp": {
+            "paper-search": {"type":"local","command":["paper-search"]},
+            "lab": {"type":"remote","url":"https://example.com/mcp"}
+          }
+        }"#;
+        let out = set_permission_mode(existing, MODE_FULL).unwrap();
+        let value: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["permission"]["paper-search_*"], "allow");
+        assert_eq!(value["permission"]["lab_*"], "allow");
+        assert_eq!(value["mcp"]["lab"]["url"], "https://example.com/mcp");
+        assert_eq!(permission_mode_of(&out).unwrap(), Some(MODE_FULL));
+        let floor: Value =
+            serde_json::from_str(&effective_permission_floor_json(&out).unwrap()).unwrap();
+        assert_eq!(floor["lab_*"], "allow");
+
+        let mut with_new_server = value;
+        with_new_server["mcp"]["new-lab"] = json!({
+            "type": "remote",
+            "url": "https://example.com/new-mcp"
+        });
+        let changed = with_new_server.to_string();
+        assert_eq!(permission_mode_of(&changed).unwrap(), Some(MODE_FULL));
+        let changed_floor: Value =
+            serde_json::from_str(&effective_permission_floor_json(&changed).unwrap()).unwrap();
+        assert_eq!(changed_floor["new-lab_*"], "allow");
     }
 
     #[test]
@@ -502,6 +805,8 @@ mod tests {
         assert_eq!(permission_mode_of(&balanced).unwrap(), Some(MODE_BALANCED));
         let full_current = set_permission_mode("", MODE_FULL).unwrap();
         assert_eq!(permission_mode_of(&full_current).unwrap(), Some(MODE_FULL));
+        let prior_full = json!({"permission": prior_full_permission()}).to_string();
+        assert_eq!(permission_mode_of(&prior_full).unwrap(), Some(MODE_FULL));
         let full = r#"{"permission":{"*":"allow"}}"#;
         assert_eq!(permission_mode_of(full).unwrap(), Some(MODE_FULL));
         assert_eq!(
@@ -571,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_merge_preserves_legacy_full_choice_with_current_safety_edges() {
+    fn profile_merge_migrates_legacy_full_choice_to_autonomous() {
         let full = r#"{"model":"keep/me","permission":{"*":"allow"}}"#;
         let template = json!({
             "default_agent": "research",
@@ -582,6 +887,20 @@ mod tests {
         assert_eq!(value["model"], "keep/me");
         assert_eq!(value["permission"], full_permission());
         assert_eq!(permission_mode_of(&restarted).unwrap(), Some(MODE_FULL));
+    }
+
+    #[test]
+    fn profile_merge_migrates_prior_full_access_policy_to_autonomous() {
+        let existing = json!({
+            "model": "keep/me",
+            "permission": prior_full_permission(),
+        });
+        let template = json!({"permission": balanced_permission()});
+        let merged = merge_profile_defaults(&existing.to_string(), &template.to_string()).unwrap();
+        let value: Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(value["model"], "keep/me");
+        assert_eq!(value["permission"], full_permission());
+        assert_eq!(permission_mode_of(&merged).unwrap(), Some(MODE_FULL));
     }
 
     #[test]

@@ -47,12 +47,13 @@
         "description": "Lectura y búsqueda libres; pregunta antes de editar, ejecutar comandos, usar la web o MCP"
       },
       "full": {
-        "label": "Acceso completo",
-        "description": "Autoriza ediciones del espacio; comandos, red, instalaciones y borrado aún preguntan"
+        "label": "Autónomo",
+        "description": "La investigación normal del proyecto avanza automáticamente; las operaciones destructivas, externas, de credenciales y del sistema siguen protegidas",
+        "notice": "El modo autónomo puede editar archivos del proyecto, ejecutar comandos locales, instalar dependencias del proyecto, usar herramientas de investigación configuradas y acceder a la web. Las operaciones destructivas o externas siguen requiriendo confirmación."
       },
       "custom": {
         "label": "Política personalizada externa",
-        "description": "Spark no la administra; elige Equilibrado o Acceso completo para usar un ajuste definido"
+        "description": "Spark no la administra; elige Equilibrado o Autónomo para usar un ajuste definido"
       }
     },
     "error": {

@@ -2719,14 +2719,14 @@ describe("per-session right pane", () => {
 
 
 describe("approval mode", () => {
-  it("restores Full Access from the native config when connecting", async () => {
+  it("restores Autonomous from the native full alias when connecting", async () => {
     expect(useRuntimeStore.getState().approvalMode).toBe("balanced");
     mocks.approvalMode = "full";
     await useRuntimeStore.getState().connect();
     expect(useRuntimeStore.getState().approvalMode).toBe("full");
   });
 
-  it("persists Full Access through the native command and reconnects", async () => {
+  it("persists Autonomous through the native full alias and reconnects", async () => {
     await useRuntimeStore.getState().setApprovalMode("full");
     expect(mocks.setApprovalMode).toHaveBeenCalledWith("full");
     expect(useRuntimeStore.getState().approvalMode).toBe("full");

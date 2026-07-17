@@ -47,12 +47,13 @@
         "description": "Lecture et recherche libres ; les modifications, commandes, accès web et MCP demandent confirmation"
       },
       "full": {
-        "label": "Accès complet",
-        "description": "Préautorise les modifications locales ; commandes, réseau, installations et suppressions demandent toujours confirmation"
+        "label": "Autonome",
+        "description": "La recherche ordinaire s’exécute automatiquement ; les opérations destructives, externes, d’identifiants et système restent protégées",
+        "notice": "Le mode autonome peut modifier les fichiers du projet, exécuter des commandes locales, installer les dépendances du projet, utiliser les outils de recherche configurés et accéder au Web. Les opérations destructives ou externes nécessitent toujours une confirmation."
       },
       "custom": {
         "label": "Politique personnalisée externe",
-        "description": "Non gérée par Spark ; choisissez Équilibré ou Accès complet pour un profil nommé"
+        "description": "Non gérée par Spark ; choisissez Équilibré ou Autonome pour un profil nommé"
       }
     },
     "error": {

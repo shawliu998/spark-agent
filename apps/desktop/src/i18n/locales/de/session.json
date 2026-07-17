@@ -47,12 +47,13 @@
         "description": "Lesen und Suchen sind frei; Änderungen, Befehle, Web und MCP erfordern Zustimmung"
       },
       "full": {
-        "label": "Vollzugriff",
-        "description": "Arbeitsbereichsänderungen sind erlaubt; Befehle, Netzwerk, Installationen und Löschen fragen weiterhin"
+        "label": "Autonom",
+        "description": "Normale Projektforschung läuft automatisch; destruktive, externe, Zugangsdaten- und Systemaktionen bleiben geschützt",
+        "notice": "Im autonomen Modus darf Spark Projektdateien bearbeiten, lokale Befehle ausführen, Projektabhängigkeiten installieren, konfigurierte Forschungswerkzeuge nutzen und auf das Web zugreifen. Destruktive oder externe Aktionen erfordern weiterhin eine Bestätigung."
       },
       "custom": {
         "label": "Externe benutzerdefinierte Richtlinie",
-        "description": "Nicht von Spark verwaltet; wählen Sie Ausgewogen oder Vollzugriff für ein benanntes Profil"
+        "description": "Nicht von Spark verwaltet; wählen Sie Ausgewogen oder Autonom für ein benanntes Profil"
       }
     },
     "error": {

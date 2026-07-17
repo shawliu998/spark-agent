@@ -170,7 +170,7 @@ interface RuntimeState {
   setDefaultModel: (model: string) => Promise<void>;
   /** Native OpenCode permission preset; custom policies are report-only. */
   approvalMode: ApprovalMode;
-  /** Persist Balanced or Full Access (restarts and reconnects). */
+  /** Persist Balanced or Autonomous (`full` compatibility value). */
   setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   /** Persist the network-proxy setting (restarts the sidecar) and reconnect. */
   setProxySetting: (mode: ProxyMode, url: string) => Promise<void>;
