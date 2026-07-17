@@ -2,6 +2,7 @@ import { BookOpenCheck, Bot, Boxes, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentInfo, ProviderInfo } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
+import type { ModelRouteDecision, ModelRoutingMode } from "@/lib/modelRouting";
 
 export type ResearchExecutionMode = "general" | "verified";
 
@@ -46,6 +47,9 @@ export function ResearchSessionControls({
   providers,
   selectedModel,
   onModelChange,
+  routingMode = "manual",
+  onRoutingModeChange,
+  lastModelRoute,
   disabled,
   skillCount,
   onOpenSkills,
@@ -58,12 +62,21 @@ export function ResearchSessionControls({
   providers: ProviderInfo[];
   selectedModel: string | null;
   onModelChange: (model: string) => void;
+  routingMode?: ModelRoutingMode;
+  onRoutingModeChange?: (mode: ModelRoutingMode) => void;
+  lastModelRoute?: ModelRouteDecision | null;
   disabled?: boolean;
   skillCount: number;
   onOpenSkills: () => void;
 }) {
   const { t } = useTranslation("session");
   const models = runtimeModelOptions(providers, selectedModel);
+  const autoModelLabel = lastModelRoute
+    ? t(`researchControls.model.autoRoute.${lastModelRoute.tier}`, {
+        defaultValue: `Auto · ${lastModelRoute.tier} → {{model}}`,
+        model: lastModelRoute.model ?? t("researchControls.model.runtimeDefault", { defaultValue: "runtime default" }),
+      })
+    : t("researchControls.model.auto", { defaultValue: "Auto · task-aware" });
   const primaryAgents = agents.filter((agent) => agent.mode === "primary" || agent.mode === "all");
   const subagents = agents.filter((agent) => agent.mode === "subagent");
   const otherAgents = agents.filter(
@@ -140,12 +153,20 @@ export function ResearchSessionControls({
         </span>
         <select
           aria-label={t("researchControls.model.aria")}
-          value={selectedModel ?? ""}
-          onChange={(event) => onModelChange(event.target.value)}
-          disabled={disabled || models.length === 0}
+          value={routingMode === "auto" ? "__auto__" : selectedModel ?? ""}
+          onChange={(event) => {
+            if (event.target.value === "__auto__") {
+              onRoutingModeChange?.("auto");
+              return;
+            }
+            onRoutingModeChange?.("manual");
+            onModelChange(event.target.value);
+          }}
+          disabled={disabled || (models.length === 0 && routingMode !== "auto")}
           className={cn(selectClass, "max-w-[190px]")}
         >
-          {models.length === 0 && (
+          {onRoutingModeChange && <option value="__auto__">{autoModelLabel}</option>}
+          {models.length === 0 && !onRoutingModeChange && (
             <option value="">{t("researchControls.model.empty")}</option>
           )}
           {models.map((model) => (

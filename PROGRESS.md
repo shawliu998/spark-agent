@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 15:34 · feat(task-model-routing): added transparent per-turn Auto model routing over the live OpenCode catalog, prioritizing Kimi K3 for quick/standard work and Sol for planning, architecture, security, review, and acceptance tasks with manual override and configured-model fallback; 122 focused Desktop tests, typecheck, lint, and diff checks pass.
+
 2026-07-17 15:21 · fix(native-runtime-smoke): completed a credential-free pinned OpenCode loop and packaged macOS UI smoke, fixed the Tauri async-context blocking-client startup panic, and allowed only OpenCode's exact app-private tool-output directory through the resolved permission floor; focused Rust regressions, debug app build, Runtime Ready, demo activation, and eight bundled artifacts pass.
 
 2026-07-17 14:40 · feat(openscience-parity-integration): merged the native safe permission presets, folder-backed Home/onboarding shell, six General Research templates, recent-session resume, and bundled synthetic research demo on `codex/openscience-parity-batch1`; 156 focused Desktop, 23 Rust, 8 profile tests, Desktop typecheck, deterministic demo, and diff checks pass.

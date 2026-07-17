@@ -53,6 +53,8 @@ export function LiveSessionPage() {
     providers,
     selectedAgent,
     defaultModel,
+    modelRoutingMode,
+    lastModelRoute,
     connect,
     openSession,
     startDraft,
@@ -72,6 +74,7 @@ export function LiveSessionPage() {
     setApprovalMode,
     setSelectedAgent,
     setDefaultModel,
+    setModelRoutingMode,
   } = useRuntimeStore();
   const [executionMode, setExecutionMode] = useState<ResearchExecutionMode>("general");
   const [discoveredArtifacts, setDiscoveredArtifacts] = useState<
@@ -491,6 +494,9 @@ export function LiveSessionPage() {
                   providers={providers}
                   selectedModel={defaultModel}
                   onModelChange={(model) => void setDefaultModel(model).catch(() => {})}
+                  routingMode={modelRoutingMode}
+                  onRoutingModeChange={setModelRoutingMode}
+                  lastModelRoute={lastModelRoute}
                   disabled={!connected || switching || working}
                   skillCount={skills.length}
                   onOpenSkills={() => navigate("/skills")}

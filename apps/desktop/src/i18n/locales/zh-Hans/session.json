@@ -67,7 +67,17 @@
   "researchControls": {
     "mode": { "aria": "执行模式", "general": "通用研究", "verified": "验证工作流" },
     "agent": { "aria": "科研 Agent", "empty": "没有可用 Agent", "primaryGroup": "主要 Agent", "subagentGroup": "子 Agent", "otherGroup": "其他 Agent" },
-    "model": { "aria": "模型", "empty": "没有可用模型" },
+    "model": {
+      "aria": "模型",
+      "empty": "没有可用模型",
+      "auto": "自动 · 按任务路由",
+      "runtimeDefault": "运行时默认模型",
+      "autoRoute": {
+        "quick": "自动 · 简单 → {{model}}",
+        "standard": "自动 · 中等 → {{model}}",
+        "deep": "自动 · 复杂 → {{model}}"
+      }
+    },
     "skills": { "aria": "打开科研技能", "title": "浏览 OpenCode 返回的技能", "count": "{{count}} 个技能" }
   },
   "workspaceArtifacts": {

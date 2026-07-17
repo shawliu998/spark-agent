@@ -49,12 +49,18 @@ import { provenanceInputFromEvent, recordProvenance } from "./provenance";
 import { recordRun, runInputFromEvent } from "./runs";
 import { splitReview } from "./review";
 import { updateProjectLastSession } from "./projects";
+import {
+  routeModelForTask,
+  type ModelRouteDecision,
+  type ModelRoutingMode,
+} from "./modelRouting";
 import i18n from "@/i18n";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const URL_KEY = "ai4s.opencodeUrl";
 const HIDDEN_KEY = "ai4s.hiddenExamples";
 const SELECTED_AGENT_KEY = "spark.selectedResearchAgent";
+const MODEL_ROUTING_MODE_KEY = "spark.modelRoutingMode";
 
 function initialUrl(): string {
   if (typeof window === "undefined") return DEFAULT_OPENCODE_URL;
@@ -72,6 +78,11 @@ function initialHidden(): string[] {
 function savedAgent(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem(SELECTED_AGENT_KEY);
+}
+
+function savedModelRoutingMode(): ModelRoutingMode {
+  if (typeof window === "undefined") return "auto";
+  return window.localStorage.getItem(MODEL_ROUTING_MODE_KEY) === "manual" ? "manual" : "auto";
 }
 
 /** Pick only an agent actually reported by the current OpenCode instance. */
@@ -120,6 +131,10 @@ interface RuntimeState {
   commands: CommandInfo[];
   /** Configured default model ("provider/model"), or null when unset. */
   defaultModel: string | null;
+  /** Auto chooses a reported model per task; manual uses defaultModel. */
+  modelRoutingMode: ModelRoutingMode;
+  lastModelRoute: ModelRouteDecision | null;
+  setModelRoutingMode: (mode: ModelRoutingMode) => void;
   /** Apply a new default model and transparently reconnect (see impl). */
   setDefaultModel: (model: string) => Promise<void>;
   /** Native OpenCode permission preset; custom policies are report-only. */
@@ -808,6 +823,7 @@ function clearEndpointNamespace(): void {
     selectedAgent: null,
     commands: [],
     defaultModel: null,
+    lastModelRoute: null,
     approvalMode: "balanced",
     error: null,
     questions: [],
@@ -1134,6 +1150,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   selectedAgent: savedAgent(),
   commands: [],
   defaultModel: null,
+  modelRoutingMode: savedModelRoutingMode(),
+  lastModelRoute: null,
   approvalMode: "balanced",
   tools: [],
   hiddenExamples: initialHidden(),
@@ -1156,6 +1174,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       window.localStorage.setItem(SELECTED_AGENT_KEY, selectedAgent);
     }
     set({ selectedAgent });
+  },
+
+  setModelRoutingMode: (modelRoutingMode) => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(MODEL_ROUTING_MODE_KEY, modelRoutingMode);
+    }
+    set({ modelRoutingMode, ...(modelRoutingMode === "manual" ? { lastModelRoute: null } : {}) });
   },
 
   // These write the CURRENT session's pane (DRAFT_KEY on a draft), keeping the
@@ -2142,7 +2167,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // workspace and reconnect. That reconnect refreshes the catalog and must
     // not silently replace the selections for the turn already submitted.
     const agent = get().selectedAgent ?? undefined;
-    const model = get().defaultModel ?? undefined;
+    const route =
+      get().modelRoutingMode === "auto"
+        ? routeModelForTask(text, get().providers, get().defaultModel)
+        : null;
+    const model = route?.model ?? get().defaultModel ?? undefined;
+    if (route) set({ lastModelRoute: route });
     return performTurn(
       set,
       get,
@@ -2189,7 +2219,12 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // a workspace and reconnect. Catalog refresh during that transition must
     // not silently drop the agent/model chosen for this command.
     const agent = get().selectedAgent ?? undefined;
-    const model = get().defaultModel ?? undefined;
+    const route =
+      get().modelRoutingMode === "auto"
+        ? routeModelForTask(`${name} ${args ?? ""}`, get().providers, get().defaultModel)
+        : null;
+    const model = route?.model ?? get().defaultModel ?? undefined;
+    if (route) set({ lastModelRoute: route });
     const options = agent || model ? { agent, model } : undefined;
     return performTurn(
       set,

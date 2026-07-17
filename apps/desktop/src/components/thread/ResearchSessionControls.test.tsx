@@ -88,6 +88,31 @@ describe("ResearchSessionControls", () => {
     expect(screen.getByLabelText("Model")).toBeDisabled();
     expect(screen.getByRole("option", { name: "No models available" })).toBeInTheDocument();
   });
+
+  it("offers task-aware routing and reports the latest decision", () => {
+    const onRoutingModeChange = vi.fn();
+    render(
+      <ResearchSessionControls
+        mode="general"
+        onModeChange={vi.fn()}
+        agents={agents}
+        selectedAgent="research"
+        onAgentChange={vi.fn()}
+        providers={providers}
+        selectedModel="openrouter/openai/gpt-5"
+        onModelChange={vi.fn()}
+        routingMode="auto"
+        onRoutingModeChange={onRoutingModeChange}
+        lastModelRoute={{ tier: "deep", model: "openai/gpt-5.6-sol", matchedPreference: "sol" }}
+        skillCount={0}
+        onOpenSkills={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("option", { name: "Auto · deep → openai/gpt-5.6-sol" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "__auto__" } });
+    expect(onRoutingModeChange).toHaveBeenCalledWith("auto");
+  });
 });
 
 describe("runtimeModelOptions", () => {

@@ -357,6 +357,9 @@ beforeEach(async () => {
     permissions: [],
     sessionParents: {},
     panes: {},
+    providers: [],
+    modelRoutingMode: "manual",
+    lastModelRoute: null,
   });
   await useRuntimeStore.getState().connect();
   expect(useRuntimeStore.getState().status).toBe("ready");
@@ -404,6 +407,40 @@ describe("General Research runtime selection", () => {
       model: "openrouter/anthropic/claude-sonnet",
     });
     expect(mocks.validateRuntimePermissions).toHaveBeenCalledWith("/ws/base");
+  });
+
+  it("auto-routes planning and acceptance work to a reported Sol model", async () => {
+    useRuntimeStore.setState({
+      currentId: "ses_auto",
+      agents: [{ name: "research", description: "Research", mode: "primary" }],
+      selectedAgent: "research",
+      providers: [
+        {
+          id: "moonshot",
+          name: "Moonshot",
+          models: [{ id: "kimi-k3", name: "Kimi K3" }],
+        },
+        {
+          id: "openai",
+          name: "OpenAI",
+          models: [{ id: "gpt-5.6-sol", name: "Codex Sol" }],
+        },
+      ],
+      defaultModel: "moonshot/kimi-k3",
+      modelRoutingMode: "auto",
+      threads: {},
+    });
+
+    await useRuntimeStore.getState().sendPrompt("规划整体架构并完成验收");
+
+    expect(mocks.sendPromptOptions).toHaveBeenCalledWith({
+      agent: "research",
+      model: "openai/gpt-5.6-sol",
+    });
+    expect(useRuntimeStore.getState().lastModelRoute).toMatchObject({
+      tier: "deep",
+      model: "openai/gpt-5.6-sol",
+    });
   });
 
   it("fails closed before posting when resolved agent permissions are unsafe", async () => {

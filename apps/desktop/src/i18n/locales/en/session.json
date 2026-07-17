@@ -67,7 +67,17 @@
   "researchControls": {
     "mode": { "aria": "Execution mode", "general": "General Research", "verified": "Verified Workflows" },
     "agent": { "aria": "Research agent", "empty": "No agents available", "primaryGroup": "Primary agents", "subagentGroup": "Sub-agents", "otherGroup": "Other agents" },
-    "model": { "aria": "Model", "empty": "No models available" },
+    "model": {
+      "aria": "Model",
+      "empty": "No models available",
+      "auto": "Auto · task-aware",
+      "runtimeDefault": "runtime default",
+      "autoRoute": {
+        "quick": "Auto · quick → {{model}}",
+        "standard": "Auto · standard → {{model}}",
+        "deep": "Auto · deep → {{model}}"
+      }
+    },
     "skills": { "aria": "Open research skills", "title": "Browse skills reported by OpenCode", "count": "{{count}} skills" }
   },
   "workspaceArtifacts": {
