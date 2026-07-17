@@ -20,9 +20,14 @@ const LAB_PROCESS_MARKER: &str = "spark_agent_managed_jupyter_lab_v2";
 const PIP_SPEC: &[&str] = &[
     "jupyterlab==4.4.1",
     "ipykernel==6.29.5",
+    "nbformat==5.10.4",
+    "nbconvert==7.16.6",
     "numpy==2.2.5",
     "pandas==2.2.3",
+    "scipy==1.15.2",
     "matplotlib==3.10.3",
+    "scikit-learn==1.6.1",
+    "statsmodels==0.14.4",
 ];
 const RETIRED_JUPYTER_PACKAGES: &[&str] = &["jupyter-mcp-server", "jupyter-collaboration"];
 
@@ -2018,6 +2023,30 @@ mod tests {
             RETIRED_JUPYTER_PACKAGES,
             ["jupyter-mcp-server", "jupyter-collaboration"]
         );
+    }
+
+    #[test]
+    fn managed_environment_covers_autonomous_data_and_notebook_execution() {
+        let package_names = PIP_SPEC
+            .iter()
+            .filter_map(|spec| spec.split_once("==").map(|(name, _)| name))
+            .collect::<std::collections::BTreeSet<_>>();
+        for required in [
+            "jupyterlab",
+            "nbformat",
+            "nbconvert",
+            "numpy",
+            "pandas",
+            "scipy",
+            "matplotlib",
+            "scikit-learn",
+            "statsmodels",
+        ] {
+            assert!(
+                package_names.contains(required),
+                "managed research environment is missing {required}"
+            );
+        }
     }
 
     #[test]
