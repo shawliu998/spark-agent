@@ -28,6 +28,11 @@ import { RunsPane } from "./RunsPage";
 import { cn } from "@/lib/cn";
 import { createdWorkspaceArtifacts, discoverWorkspaceArtifacts } from "@/lib/workspaceArtifacts";
 import { generateTaskPlan } from "@/lib/taskPlanning";
+import {
+  isTauri,
+  projectPythonStatus,
+  setupProjectPython,
+} from "@/lib/tauri";
 
 /** Live agent session backed by the OpenCode runtime. `/live` (no id) is a blank draft;
  *  the session is created lazily on the first message, then the URL updates to /live/:id. */
@@ -92,6 +97,9 @@ export function LiveSessionPage() {
   const artifactsAtTurnStart = useRef<Set<string> | null>(null);
   const [showTaskCenter, setShowTaskCenter] = useState(false);
   const [showTaskPlanner, setShowTaskPlanner] = useState(false);
+  const [projectPythonInstalled, setProjectPythonInstalled] = useState<boolean | null>(null);
+  const [projectPythonBusy, setProjectPythonBusy] = useState(false);
+  const [projectPythonError, setProjectPythonError] = useState<string | null>(null);
   const clearingLocalCommand = useRef(false);
   const mounted = useRef(false);
   useEffect(() => {
@@ -107,6 +115,37 @@ export function LiveSessionPage() {
   const connected = status === "ready" || switching;
   const connecting = status === "connecting" && !switching;
   const displayStatus = switching ? "ready" : status;
+
+  useEffect(() => {
+    if (!isTauri || !workspace) {
+      setProjectPythonInstalled(null);
+      return;
+    }
+    let cancelled = false;
+    void projectPythonStatus().then((result) => {
+      if (!cancelled) setProjectPythonInstalled(result?.installed ?? false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace]);
+
+  const prepareProjectPython = async () => {
+    setProjectPythonBusy(true);
+    setProjectPythonError(null);
+    try {
+      const result = await setupProjectPython();
+      if (mounted.current) setProjectPythonInstalled(result.installed);
+    } catch (setupError) {
+      if (mounted.current) {
+        setProjectPythonError(
+          setupError instanceof Error ? setupError.message : String(setupError),
+        );
+      }
+    } finally {
+      if (mounted.current) setProjectPythonBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (sessionId) {
@@ -616,6 +655,14 @@ export function LiveSessionPage() {
                 onPermission={(id, reply) => void replyPermission(id, reply)}
               />
             )}
+            {projectPythonError && (
+              <div className="rounded-input border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                {t("live.projectPython.error", {
+                  defaultValue: "Project Python setup failed: {{error}}",
+                  error: projectPythonError,
+                })}
+              </div>
+            )}
             <Composer
               onSend={onSend}
               onRunShell={(c) => void onRunShell(c)}
@@ -654,6 +701,9 @@ export function LiveSessionPage() {
                   disabled={!connected || switching || working || taskBatchLaunching}
                   skillCount={skills.length}
                   onOpenSkills={() => navigate("/skills")}
+                  projectPythonInstalled={projectPythonInstalled}
+                  projectPythonBusy={projectPythonBusy}
+                  onSetupProjectPython={isTauri ? () => void prepareProjectPython() : undefined}
                 />
               }
             />

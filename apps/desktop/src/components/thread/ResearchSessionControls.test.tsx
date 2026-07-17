@@ -108,6 +108,47 @@ describe("ResearchSessionControls", () => {
     expect(screen.getByLabelText("Model")).toHaveValue("openrouter/openai/gpt-5");
     expect(screen.queryByRole("option", { name: /auto/i })).not.toBeInTheDocument();
   });
+
+  it("exposes project Python setup and disables it after provisioning", () => {
+    const onSetupProjectPython = vi.fn();
+    const { rerender } = render(
+      <ResearchSessionControls
+        mode="general"
+        onModeChange={vi.fn()}
+        agents={agents}
+        selectedAgent="research"
+        onAgentChange={vi.fn()}
+        providers={providers}
+        selectedModel="openrouter/openai/gpt-5"
+        onModelChange={vi.fn()}
+        skillCount={29}
+        onOpenSkills={vi.fn()}
+        projectPythonInstalled={false}
+        onSetupProjectPython={onSetupProjectPython}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Set up project Python environment" }));
+    expect(onSetupProjectPython).toHaveBeenCalledOnce();
+
+    rerender(
+      <ResearchSessionControls
+        mode="general"
+        onModeChange={vi.fn()}
+        agents={agents}
+        selectedAgent="research"
+        onAgentChange={vi.fn()}
+        providers={providers}
+        selectedModel="openrouter/openai/gpt-5"
+        onModelChange={vi.fn()}
+        skillCount={29}
+        onOpenSkills={vi.fn()}
+        projectPythonInstalled
+        onSetupProjectPython={onSetupProjectPython}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Set up project Python environment" })).toBeDisabled();
+    expect(screen.getByText("Python ready")).toBeInTheDocument();
+  });
 });
 
 describe("runtimeModelOptions", () => {

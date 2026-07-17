@@ -116,16 +116,21 @@ class FoundationProfileTest(unittest.TestCase):
             self.assertIn("Source license: Apache-2.0", metadata, name)
 
     def test_agent_overrides_do_not_bypass_global_safety_boundaries(self) -> None:
-        for name in ("critique", "explore", "literature-review", "reviewer"):
+        for name in ("critique", "explore", "reviewer"):
             metadata = frontmatter((AGENTS / f"{name}.md").read_text())
             self.assertRegex(metadata, r'(?m)^    "\*\.env": ask$', name)
             self.assertRegex(metadata, r'(?m)^    "mcp:\*": ask$', name)
             self.assertRegex(metadata, r"(?m)^  external_directory: deny$", name)
 
-        for name in ("literature-review", "plan"):
-            metadata = frontmatter((AGENTS / f"{name}.md").read_text())
-            self.assertRegex(metadata, r"(?m)^  webfetch: ask$", name)
-            self.assertRegex(metadata, r"(?m)^  websearch: ask$", name)
+        metadata = frontmatter((AGENTS / "literature-review.md").read_text())
+        self.assertNotRegex(metadata, r"(?m)^  web(fetch|search):", "literature-review")
+        self.assertNotRegex(metadata, r"(?m)^  mcp:", "literature-review")
+        for tool in ("edit", "write", "patch", "multiedit", "apply_patch", "bash"):
+            self.assertRegex(metadata, rf"(?m)^  {tool}: deny$", "literature-review")
+
+        plan_metadata = frontmatter((AGENTS / "plan.md").read_text())
+        self.assertRegex(plan_metadata, r"(?m)^  webfetch: ask$", "plan")
+        self.assertRegex(plan_metadata, r"(?m)^  websearch: ask$", "plan")
 
         plan = frontmatter((AGENTS / "plan.md").read_text())
         self.assertRegex(plan, r'(?m)^    "\.opencode/plans/\*\.md": ask$')
@@ -153,7 +158,7 @@ class FoundationProfileTest(unittest.TestCase):
         self.assertIn("python -m jupyter nbconvert", text)
 
     def test_read_only_specialists_are_fail_closed(self) -> None:
-        for name in ("literature-review", "critique", "reviewer", "explore"):
+        for name in ("critique", "reviewer", "explore"):
             metadata = frontmatter((AGENTS / f"{name}.md").read_text())
             self.assertRegex(metadata, r'(?m)^  "\*": deny$')
             self.assertRegex(metadata, r"(?m)^  read:$")
@@ -161,6 +166,11 @@ class FoundationProfileTest(unittest.TestCase):
             for tool in ("glob", "grep", "list", "skill"):
                 self.assertRegex(metadata, rf"(?m)^  {tool}: allow$")
             self.assertNotRegex(metadata, r"(?m)^  bash: allow$")
+
+        literature = frontmatter((AGENTS / "literature-review.md").read_text())
+        self.assertNotRegex(literature, r'(?m)^  "\*": deny$')
+        for tool in ("edit", "write", "patch", "multiedit", "apply_patch", "bash"):
+            self.assertRegex(literature, rf"(?m)^  {tool}: deny$")
 
     def test_manifest_covers_every_deployable_core_skill(self) -> None:
         manifest = json.loads((SKILLS / "manifest.json").read_text())

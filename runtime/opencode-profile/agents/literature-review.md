@@ -6,19 +6,12 @@ description: Systematic literature-review specialist for multi-source search, sc
 mode: subagent
 color: "#818cf8"
 permission:
-  "*": deny
-  read:
-    "*": allow
-    "*.env": ask
-    "*.env.*": ask
-    "*.env.example": allow
-    "mcp:*": ask
-  glob: allow
-  grep: allow
-  list: allow
-  webfetch: ask
-  websearch: ask
-  skill: allow
+  edit: deny
+  write: deny
+  patch: deny
+  multiedit: deny
+  apply_patch: deny
+  bash: deny
   external_directory: deny
 ---
 

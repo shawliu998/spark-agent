@@ -1,4 +1,4 @@
-import { BookOpenCheck, Bot, Boxes, ChevronDown } from "lucide-react";
+import { BookOpenCheck, Bot, Boxes, ChevronDown, Code2, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { AgentInfo, ProviderInfo } from "@ai4s/sdk";
 import { cn } from "@/lib/cn";
@@ -49,6 +49,9 @@ export function ResearchSessionControls({
   disabled,
   skillCount,
   onOpenSkills,
+  projectPythonInstalled,
+  projectPythonBusy,
+  onSetupProjectPython,
 }: {
   mode: ResearchExecutionMode;
   onModeChange: (mode: ResearchExecutionMode) => void;
@@ -61,6 +64,9 @@ export function ResearchSessionControls({
   disabled?: boolean;
   skillCount: number;
   onOpenSkills: () => void;
+  projectPythonInstalled?: boolean | null;
+  projectPythonBusy?: boolean;
+  onSetupProjectPython?: () => void;
 }) {
   const { t } = useTranslation("session");
   const models = runtimeModelOptions(providers, selectedModel);
@@ -171,6 +177,30 @@ export function ResearchSessionControls({
         <BookOpenCheck size={13} />
         <span>{t("researchControls.skills.count", { count: skillCount })}</span>
       </button>
+
+      {onSetupProjectPython && (
+        <button
+          type="button"
+          onClick={onSetupProjectPython}
+          disabled={disabled || projectPythonBusy || projectPythonInstalled === true}
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-full px-2.5 text-xs text-muted hover:bg-surface-2 hover:text-text disabled:opacity-45"
+          aria-label={t("researchControls.python.aria", {
+            defaultValue: "Set up project Python environment",
+          })}
+          title={t("researchControls.python.title", {
+            defaultValue: projectPythonInstalled
+              ? "Project Python is ready"
+              : "Install the pinned research packages into .spark/python",
+          })}
+        >
+          {projectPythonBusy ? <Loader2 size={13} className="animate-spin" /> : <Code2 size={13} />}
+          <span>
+            {projectPythonInstalled
+              ? t("researchControls.python.ready", { defaultValue: "Python ready" })
+              : t("researchControls.python.setup", { defaultValue: "Set up Python" })}
+          </span>
+        </button>
+      )}
     </div>
   );
 }
