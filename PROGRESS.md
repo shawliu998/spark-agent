@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 18:20 · docs(reuse-audit): added the evidence-based reuse matrix for Spark, OpenCode, scientific tooling, OpenScience, and unresolved candidates; confirmed taskPlanning/modelRouting are not default General Research coupling, with no safe code removal warranted.
+
 2026-07-17 18:12 · test(notebook): added a portable autonomous nbconvert fallback gate that proves deterministic notebook creation and desktop discovery, executes through managed project Python when provisioned, and otherwise reports an explicit runtime skip; 11 focused Notebook/Desktop tests pass.
 
 2026-07-17 18:02 · feat(autonomous-research-preview): completed the Autonomous Research developer-preview UX, guarded custom MCP and system installs, added project-Python/literature/delegation/restart evidence, and documented honest A–G coverage; 679 Desktop tests (one timing regression repaired), focused Rust policy tests, typecheck, lint, build, and diff checks pass.
