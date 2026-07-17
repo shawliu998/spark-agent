@@ -154,6 +154,9 @@ git-ignored and fetched by `scripts/dev/fetch-opencode.sh`). The Rust side
 - with an **app-private** config/data dir via `XDG_CONFIG_HOME`/`XDG_DATA_HOME` under
   `~/Library/Application Support/io.github.shawliu998.sparkagent/runtime/` (macOS) — so the user's
   sessions/config are never touched;
+- with `HOME` redirected to an app-private runtime directory and `OPENCODE_PURE=1`,
+  so the sidecar does not discover the user's `~/.opencode` tree or execute external
+  project/config plugins before product approval;
 - it can **explicitly import the user's login** from Settings: Spark parses the
   selected `auth.json` in memory, stores simple provider API keys in the OS
   credential manager, writes only environment references for those keys, and
@@ -175,7 +178,11 @@ only of Apple platform-signed `/usr/bin/nc -U <private-socket>`. This removes th
 legacy DYLD-sensitive Spark launcher from the OpenCode process tree. The staged
 broker in the already-running Tauri process authenticates relay UID, PID,
 executable, and parent against the currently owned OpenCode PID, start time, and
-generation, then validates the strict app config and canonical target. The
+generation, then validates the strict app config and canonical target. It also
+serializes a native allow/deny prompt once per accepted broker connection and
+revalidates peer identity, generation, config, and target before and after the
+decision; the Keychain is not read on denial or dialog failure. This connection
+approval is not yet a separate approval for every JSON-RPC `tools/call`. The
 credential-release/spawn branch is not enabled in production, and Settings marks
 MP/FRED security-gated; these connectors are not available to the runtime while
 the gate is closed. The nc/private-UDS/PID-generation design is defense in depth,
@@ -201,9 +208,11 @@ Credential-bearing connector release has one P0 and two P1 gates:
 
 - **P0 — execution authority and target integrity:** make downloaded targets
   immutable and signed/verified, or run them in an isolation boundary that a
-  same-UID OpenCode extension cannot mutate or replace; require native approval
-  for every broker call and gate or disable OpenCode config-directory dependency
-  installation, which currently occurs before tool approval.
+  same-UID OpenCode extension cannot mutate or replace; extend the implemented
+  native per-connection approval to every credential-using JSON-RPC tool call; and
+  gate or disable OpenCode config-directory dependency installation, which still
+  occurs before tool approval. Pure mode prevents those external plugins from
+  executing, but does not prevent the pinned sidecar's background install/write.
 - **P1 — supply-chain installation:** replace the current exact top-level pins
   with a fully hashed transitive lock and staged atomic installation. Clearing the
   caller environment, disabling uv configuration, and fixing official PyPI remain
@@ -458,7 +467,9 @@ and disabled, secretless native MCP config. Migration and the private broker are
 implemented, and the legacy DYLD-sensitive Spark launcher is removed. The staged
 command is Apple platform-signed `/usr/bin/nc -U <private-socket>`; the Tauri
 broker binds relay identity to the currently owned OpenCode PID/start time/
-generation and validates the strict config and canonical target.
+generation and validates the strict config and canonical target. It stages a
+serialized native allow/deny prompt once per connection before Keychain access
+and revalidates afterward; per-JSON-RPC-tool-call approval remains open.
 Credential-bearing execution remains fail-closed and security-gated, so no
 production claim is made that the key-delivery path is available, uncrossable, or
 hard-confined.

@@ -598,10 +598,36 @@ mod broker {
         generation: u64,
     }
 
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct ConnectionApprovalScope {
+        connector_id: &'static str,
+        parent: ProcessIdentity,
+        generation: u64,
+        target: ConnectorChildTarget,
+    }
+
+    /// Deliberately contains only display-safe connection metadata. In
+    /// particular, the credential is not read until after this request has
+    /// been approved and the complete scope has been revalidated.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ConnectionApprovalRequest {
+        connector_id: &'static str,
+    }
+
+    impl From<&ConnectionApprovalScope> for ConnectionApprovalRequest {
+        fn from(scope: &ConnectionApprovalScope) -> Self {
+            Self {
+                connector_id: scope.connector_id,
+            }
+        }
+    }
+
     struct BrokerShared {
+        app: AppHandle,
         app_data_dir: PathBuf,
         socket_paths: BTreeMap<&'static str, PathBuf>,
         authorization: Mutex<Option<Authorization>>,
+        approval_serialization: Mutex<()>,
         generation: AtomicU64,
         active_connections: AtomicUsize,
         shutting_down: AtomicBool,
@@ -720,9 +746,11 @@ mod broker {
             }
 
             let shared = Arc::new(BrokerShared {
+                app: app.clone(),
                 app_data_dir,
                 socket_paths,
                 authorization: Mutex::new(None),
+                approval_serialization: Mutex::new(()),
                 generation: AtomicU64::new(1),
                 active_connections: AtomicUsize::new(0),
                 shutting_down: AtomicBool::new(false),
@@ -994,6 +1022,88 @@ mod broker {
         validate_connector_relay_config(&text, connector_id, &expected)
     }
 
+    fn validate_connection_approval_scope(
+        shared: &BrokerShared,
+        stream: &UnixStream,
+        scope: &ConnectionApprovalScope,
+    ) -> Result<(), String> {
+        if relay_disconnected(stream) {
+            return Err("connector relay disconnected during approval".to_string());
+        }
+        if authenticate_relay_peer(stream)? != scope.parent {
+            return Err("connector relay peer changed during approval".to_string());
+        }
+        if shared.generation.load(Ordering::Acquire) != scope.generation {
+            return Err("OpenCode runtime authorization changed during approval".to_string());
+        }
+        validate_live_config(shared, scope.connector_id)?;
+        if canonical_connector_child_target(&shared.app_data_dir, scope.connector_id)?
+            != scope.target
+        {
+            return Err("connector execution target changed during approval".to_string());
+        }
+        Ok(())
+    }
+
+    /// Serialize the complete native approval transaction and validate the
+    /// connection immediately before and after the user decision. Approval is
+    /// intentionally not cached: callers must invoke this once for every
+    /// accepted broker connection.
+    fn run_serialized_connection_approval<V, A>(
+        serialization: &Mutex<()>,
+        scope: &ConnectionApprovalScope,
+        mut validate: V,
+        approve: A,
+    ) -> Result<(), String>
+    where
+        V: FnMut(&ConnectionApprovalScope) -> Result<(), String>,
+        A: FnOnce(&ConnectionApprovalRequest) -> Result<bool, String>,
+    {
+        let _guard = serialization
+            .lock()
+            .map_err(|_| "connector approval state is unavailable".to_string())?;
+        validate(scope)?;
+        let request = ConnectionApprovalRequest::from(scope);
+        match approve(&request) {
+            Ok(true) => {}
+            Ok(false) => return Err("science connector connection was denied".to_string()),
+            Err(_) => return Err("native science connector approval failed".to_string()),
+        }
+        validate(scope)
+    }
+
+    fn show_native_connection_approval(
+        app: &AppHandle,
+        request: &ConnectionApprovalRequest,
+    ) -> Result<bool, String> {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+        let message = connection_approval_message(request);
+        // serve_connection always runs on a dedicated broker thread. The
+        // plugin's blocking API must never be called from Tauri's main thread.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app.dialog()
+                .message(message)
+                .title("Allow science connector connection?")
+                .kind(MessageDialogKind::Warning)
+                .buttons(MessageDialogButtons::OkCancelCustom(
+                    "Allow Connection".to_string(),
+                    "Deny".to_string(),
+                ))
+                .blocking_show()
+        }))
+        .map_err(|_| "native science connector approval dialog failed".to_string())
+    }
+
+    fn connection_approval_message(request: &ConnectionApprovalRequest) -> String {
+        format!(
+            "Allow one connection to the {:?} science connector?\n\n\
+             This gives the currently running OpenCode process access to this connector's system credential for this broker connection. It is not a separate approval for each JSON-RPC tools/call sent over the connection.\n\n\
+             The credential will be loaded only if you allow this connection.",
+            request.connector_id
+        )
+    }
+
     fn read_connector_secret(connector_id: &str) -> Result<String, String> {
         super::ensure_managed_connector_execution_enabled()?;
         keyed_connector_spec(connector_id)?;
@@ -1090,21 +1200,31 @@ mod broker {
             Err(_) => return,
         };
 
-        // The credential is read only after peer, parent, config, and exact
-        // target validation. It is never serialized or written to the socket.
+        let approval_scope = ConnectionApprovalScope {
+            connector_id,
+            parent,
+            generation,
+            target: target.clone(),
+        };
+        if run_serialized_connection_approval(
+            &shared.approval_serialization,
+            &approval_scope,
+            |scope| validate_connection_approval_scope(&shared, &stream, scope),
+            |request| show_native_connection_approval(&shared.app, request),
+        )
+        .is_err()
+        {
+            return;
+        }
+
+        // The credential is read only after native approval plus post-approval
+        // peer, runtime-generation, config, and exact-target validation. It is
+        // never serialized or written to the socket.
         let secret = match read_connector_secret(connector_id) {
             Ok(secret) => secret,
             Err(_) => return,
         };
-        let refreshed_target =
-            match canonical_connector_child_target(&shared.app_data_dir, connector_id) {
-                Ok(target) => target,
-                Err(_) => return,
-            };
-        if shared.generation.load(Ordering::Acquire) != generation
-            || validate_live_config(&shared, connector_id).is_err()
-            || refreshed_target != target
-        {
+        if validate_connection_approval_scope(&shared, &stream, &approval_scope).is_err() {
             return;
         }
         let mut child = match spawn_child(&target, &secret, &stream) {
@@ -1178,6 +1298,181 @@ mod broker {
             pid: peer_parent.0,
             start_seconds: peer_parent.1,
             start_microseconds: peer_parent.2,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{
+            connection_approval_message, run_serialized_connection_approval,
+            ConnectionApprovalRequest, ConnectionApprovalScope, ConnectorChildTarget,
+            ProcessIdentity,
+        };
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier, Mutex};
+        use std::thread;
+        use std::time::Duration;
+
+        fn scope() -> ConnectionApprovalScope {
+            ConnectionApprovalScope {
+                connector_id: "fred",
+                parent: ProcessIdentity {
+                    pid: 42,
+                    start_seconds: 100,
+                    start_microseconds: 7,
+                },
+                generation: 9,
+                target: ConnectorChildTarget {
+                    connector_id: "fred",
+                    executable: PathBuf::from("/private/app/fred-mcp"),
+                    working_directory: PathBuf::from("/private/app"),
+                    api_key_env: "FRED_API_KEY",
+                },
+            }
+        }
+
+        #[test]
+        fn native_approval_deny_and_error_fail_closed() {
+            let validations = AtomicUsize::new(0);
+            let denied = run_serialized_connection_approval(
+                &Mutex::new(()),
+                &scope(),
+                |_| {
+                    validations.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+                |_| Ok(false),
+            );
+            assert_eq!(
+                denied.unwrap_err(),
+                "science connector connection was denied"
+            );
+            assert_eq!(validations.load(Ordering::SeqCst), 1);
+
+            let failed = run_serialized_connection_approval(
+                &Mutex::new(()),
+                &scope(),
+                |_| Ok(()),
+                |_| Err("dialog backend unavailable".to_string()),
+            );
+            assert_eq!(
+                failed.unwrap_err(),
+                "native science connector approval failed"
+            );
+        }
+
+        #[test]
+        fn approval_is_requested_for_every_connection_without_cache() {
+            let serialization = Mutex::new(());
+            let approvals = AtomicUsize::new(0);
+            let validations = AtomicUsize::new(0);
+            for _ in 0..2 {
+                run_serialized_connection_approval(
+                    &serialization,
+                    &scope(),
+                    |_| {
+                        validations.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                    |_| {
+                        approvals.fetch_add(1, Ordering::SeqCst);
+                        Ok(true)
+                    },
+                )
+                .unwrap();
+            }
+            assert_eq!(approvals.load(Ordering::SeqCst), 2);
+            assert_eq!(validations.load(Ordering::SeqCst), 4);
+        }
+
+        #[test]
+        fn concurrent_connection_approvals_are_serialized() {
+            let serialization = Arc::new(Mutex::new(()));
+            let start = Arc::new(Barrier::new(3));
+            let active = Arc::new(AtomicUsize::new(0));
+            let maximum = Arc::new(AtomicUsize::new(0));
+            let approvals = Arc::new(AtomicUsize::new(0));
+            let mut handles = Vec::new();
+
+            for _ in 0..2 {
+                let serialization = serialization.clone();
+                let start = start.clone();
+                let active = active.clone();
+                let maximum = maximum.clone();
+                let approvals = approvals.clone();
+                handles.push(thread::spawn(move || {
+                    start.wait();
+                    run_serialized_connection_approval(
+                        &serialization,
+                        &scope(),
+                        |_| Ok(()),
+                        |_| {
+                            approvals.fetch_add(1, Ordering::SeqCst);
+                            let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            maximum.fetch_max(now, Ordering::SeqCst);
+                            thread::sleep(Duration::from_millis(20));
+                            active.fetch_sub(1, Ordering::SeqCst);
+                            Ok(true)
+                        },
+                    )
+                    .unwrap();
+                }));
+            }
+            start.wait();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+            assert_eq!(approvals.load(Ordering::SeqCst), 2);
+            assert_eq!(maximum.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn post_approval_revalidation_rejects_changed_security_inputs() {
+            for changed_input in ["peer", "generation", "config", "target"] {
+                let peer = AtomicBool::new(true);
+                let generation = AtomicBool::new(true);
+                let config = AtomicBool::new(true);
+                let target = AtomicBool::new(true);
+                let result = run_serialized_connection_approval(
+                    &Mutex::new(()),
+                    &scope(),
+                    |_| {
+                        if peer.load(Ordering::SeqCst)
+                            && generation.load(Ordering::SeqCst)
+                            && config.load(Ordering::SeqCst)
+                            && target.load(Ordering::SeqCst)
+                        {
+                            Ok(())
+                        } else {
+                            Err(format!("{changed_input} changed"))
+                        }
+                    },
+                    |_| {
+                        match changed_input {
+                            "peer" => peer.store(false, Ordering::SeqCst),
+                            "generation" => generation.store(false, Ordering::SeqCst),
+                            "config" => config.store(false, Ordering::SeqCst),
+                            "target" => target.store(false, Ordering::SeqCst),
+                            _ => unreachable!(),
+                        }
+                        Ok(true)
+                    },
+                );
+                assert_eq!(result.unwrap_err(), format!("{changed_input} changed"));
+            }
+        }
+
+        #[test]
+        fn approval_request_copy_is_connection_scoped_and_secret_free() {
+            let request = ConnectionApprovalRequest::from(&scope());
+            let copied = request;
+            assert_eq!(copied.connector_id, "fred");
+            let rendered = format!("{copied:?} {}", connection_approval_message(&copied));
+            assert!(rendered.contains("one connection"));
+            assert!(rendered.contains("not a separate approval for each JSON-RPC tools/call"));
+            assert!(!rendered.contains("FRED_API_KEY"));
+            assert!(!rendered.contains("test-secret-value"));
         }
     }
 }

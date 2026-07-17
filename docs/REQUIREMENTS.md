@@ -320,14 +320,18 @@ competitors.
     entries are disabled and contain only Apple platform-signed
     `/usr/bin/nc -U <private-socket>` to a private Unix-domain socket. The staged
     broker authenticates relay UID/PID/executable/parent against the owned OpenCode
-    PID/start-time/generation and validates strict config/target, but
+    PID/start-time/generation and validates strict config/target. It serializes a
+    native allow/deny decision once per broker connection before reading Keychain,
+    then revalidates the complete scope. This is not yet one approval per JSON-RPC
+    `tools/call`, and
     credential-bearing execution remains disabled by default and fails closed.
     MP/FRED are security-gated and unavailable to the runtime. This is defense in
     depth, not a delivered key-delivery or hard-confinement guarantee. The single
     P0 release
     gate requires immutable signed/verified targets or same-UID-resistant isolated
-    execution, native per-call approval, and closure of the config-dependency
-    approval bypass. Two P1 gates require a fully hashed transitive lock with staged
+    execution, native approval for every credential-using JSON-RPC tool call rather
+    than only every connection, and closure of the config-dependency approval bypass.
+    Two P1 gates require a fully hashed transitive lock with staged
     atomic install and packaged macOS E2E. Unsupported structured provider API
     records fail closed. OAuth records still use an owner-only app-private file.
     Spark transactionally rotates any token exposed in legacy plaintext
@@ -347,8 +351,10 @@ competitors.
   - [ ] **OpenCode config dependency installation bypasses product approval.**
     The pinned loader may install config-directory packages (with lifecycle
     scripts disabled) before the tool-permission layer, including for project
-    `.opencode` configuration. Spark must gate or disable this network/write path
-    until the user explicitly approves it.
+    `.opencode` configuration. Spark now uses an app-private `HOME` and forces
+    `OPENCODE_PURE=1`, so user-global config is not discovered and external plugins
+    do not execute, but the background install/write still occurs. Spark must gate
+    or disable that network/write path until the user explicitly approves it.
 
   **Critical — Rust defects:**
   - [x] **Windows command injection** in `open_url`/`os_open`. ~~`cmd /C
@@ -475,10 +481,12 @@ competitors.
   they are not packaged credential-path E2E evidence. The disabled MP/FRED config
   contains only Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain
   socket; the PID/generation broker checks are staged defenses after removal of
-  the legacy DYLD-sensitive Spark launcher, not a delivered key-path guarantee.
+  the legacy DYLD-sensitive Spark launcher. A native prompt is staged once per
+  connection before any Keychain read, not once per JSON-RPC tool call; these are
+  not a delivered key-path guarantee.
   One P0 release gate requires immutable signed/verified downloaded targets or
-  same-UID-resistant isolated execution, native per-call approval, and closure of
-  the config-dependency approval bypass. Two P1 gates require a fully hashed
+  same-UID-resistant isolated execution, native per-tool-call approval, and closure
+  of the config-dependency approval bypass. Two P1 gates require a fully hashed
   transitive lock with staged atomic install and packaged macOS E2E. The current
   top-level exact pins, cleared caller environment, disabled uv configuration,
   and official PyPI do not satisfy those gates. We integrate existing open-source
@@ -686,7 +694,9 @@ competitors.
   legacy DYLD-sensitive Spark launcher is removed. Disabled config contains only
   Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain socket, and the
   staged broker binds the relay to the owned OpenCode PID/start-time/generation
-  before validating strict config/target. Credential-bearing execution remains
+  before validating strict config/target. It stages a serialized native approval
+  once per connection before Keychain access and revalidates afterward; per-tool-call
+  approval remains open. Credential-bearing execution remains
   disabled by default and fails closed, so MP/FRED are security-gated and not
   available to the runtime. Those staged controls are not a delivered claim that
   a key cannot cross the path or that the target is hard-confined. The item remains

@@ -52,10 +52,13 @@ cloud-GPU, and OpenScience CLI assumptions. See `THIRD_PARTY_NOTICES.md`.
   closed and Settings marks it security-gated. The staged native path contains
   only Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain socket; the
   Tauri broker binds relay identity to the owned OpenCode PID/start-time/generation
-  and validates the strict config and canonical target. This is staged defense,
+  and validates the strict config and canonical target. It serializes a native
+  allow/deny prompt once per broker connection before reading Keychain and revalidates
+  that complete scope afterward. This is staged defense,
   not a delivered key-delivery or hard-confinement guarantee. The P0 release gate
   requires immutable signed/verified targets or isolated execution, native
-  per-call approval, and closure of the config-dependency approval bypass. P1
+  approval for every credential-using JSON-RPC tool call rather than only every
+  connection, and closure of the config-dependency approval bypass. P1
   gates require a fully hashed transitive lock with staged atomic install and
   packaged macOS E2E. Custom/BYO MCP credential custody is not covered.
 - Bundled agents are deployed into the app-private profile's global `agents/`
@@ -67,5 +70,9 @@ cloud-GPU, and OpenScience CLI assumptions. See `THIRD_PARTY_NOTICES.md`.
   profile's global skills dir
   (`<xdg-config>/opencode/skills/`). They appear on the app's Skills page
   (which lists OpenCode 1.17.13's real `GET /skill?directory=<workspace>`).
+- Spark launches OpenCode with an app-private `HOME` and `OPENCODE_PURE=1`.
+  Project agents and skills remain discoverable, but external executable plugins
+  are not loaded. The pinned sidecar can still perform its config-directory package
+  install/write before tool approval, so that separate P0 remains open.
 
 Keep this bundle versioned with the app; it must not carry the user's own keys or sessions.

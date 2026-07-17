@@ -38,10 +38,10 @@ for deliberately unported code.
 | Planning | plan agent in `agent.ts` | OpenCode `plan` agent | adapted / Apache-2.0 | Read-only planning is selectable; no science-core gate in General mode. Runtime | Foundation | parity | Agent profile and fail-closed permission tests |
 | Todo | OpenScience todo tools | OpenCode native tools/events | behavior-only / OpenCode | Render native events when exposed; no duplicate store. Desktop | PR 7 | partial | Event rendering tests |
 | Model providers | `backend/cli/src/provider/**` | OpenCode provider APIs + native credential custody | behavior-only / Spark | Keep providers model-agnostic. Simple API keys use the OS credential manager at rest; structured API and OAuth records remain explicitly partial. SDK/desktop | Foundation | partial | Provider/config preservation and credential migration tests |
-| MCP | `backend/cli/src/mcp/**` | OpenCode MCP APIs + native curated-key custody | behavior-only / Spark | OpenCode owns MCP lifecycle. Materials/FRED migration and private-broker infrastructure ship, and the legacy DYLD-sensitive launcher is removed. Their managed entry is disabled and uses only Apple platform-signed `/usr/bin/nc -U` to a private socket; credential-bearing execution fails closed and remains security-gated. App-managed Jupyter is available for local UI/kernel use, but agent Jupyter MCP is also security-gated: native startup reconciliation scrubs legacy plaintext Spark-owned config and refuses managed registration. The broker identity/config/target checks are staged defenses, not a delivered key-delivery guarantee. Custom/BYO MCP custody remains outside this boundary. SDK/desktop | Foundation | partial | Migration, reconciliation, default-denial, and broker tests now; release requires the P0 target-integrity/native-approval/config-dependency gate plus P1 hashed-atomic-install and packaged-macOS-E2E gates |
+| MCP | `backend/cli/src/mcp/**` | OpenCode MCP APIs + native curated-key custody | behavior-only / Spark | OpenCode owns MCP lifecycle. Materials/FRED migration and private-broker infrastructure ship, and the legacy DYLD-sensitive launcher is removed. Their managed entry is disabled and uses only Apple platform-signed `/usr/bin/nc -U` to a private socket; credential-bearing execution fails closed and remains security-gated. The broker stages a serialized native allow/deny decision once per connection before any Keychain read and revalidates its complete scope afterward; this is not yet approval per JSON-RPC tool call. App-managed Jupyter is available for local UI/kernel use, but agent Jupyter MCP is also security-gated: native startup reconciliation scrubs legacy plaintext Spark-owned config and refuses managed registration. The broker checks are staged defenses, not a delivered key-delivery guarantee. Custom/BYO MCP custody remains outside this boundary. SDK/desktop | Foundation | partial | Migration, reconciliation, default-denial, connection-approval, and broker tests now; release requires the P0 target-integrity/per-tool-call-approval/config-dependency gate plus P1 hashed-atomic-install and packaged-macOS-E2E gates |
 | Custom agents | config markdown loading | Project/global OpenCode agents | behavior-only / OpenCode | Surface only agents returned by runtime. Runtime | PR 8 | partial | Runtime-list desktop test |
 | Custom commands | `backend/cli/src/command/**` | OpenCode command APIs and slash composer | behavior-only / Spark | Forward runtime commands with selected agent/model; do not hardcode a catalog. SDK | Foundation | partial | `listCommands`, selection payload, and invocation tests |
-| Plugins | OpenScience plugin packages | OpenCode extension boundaries | excluded / OpenCode | No OpenScience plugin runtime import. Runtime | PR 8 | not-started | None |
+| Plugins | OpenScience plugin packages | OpenCode extension boundaries | excluded / OpenCode | No OpenScience plugin runtime import. Spark forces `OPENCODE_PURE=1`, so external executable plugins do not run until their code and dependency path has an explicit trust gate. Runtime | PR 8 | excluded | Pinned live project-plugin non-execution smoke |
 | Local research memory | learned skills / Atlas graph | Local files, sessions, provenance | behavior-only / Spark | Keep local; Atlas cloud/private implementation is excluded. Product | PR 8 | partial | Existing persistence tests |
 | Cloud compute | `skills/cloud-compute/**` | Optional skills/backends | behavior-only / third party | Add per-provider integrations only with explicit credentials/terms. Skills | PR 8 | partial | Existing remote-run guards |
 
@@ -109,12 +109,18 @@ DYLD-sensitive Spark launcher is removed. Their disabled native MCP config conta
 only Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain socket. The
 staged Tauri broker authenticates relay UID/PID/executable/parent against the owned
 OpenCode PID/start-time/generation and validates the strict app config and canonical
-target. Credential-bearing execution is disabled by default and fails closed, so
+target. A serialized native dialog is staged once per broker connection before any
+Keychain read and the complete scope is revalidated after approval. Credential-bearing
+execution is disabled by default and fails closed, so
 MP/FRED remain security-gated and unavailable to the runtime. These checks are
 staged defense in depth, not a delivered assertion that the key path is uncrossable
 or the downloaded target is confined. One P0 release gate requires immutable
 signed/verified targets or same-UID-resistant isolated execution, native approval
-for each broker call, and closure of the OpenCode config-dependency approval bypass.
+for each JSON-RPC credential-using tool call rather than only each connection, and
+closure of the OpenCode config-dependency approval bypass. Spark runs the sidecar
+with an app-private `HOME` and `OPENCODE_PURE=1`, preventing user-global config
+discovery and external plugin execution; the pinned runtime's pre-permission
+background dependency install/write remains open.
 Two P1 gates require a fully hashed transitive lock with staged atomic install and
 packaged macOS E2E. Structured provider API records are rejected until they can be
 migrated without losing metadata. OAuth records still use an owner-only app-private

@@ -19,11 +19,13 @@ evidence binding, and deterministic review.
 > has been removed. Managed config now points only to Apple platform-signed
 > `/usr/bin/nc -U` and a private Unix-domain socket; the staged Tauri broker binds
 > relay identity to the owned OpenCode PID/start-time/generation and validates the
-> strict config and canonical target. Credential-bearing execution is nevertheless
+> strict config and canonical target. A native, serialized allow/deny prompt is
+> staged once per broker connection before any Keychain read, with scope revalidated
+> after the decision. Credential-bearing execution is nevertheless
 > disabled by default and fails closed, so MP/FRED remain security-gated rather
 > than available to the runtime. Release requires one P0 gate—immutable,
-> signed/verified downloaded targets or isolated execution, plus native per-call
-> approval and closure of the OpenCode config-dependency bypass—and two P1 gates:
+> signed/verified downloaded targets or isolated execution, plus approval for each
+> JSON-RPC tool call and closure of the OpenCode config-dependency bypass—and two P1 gates:
 > a fully hashed transitive lock with staged atomic install, and packaged macOS
 > E2E. The broker is staged defense in depth, not a delivered key-delivery or
 > hard-confinement guarantee. Spark now replaces any legacy plaintext Jupyter
@@ -52,8 +54,9 @@ evidence binding, and deterministic review.
 - Load a foundation pack for literature review, citation management, hypothesis
   generation, scientific critique, exploratory and statistical analysis,
   scientific writing, and Matplotlib.
-- Extend the runtime with project or user OpenCode agents, skills, MCP servers,
-  commands, and model providers.
+- Extend the runtime with project OpenCode agents and skills plus app-configured
+  MCP servers, commands, and model providers. External executable OpenCode plugins
+  are forced off until their code and dependency path has an explicit trust gate.
 - Set up and open an app-managed local JupyterLab environment without exposing
   its authorization token to renderer state. Agent access to that environment is
   intentionally unavailable while its credential-bearing MCP path is security-gated.

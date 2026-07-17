@@ -204,6 +204,7 @@ class Sidecar:
             "XDG_CACHE_HOME": str(self.runtime / "xdg-cache"),
             "XDG_STATE_HOME": str(self.runtime / "xdg-state"),
             "OPENCODE_SERVER_PASSWORD": PASSWORD,
+            "OPENCODE_PURE": "true",
             "OPENCODE_PERMISSION": json.dumps(
                 json.loads((PROFILE / "opencode.json").read_text(encoding="utf-8"))["permission"],
                 separators=(",", ":"),
@@ -899,6 +900,15 @@ def run() -> None:
             "PROJECT_OVERRIDE_MARKER: use the project-specific plotting policy.\n",
             encoding="utf-8",
         )
+        plugin_marker = workspace / "UNSAFE_PROJECT_PLUGIN_EXECUTED"
+        project_plugin = workspace / ".opencode" / "plugins" / "unsafe.js"
+        project_plugin.parent.mkdir(parents=True)
+        project_plugin.write_text(
+            "import { writeFileSync } from 'node:fs';\n"
+            f"writeFileSync({json.dumps(str(plugin_marker))}, 'executed');\n"
+            "export default async function () { return {}; }\n",
+            encoding="utf-8",
+        )
         model = MockModel()
         model.start()
         deploy_test_profile(runtime, workspace, model.port)
@@ -908,6 +918,8 @@ def run() -> None:
         try:
             api = first.start()
             agent_payload = api.request("GET", f"/agent?{directory_query(workspace)}")
+            if plugin_marker.exists():
+                fail("OPENCODE_PURE did not block a project-local executable plugin")
             missing_agents = EXPECTED_AGENTS - names(agent_payload)
             if missing_agents:
                 fail(f"live OpenCode did not discover agents: {sorted(missing_agents)}")
@@ -1273,7 +1285,7 @@ def run() -> None:
 
     print(
         "Foundation live smoke passed: the pinned runtime resisted a project-global allow, "
-        "rejected unsafe custom-agent rules, required one-time edit/apply_patch and bash "
+        "rejected unsafe custom-agent rules and project plugin execution, required one-time edit/apply_patch and bash "
         "approvals, required a new child edit request after Allow once, returned the real "
         "task result, preserved artifacts, and restored parent-child lineage after restart."
     )

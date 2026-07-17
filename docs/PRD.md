@@ -397,12 +397,15 @@ credential-manager services. MP/FRED migration and the native private-broker
 substrate are implemented, and the legacy DYLD-sensitive Spark launcher is gone.
 Their disabled managed config contains only Apple platform-signed `/usr/bin/nc -U`
 to a private Unix-domain socket. The staged Tauri broker binds relay identity to
-the owned OpenCode PID/start-time/generation and validates strict config/target,
+the owned OpenCode PID/start-time/generation and validates strict config/target.
+A serialized native decision is staged once per connection before any Keychain
+read and the full scope is revalidated afterward; per-tool-call approval remains open,
 but credential-bearing execution remains disabled by default and fails closed;
 MP/FRED are security-gated rather than available to the runtime. This is staged
 defense in depth, not a delivered key-delivery or hard-confinement guarantee.
 The single P0 release gate requires immutable signed/verified downloaded targets
-or isolated execution, native per-call approval, and closure of the OpenCode
+or isolated execution, native approval for every credential-using JSON-RPC tool
+call rather than only every connection, and closure of the OpenCode
 config-dependency approval bypass. Two P1 gates require a fully hashed transitive
 lock with staged atomic install and packaged macOS E2E. Unsupported structured
 provider records fail closed rather than being silently weakened or corrupted.

@@ -2663,10 +2663,11 @@ fn spawn_sidecar(
         let data = root.join("xdg-data");
         let cache = root.join("xdg-cache");
         let runtime_state = root.join("xdg-state");
+        let runtime_home = root.join("home");
         // Run OpenCode inside the user-facing workspace, NOT the app's cwd (which is `/`
         // when launched from Finder) — otherwise it scans the whole filesystem root.
         let workspace = workspace_dir(app)?;
-        for d in [&cfg, &data, &cache, &runtime_state] {
+        for d in [&cfg, &data, &cache, &runtime_state, &runtime_home] {
             std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
         }
         // This defense is repeated inside the process-start transaction, not
@@ -2709,7 +2710,6 @@ fn spawn_sidecar(
         // runtime root. Repair owner-only access on every start.
         tighten_private(&root);
         tighten_private(&cfg_file);
-        let home = std::env::var("HOME").unwrap_or_default();
         let port_str = port.to_string();
 
         #[cfg(target_os = "macos")]
@@ -2731,6 +2731,10 @@ fn spawn_sidecar(
             // trusts ANY localhost-origin page. The webview authenticates via the
             // SDK; nothing else may.
             .env("OPENCODE_SERVER_PASSWORD", server_password())
+            // External plugins execute configuration-supplied code before any
+            // tool permission. Spark excludes that runtime until it can pin a
+            // sidecar that also disables every config-driven package install.
+            .env("OPENCODE_PURE", "true")
             // OpenCode merges this after global/project config. Agent-specific
             // frontmatter is merged later and is therefore validated through
             // the resolved `/agent` payload before the process is published.
@@ -2743,7 +2747,10 @@ fn spawn_sidecar(
                 "XDG_STATE_HOME",
                 runtime_state.to_string_lossy().to_string(),
             )
-            .env("HOME", home)
+            // Keep OpenCode away from the user's ~/.opencode tree. The real
+            // PATH is assembled before spawning, while provider credentials
+            // cross only through the explicit runtime environment above.
+            .env("HOME", runtime_home.to_string_lossy().to_string())
             // Lets bundled skill helpers stamp the recording app version into
             // provenance when they run outside the app.
             .env(

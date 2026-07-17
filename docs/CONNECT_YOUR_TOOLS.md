@@ -115,14 +115,16 @@ app also bundles first-party skills (e.g. `traceability-review`) and the
   `/usr/bin/nc -U <private-socket>` as a stdio relay to a private Unix-domain
   socket. The staged Tauri broker authenticates relay UID/PID/executable/parent
   against the owned OpenCode PID/start-time/generation and validates the strict
-  config and canonical target. This is staged defense in depth, not a delivered
-  key-delivery guarantee or hard confinement; MP/FRED are not available to the
-  runtime while the gate is closed. Custom/BYO MCP credential custody is outside
-  this boundary.
+  config and canonical target. It serializes a native allow/deny decision once
+  per connection before any Keychain read and revalidates that scope afterward;
+  this is not one approval per JSON-RPC tool call. This is staged defense in
+  depth, not a delivered key-delivery guarantee or hard confinement; MP/FRED are
+  not available to the runtime while the gate is closed. Custom/BYO MCP
+  credential custody is outside this boundary.
 - **P0 release gate:** make every downloaded credential-bearing target immutable
   and signed/verified, or execute it in isolation from same-UID mutation; require
-  native approval for every broker call and close the OpenCode config-dependency
-  installation path that currently bypasses tool approval.
+  native approval for every credential-using JSON-RPC tool call and close the
+  OpenCode config-dependency installation path that currently bypasses tool approval.
 - **P1 supply-chain gate:** enforce a fully hashed transitive lock and staged,
   atomic installation. Exact-pinned top-level packages, a cleared caller
   environment, disabled `uv` configuration, and official PyPI are useful but
