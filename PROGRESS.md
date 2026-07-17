@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 20:16 · test(deepseek-autonomous-live): built and launched the current debug app, restored the Keychain-backed DeepSeek V4 Flash provider in Autonomous mode, provisioned pinned project Python 3.12, completed a real CSV analysis with verified script/table/PNG/report/executed-notebook outputs and a living-notebook entry, confirmed best-effort local commits, and recovered the full session plus journal after an app/sidecar restart; one optional skill load timed out before the agent continued successfully.
+
 2026-07-17 18:45 · test(literature-live): added the pinned paper-search-mcp stdio live gate with credential-free arXiv/PubMed searches, registry identifier validation, temporary corpus/BibTeX/report artifact checks, and three deterministic offline tests; offline tests pass and this environment reports an explicit skip because paper-search-mcp==0.1.4 is not installed.
 
 2026-07-17 18:30 · feat(kdense-skills): added a pinned, MIT-provenance curated 30-skill K-Dense adapter that verifies its archive and deploys through the existing OpenCode global skill directory without executing upstream scripts, installing dependencies, or overwriting user/project skills.
