@@ -1022,9 +1022,10 @@ pub fn import_opencode_login(
 /// Deploy the bundled skill packs (Tauri resources) into the app-private
 /// profile's global skills dir (`<xdg-config>/opencode/skills/`), which OpenCode
 /// scans regardless of project detection: `skills/` is the external ai4s-skills
-/// pack and `skills-core/` contains the product-owned core skills. The
-/// workspace's own `.opencode/skills/` stays reserved for skills the user
-/// installs. Runs before every sidecar start so app upgrades refresh the packs.
+/// pack, `skills-kdense/` is the pinned K-Dense curated subset, and
+/// `skills-core/` contains product-owned fallback skills. The workspace's own
+/// `.opencode/skills/` stays reserved for skills the user installs. Runs before
+/// every sidecar start so app upgrades refresh the packs.
 fn deploy_bundled_skills(
     app: &AppHandle,
     profile_root: &Path,
@@ -1039,7 +1040,7 @@ fn deploy_bundled_skills(
     let mut bundled = std::collections::BTreeSet::new();
     let mut all_resources_available = true;
     let allow_exact_adoption = registry.allow_exact_adoption;
-    for resource in ["skills", "skills-core"] {
+    for resource in ["skills", "skills-kdense", "skills-core"] {
         let src = match app
             .path()
             .resolve(resource, tauri::path::BaseDirectory::Resource)

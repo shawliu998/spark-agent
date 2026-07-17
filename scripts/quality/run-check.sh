@@ -58,6 +58,7 @@ prepare_rust_check() {
   # the app, so explicitly remove external binaries from the test-only merged
   # config and provide the git-ignored skill resource directory it still reads.
   mkdir -p "$ROOT/runtime/skills/external/ai4s-skills"
+  mkdir -p "$ROOT/runtime/skills/external/kdense-scientific-agent-skills"
   export TAURI_CONFIG='{"bundle":{"externalBin":[]}}'
 }
 

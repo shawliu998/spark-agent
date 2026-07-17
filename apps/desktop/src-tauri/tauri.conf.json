@@ -35,6 +35,7 @@
     },
     "resources": {
       "../../../runtime/skills/external/ai4s-skills": "skills/",
+      "../../../runtime/skills/external/kdense-scientific-agent-skills": "skills-kdense/",
       "../../../runtime/skills/core": "skills-core/",
       "../../../runtime/opencode-profile/agents": "opencode-profile/agents/",
       "../../../runtime/opencode-profile/opencode.json": "opencode-profile/opencode.json",

@@ -20,6 +20,7 @@ SIDECAR_ASSET_MANIFEST=(
 
 SKILLS_ARCHIVE_MANIFEST=(
   'ai4s-skills|8fa2ab0523082c135598909b227ed8feb48263ad|cbe373236b85e952762c5cbae7d72eb72c1e11077865c71b9ac59a084dd9a408'
+  'kdense-scientific-agent-skills|3f825caafe149b7853ec8c4d1dd7f4553ea6b2a5|44a0aeb6246edc5944b5cc0f4c228e7c8dd003cb1e066f26534cf632461e11d1'
 )
 
 sidecar_pinned_version() {

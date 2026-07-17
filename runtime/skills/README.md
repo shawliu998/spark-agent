@@ -69,10 +69,22 @@ not part of the installer or deployed by `deploy_bundled_skills`. Adding an
 optional office pack later must pin its source, preserve its licenses, declare
 the Tauri resource explicitly, and add matching deployment and validation.
 
+## Curated K-Dense pack (bundled into the installer)
+
+Spark also bundles a deliberately small subset of 30 skills from
+[K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills).
+The exact Git commit, archive SHA-256, MIT source license, selected paths, and
+each skill's declared dependency-library license are committed in
+`kdense-curated-manifest.json`. `fetch-kdense-skills.sh` downloads the pinned
+archive, verifies it, and copies only those selected directories; it never runs
+upstream scripts or installs dependencies. It is deployed through the same
+OpenCode global skill directory as the existing packs, while workspace skill
+names continue to take precedence.
+
 ## Third-party skills
 
-Do **not** enable large third-party collections (e.g. ~148 K-Dense skills) by
-default. Use curated install, enable by domain, and always surface each skill's
-license, dependencies, and risk.
+Do **not** enable large third-party collections (e.g. the remaining K-Dense
+skills) by default. Use curated install, enable by domain, and always surface
+each skill's license, dependencies, and risk.
 
 Each skill directory must contain a `SKILL.md`.

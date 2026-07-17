@@ -163,21 +163,23 @@ if sidecar_pinned_version unknown >/dev/null 2>&1; then
   fail "unknown sidecar tools must not have a pinned version"
 fi
 
-[[ "${#SKILLS_ARCHIVE_MANIFEST[@]}" -eq 1 ]] || \
-  fail "expected one skills archive manifest record"
-IFS='|' read -r skills_pack skills_commit skills_digest skills_extra \
-  <<<"${SKILLS_ARCHIVE_MANIFEST[0]}"
-[[ "$skills_pack" == ai4s-skills && "$skills_commit" =~ ^[0-9a-f]{40}$ &&
-  "$skills_digest" =~ ^[0-9a-f]{64}$ && -z "$skills_extra" ]] || \
-  fail "malformed skills archive manifest record"
-[[ "$(skills_pinned_commit "$skills_pack")" == "$skills_commit" ]] || \
-  fail "skills commit lookup drift"
-[[ "$(skills_archive_sha256 "$skills_pack" "$skills_commit")" == "$skills_digest" ]] || \
-  fail "skills digest lookup drift"
-if skills_archive_sha256 "$skills_pack" 0000000000000000000000000000000000000000 \
-  >/dev/null 2>&1; then
-  fail "unknown skills commits must fail closed"
-fi
+[[ "${#SKILLS_ARCHIVE_MANIFEST[@]}" -eq 2 ]] || \
+  fail "expected two skills archive manifest records"
+for skills_record in "${SKILLS_ARCHIVE_MANIFEST[@]}"; do
+  IFS='|' read -r skills_pack skills_commit skills_digest skills_extra \
+    <<<"$skills_record"
+  [[ "$skills_pack" =~ ^[a-z0-9-]+$ && "$skills_commit" =~ ^[0-9a-f]{40}$ &&
+    "$skills_digest" =~ ^[0-9a-f]{64}$ && -z "$skills_extra" ]] || \
+    fail "malformed skills archive manifest record"
+  [[ "$(skills_pinned_commit "$skills_pack")" == "$skills_commit" ]] || \
+    fail "skills commit lookup drift"
+  [[ "$(skills_archive_sha256 "$skills_pack" "$skills_commit")" == "$skills_digest" ]] || \
+    fail "skills digest lookup drift"
+  if skills_archive_sha256 "$skills_pack" 0000000000000000000000000000000000000000 \
+    >/dev/null 2>&1; then
+    fail "unknown skills commits must fail closed"
+  fi
+done
 
 # Keep this list aligned with the skill resources in
 # apps/desktop/src-tauri/tauri.conf.json. Restricting the roots avoids scanning
@@ -185,6 +187,7 @@ fi
 packaged_skill_sources=(
   "$ROOT/runtime/skills/core"
   "$ROOT/runtime/skills/external/ai4s-skills"
+  "$ROOT/runtime/skills/external/kdense-scientific-agent-skills"
 )
 for skill_source in "${packaged_skill_sources[@]}"; do
   check_packaged_skill_bytecode "$skill_source"
@@ -884,7 +887,8 @@ bash -n \
   "$ROOT/scripts/dev/fetch-opencode.sh" \
   "$ROOT/scripts/dev/fetch-uv.sh" \
   "$ROOT/scripts/dev/fetch-skills.sh" \
+  "$ROOT/scripts/dev/fetch-kdense-skills.sh" \
   "$ROOT/scripts/quality/check-release-assets.sh"
 
-printf 'Release integrity policy passed for %d sidecars and %d skills archive.\n' \
+printf 'Release integrity policy passed for %d sidecars and %d skills archives.\n' \
   "${#SIDECAR_ASSET_MANIFEST[@]}" "${#SKILLS_ARCHIVE_MANIFEST[@]}"
