@@ -120,6 +120,11 @@ export interface SessionExecution {
   startedAt: number;
 }
 
+export interface TaskBatchItem {
+  title: string;
+  prompt: string;
+}
+
 interface RuntimeState {
   status: RuntimeStatus;
   serverUrl: string;
@@ -223,6 +228,8 @@ interface RuntimeState {
   switching: boolean;
   /** A sendPrompt is in flight (click → POST accepted). Locks the composer. */
   sending: boolean;
+  /** A same-workspace task plan is creating and starting its sessions. */
+  taskBatchLaunching: boolean;
   /** Sessions with an active turn (send accepted, session.idle not yet seen).
    *  Drives the composer lock and the "Working…" indicator. */
   runningSessions: Record<string, true>;
@@ -240,6 +247,7 @@ interface RuntimeState {
    *  cancel an in-flight turn's ownership of its origin thread. */
   openSessionForRecovery: (id: string) => Promise<void>;
   sendPrompt: (text: string) => Promise<string | null>;
+  launchTaskBatch: (objective: string, tasks: TaskBatchItem[]) => Promise<string[]>;
   /** Run a "!" shell command directly in the session's workspace folder —
    *  no model turn; the output folds into the thread as a bash tool row. */
   runShell: (command: string) => Promise<string | null>;
@@ -842,6 +850,7 @@ function clearEndpointNamespace(): void {
     panes: {},
     draftWorkspaceMaterialized: false,
     sending: false,
+    taskBatchLaunching: false,
     runningSessions: {},
     shellTurns: {},
   });
@@ -1185,6 +1194,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   draftWorkspaceMaterialized: false,
   switching: false,
   sending: false,
+  taskBatchLaunching: false,
   runningSessions: {},
   shellTurns: {},
 
@@ -2186,6 +2196,136 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
 
   // The send lifecycle (new → input → send → response) is shared by plain
   // prompts, "!" shell commands and "/" slash commands — see performTurn.
+  launchTaskBatch: async (objective, tasks) => {
+    const cleanObjective = objective.trim();
+    const cleanTasks = tasks.map((task) => ({
+      title: task.title.trim(),
+      prompt: task.prompt.trim(),
+    }));
+    if (!cleanObjective) throw new Error("A task objective is required.");
+    if (cleanTasks.length < 2 || cleanTasks.length > 5) {
+      throw new Error("A task plan must contain between 2 and 5 tasks.");
+    }
+    if (cleanTasks.some((task) => !task.title || !task.prompt)) {
+      throw new Error("Every task needs a title and prompt.");
+    }
+    if (get().taskBatchLaunching) return [];
+    if (!client || get().status !== "ready") {
+      throw new Error("Connect the OpenCode runtime before launching tasks.");
+    }
+    set({ taskBatchLaunching: true, error: null });
+    const started: string[] = [];
+    const failures: string[] = [];
+    try {
+      if (isTauri && !get().workspacePinned) await get().prepareDraftWorkspace();
+      const batchClient = client;
+      if (!batchClient || get().status !== "ready") {
+        throw new Error("Runtime did not reconnect before launching the task plan.");
+      }
+      const disconnectAtStart = disconnectGeneration;
+      const runtimeEndpointAtStart = runtimeEndpointGeneration;
+      const assertBatchConnected = () => {
+        if (client !== batchClient || disconnectGeneration !== disconnectAtStart) {
+          throw new TurnDisconnectedError();
+        }
+        if (runtimeEndpointGeneration !== runtimeEndpointAtStart) {
+          throw new TurnRuntimeRestartedError();
+        }
+      };
+      await validateRuntimePermissions(get().workspace);
+      const agent = get().selectedAgent ?? undefined;
+      for (const task of cleanTasks) {
+        assertBatchConnected();
+        const routed =
+          get().modelRoutingMode === "auto"
+            ? routeModelForTask(`${task.title}\n${task.prompt}`, get().providers, get().defaultModel)
+            : null;
+        const model = routed?.model ?? get().defaultModel ?? undefined;
+        const prompt = [
+          `Parent objective: ${cleanObjective}`,
+          "",
+          `Independent task: ${task.prompt}`,
+          "",
+          "Work only on this task. Save useful outputs in the current workspace, state evidence and limitations, and finish with a concise handoff for the parent objective.",
+        ].join("\n");
+        let id: string;
+        try {
+          id = await withRetry(() => batchClient.createSession(), assertBatchConnected);
+          assertBatchConnected();
+        } catch (error) {
+          failures.push(`${task.title}: ${error instanceof Error ? error.message : String(error)}`);
+          continue;
+        }
+        const owner = Symbol("task-batch-turn");
+        runningSessionOwners.set(id, owner);
+        latestSessionTurnOwners.set(id, owner);
+        set((state) => ({
+          sessions: [
+            { id, title: task.title, directory: state.workspace ?? undefined },
+            ...state.sessions.filter((session) => session.id !== id),
+          ],
+          threads: {
+            ...state.threads,
+            [id]: {
+              ...emptyThread(),
+              loaded: true,
+              blocks: [{ kind: "user", text: prompt }],
+            },
+          },
+          sessionExecutions: {
+            ...state.sessionExecutions,
+            [id]: {
+              agent: agent ?? null,
+              model: model ?? null,
+              route: routed,
+              startedAt: Date.now(),
+            },
+          },
+          ...(routed ? { lastModelRoute: routed } : {}),
+        }));
+        try {
+          await batchClient.sendPrompt(id, prompt, { agent, model });
+          assertBatchConnected();
+          started.push(id);
+          set((state) => ({
+            runningSessions: { ...state.runningSessions, [id]: true },
+          }));
+        } catch (error) {
+          runningSessionOwners.delete(id);
+          failures.push(`${task.title}: ${error instanceof Error ? error.message : String(error)}`);
+          set((state) => {
+            const thread = state.threads[id] ?? emptyThread();
+            return {
+              threads: {
+                ...state.threads,
+                [id]: {
+                  ...thread,
+                  blocks: [
+                    ...thread.blocks,
+                    {
+                      kind: "status-line" as const,
+                      text: `Task failed to start: ${error instanceof Error ? error.message : String(error)}`,
+                      tone: "error" as const,
+                    },
+                  ],
+                },
+              },
+            };
+          });
+        }
+      }
+      const projectWorkspace = get().workspace;
+      const lastStarted = started[started.length - 1];
+      if (projectWorkspace && lastStarted) {
+        void updateProjectLastSession(projectWorkspace, lastStarted).catch(() => {});
+      }
+      if (failures.length > 0) set({ error: failures.join("\n") });
+      return started;
+    } finally {
+      set({ taskBatchLaunching: false });
+    }
+  },
+
   sendPrompt: (text) => {
     // Capture the user's choices before performTurn may materialize a draft
     // workspace and reconnect. That reconnect refreshes the catalog and must

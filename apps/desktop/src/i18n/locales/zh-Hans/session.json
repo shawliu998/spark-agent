@@ -91,6 +91,28 @@
     "current": "当前任务",
     "status": { "running": "运行中", "waiting": "等待处理", "complete": "已完成" }
   },
+  "taskPlan": {
+    "aria": "任务计划",
+    "title": "规划并行任务",
+    "subtitle": "把一个研究目标拆成相互独立的任务。",
+    "objective": "总目标",
+    "objectivePlaceholder": "这次研究需要完成什么？",
+    "taskCount": "{{count}} / 5 个任务",
+    "generate": "生成计划",
+    "generating": "生成中…",
+    "generateError": "无法生成任务计划，请重试。",
+    "taskList": "计划任务",
+    "taskNumber": "任务 {{number}}",
+    "remove": "移除任务 {{number}}",
+    "titleLabel": "任务 {{number}} 标题",
+    "titlePlaceholder": "任务标题",
+    "promptLabel": "任务 {{number}} 提示词",
+    "promptPlaceholder": "这个任务需要完成什么",
+    "add": "添加任务",
+    "launch": "启动任务",
+    "launching": "启动中…",
+    "launchError": "无法启动该计划，请重试。"
+  },
   "workspaceArtifacts": {
     "heading": "工作区产物", "count": "已发现 {{count}} 个", "refreshAria": "刷新工作区产物"
   },

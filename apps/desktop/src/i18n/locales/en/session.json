@@ -91,6 +91,28 @@
     "current": "Current task",
     "status": { "running": "Running", "waiting": "Waiting", "complete": "Complete" }
   },
+  "taskPlan": {
+    "aria": "Task plan",
+    "title": "Plan parallel tasks",
+    "subtitle": "Break a research goal into independent tasks.",
+    "objective": "Objective",
+    "objectivePlaceholder": "What should this research accomplish?",
+    "taskCount": "{{count}} of 5 tasks",
+    "generate": "Generate",
+    "generating": "Generating…",
+    "generateError": "Could not generate a task plan. Try again.",
+    "taskList": "Planned tasks",
+    "taskNumber": "Task {{number}}",
+    "remove": "Remove task {{number}}",
+    "titleLabel": "Task {{number}} title",
+    "titlePlaceholder": "Task title",
+    "promptLabel": "Task {{number}} prompt",
+    "promptPlaceholder": "Instructions for this task",
+    "add": "Add task",
+    "launch": "Launch tasks",
+    "launching": "Launching…",
+    "launchError": "Could not launch this plan. Try again."
+  },
   "workspaceArtifacts": {
     "heading": "Workspace artifacts", "count": "{{count}} discovered", "refreshAria": "Refresh workspace artifacts"
   },

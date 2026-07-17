@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-17 16:05 · feat(task-orchestration): turned the Tasks panel into a same-workspace orchestrator that deterministically decomposes one objective into three editable independent tasks, validates 2–5 task plans, creates separate OpenCode sessions, routes each session independently, and keeps background status/approvals visible; 128 focused Desktop tests, typecheck, lint, and diff checks pass.
+
 2026-07-17 15:44 · feat(parallel-task-center): added a Tasks side panel for switching among top-level sessions and monitoring running, approval-waiting, and completed work with each session's actual routed model; Auto now prefers Luna for quick work, Terra for implementation, and Sol for deep planning/review, while provenance and run records use the per-session model; 125 focused Desktop tests, typecheck, lint, and diff checks pass.
 
 2026-07-17 15:34 · feat(task-model-routing): added transparent per-turn Auto model routing over the live OpenCode catalog, prioritizing Kimi K3 for quick/standard work and Sol for planning, architecture, security, review, and acceptance tasks with manual override and configured-model fallback; 122 focused Desktop tests, typecheck, lint, and diff checks pass.

@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   /** Number of createSession() attempts that fail before one succeeds. */
   failCreates: 0,
   createdSessionId: "ses_new",
+  createdSessionIds: [] as string[],
   createSession: vi.fn(),
   createSessionDirectories: [] as Array<string | undefined>,
   createWaits: [] as Promise<void>[],
@@ -199,7 +200,7 @@ vi.mock("@ai4s/sdk", () => {
         mocks.failCreates--;
         throw new Error("Load failed");
       }
-      return mocks.createdSessionId;
+      return mocks.createdSessionIds.shift() ?? mocks.createdSessionId;
     }
     async sendPrompt(sid: string, _text: string, options?: Record<string, unknown>) {
       mocks.sendPrompt(sid);
@@ -322,6 +323,7 @@ beforeEach(async () => {
   mocks.pendingPermissions = [];
   mocks.failCreates = 0;
   mocks.createdSessionId = "ses_new";
+  mocks.createdSessionIds = [];
   mocks.createSessionDirectories = [];
   mocks.createWaits = [];
   mocks.sendWaits = [];
@@ -353,6 +355,7 @@ beforeEach(async () => {
     error: null,
     switching: false,
     sending: false,
+    taskBatchLaunching: false,
     runningSessions: {},
     permissions: [],
     sessionParents: {},
@@ -447,6 +450,50 @@ describe("General Research runtime selection", () => {
       model: "openai/gpt-5.6-sol",
       route: { tier: "deep", model: "openai/gpt-5.6-sol" },
     });
+  });
+
+  it("launches a same-workspace task plan into independently routed sessions", async () => {
+    mocks.createdSessionIds = ["ses_evidence", "ses_review"];
+    useRuntimeStore.setState({
+      workspacePinned: true,
+      workspace: "/ws/base",
+      agents: [{ name: "research", description: "Research", mode: "primary" }],
+      selectedAgent: "research",
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          models: [
+            { id: "gpt-5.6-luna", name: "Codex Luna" },
+            { id: "gpt-5.6-sol", name: "Codex Sol" },
+          ],
+        },
+      ],
+      modelRoutingMode: "auto",
+    });
+
+    const ids = await useRuntimeStore.getState().launchTaskBatch("Assess the result", [
+      { title: "Summarize sources", prompt: "Gather the relevant evidence." },
+      { title: "Review architecture", prompt: "Review risks and acceptance criteria." },
+    ]);
+
+    expect(ids).toEqual(["ses_evidence", "ses_review"]);
+    expect(mocks.sendPromptOptions).toHaveBeenNthCalledWith(1, {
+      agent: "research",
+      model: "openai/gpt-5.6-luna",
+    });
+    expect(mocks.sendPromptOptions).toHaveBeenNthCalledWith(2, {
+      agent: "research",
+      model: "openai/gpt-5.6-sol",
+    });
+    expect(useRuntimeStore.getState().runningSessions).toMatchObject({
+      ses_evidence: true,
+      ses_review: true,
+    });
+    expect(useRuntimeStore.getState().sessionExecutions.ses_review.model).toBe(
+      "openai/gpt-5.6-sol",
+    );
+    expect(useRuntimeStore.getState().taskBatchLaunching).toBe(false);
   });
 
   it("fails closed before posting when resolved agent permissions are unsafe", async () => {

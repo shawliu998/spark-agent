@@ -20,12 +20,14 @@ import {
 } from "@/components/thread/ResearchSessionControls";
 import { WorkspaceArtifactShelf } from "@/components/thread/WorkspaceArtifactShelf";
 import { ParallelTaskCenter } from "@/components/thread/ParallelTaskCenter";
+import { TaskPlanComposer } from "@/components/thread/TaskPlanComposer";
 import { InspectorShell } from "@/components/inspector/InspectorShell";
 import { MaximizePaneButton, RightPane } from "@/components/inspector/RightPane";
 import { SessionFilesPane } from "./FilesPage";
 import { RunsPane } from "./RunsPage";
 import { cn } from "@/lib/cn";
 import { discoverWorkspaceArtifacts } from "@/lib/workspaceArtifacts";
+import { generateTaskPlan } from "@/lib/taskPlanning";
 
 /** Live agent session backed by the OpenCode runtime. `/live` (no id) is a blank draft;
  *  the session is created lazily on the first message, then the URL updates to /live/:id. */
@@ -57,6 +59,8 @@ export function LiveSessionPage() {
     modelRoutingMode,
     lastModelRoute,
     sessionExecutions,
+    launchTaskBatch,
+    taskBatchLaunching,
     connect,
     openSession,
     startDraft,
@@ -84,6 +88,7 @@ export function LiveSessionPage() {
   >([]);
   const [artifactRefresh, setArtifactRefresh] = useState(0);
   const [showTaskCenter, setShowTaskCenter] = useState(false);
+  const [showTaskPlanner, setShowTaskPlanner] = useState(false);
   const clearingLocalCommand = useRef(false);
   const mounted = useRef(false);
   useEffect(() => {
@@ -308,6 +313,10 @@ export function LiveSessionPage() {
   const { sidebarCollapsed, setSidebarCollapsed } = useUiStore();
   const isMac = navigator.userAgent.includes("Mac");
   const overlayTitlebar = useOverlayTitlebar();
+  const closeTaskCenter = () => {
+    setShowTaskCenter(false);
+    setShowTaskPlanner(false);
+  };
 
   return (
     <div className="flex h-full min-w-0">
@@ -375,7 +384,7 @@ export function LiveSessionPage() {
             </button>
           )}
           <button
-            onClick={() => setShowTaskCenter((open) => !open)}
+            onClick={() => (showTaskCenter ? closeTaskCenter() : setShowTaskCenter(true))}
             className={cn(
               "flex items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-surface-2",
               showTaskCenter ? "bg-surface-2 text-text" : "text-muted",
@@ -503,7 +512,9 @@ export function LiveSessionPage() {
               onRunShell={(c) => void onRunShell(c)}
               onRunCommand={(n, a) => void onRunCommand(n, a)}
               commands={composerCommands}
-              disabled={!connected || switching || working || executionMode !== "general"}
+              disabled={
+                !connected || switching || working || taskBatchLaunching || executionMode !== "general"
+              }
               working={running}
               onStop={() => void interrupt()}
               placeholder={
@@ -534,7 +545,7 @@ export function LiveSessionPage() {
                   routingMode={modelRoutingMode}
                   onRoutingModeChange={setModelRoutingMode}
                   lastModelRoute={lastModelRoute}
-                  disabled={!connected || switching || working}
+                  disabled={!connected || switching || working || taskBatchLaunching}
                   skillCount={skills.length}
                   onOpenSkills={() => navigate("/skills")}
                 />
@@ -548,7 +559,7 @@ export function LiveSessionPage() {
         <RightPane
           onClose={
             showTaskCenter
-              ? () => setShowTaskCenter(false)
+              ? closeTaskCenter
               : activeArtifact
                 ? closeArtifact
                 : showRuns
@@ -558,22 +569,30 @@ export function LiveSessionPage() {
         >
           {showTaskCenter ? (
             <div className="h-full overflow-y-auto border-l border-border bg-bg p-4">
-              <ParallelTaskCenter
-                sessions={sessions.filter((session) => !session.parentId)}
-                currentId={currentId}
-                runningSessions={runningSessions}
-                waitingSessions={waitingSessions}
-                sessionModels={sessionModels}
-                onOpen={(id) => {
-                  setShowTaskCenter(false);
-                  navigate(`/live/${id}`);
-                }}
-                onNew={() => {
-                  setShowTaskCenter(false);
-                  startDraft();
-                  navigate("/live");
-                }}
-              />
+              {showTaskPlanner ? (
+                <TaskPlanComposer
+                  generate={(objective) =>
+                    generateTaskPlan(objective).tasks.map(({ title, prompt }) => ({ title, prompt }))
+                  }
+                  onLaunch={async (objective, tasks) => {
+                    await launchTaskBatch(objective, tasks);
+                    setShowTaskPlanner(false);
+                  }}
+                />
+              ) : (
+                <ParallelTaskCenter
+                  sessions={sessions.filter((session) => !session.parentId)}
+                  currentId={currentId}
+                  runningSessions={runningSessions}
+                  waitingSessions={waitingSessions}
+                  sessionModels={sessionModels}
+                  onOpen={(id) => {
+                    closeTaskCenter();
+                    navigate(`/live/${id}`);
+                  }}
+                  onNew={() => setShowTaskPlanner(true)}
+                />
+              )}
             </div>
           ) : activeArtifact ? (
             <InspectorShell
