@@ -59,7 +59,7 @@ describe("ParallelTaskCenter", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /review draft/i }));
-    fireEvent.click(screen.getByRole("button", { name: "New task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create manual parallel plan" }));
     fireEvent.click(screen.getByRole("button", { name: "Synthesize" }));
 
     expect(onOpen).toHaveBeenCalledWith("ses_done");

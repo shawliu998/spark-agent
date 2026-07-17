@@ -56,8 +56,6 @@ export function LiveSessionPage() {
     providers,
     selectedAgent,
     defaultModel,
-    modelRoutingMode,
-    lastModelRoute,
     sessionExecutions,
     taskPlans,
     launchTaskBatch,
@@ -82,7 +80,6 @@ export function LiveSessionPage() {
     setApprovalMode,
     setSelectedAgent,
     setDefaultModel,
-    setModelRoutingMode,
   } = useRuntimeStore();
   const [executionMode, setExecutionMode] = useState<ResearchExecutionMode>("general");
   const [discoveredArtifacts, setDiscoveredArtifacts] = useState<
@@ -242,6 +239,7 @@ export function LiveSessionPage() {
   const waitingSessions = useMemo(() => {
     const waiting: Record<string, true> = {};
     for (const request of [...questions, ...permissions]) {
+      waiting[request.sessionId] = true;
       waiting[rootSessionOf(sessionParents, request.sessionId)] = true;
     }
     return waiting;
@@ -280,6 +278,17 @@ export function LiveSessionPage() {
       ),
     [sessionExecutions],
   );
+  // Native OpenCode `task` calls create child sessions. Show that real lineage
+  // next to the optional desktop-created manual plans; no TaskPlan is needed.
+  const visibleTaskSessions = useMemo(() => {
+    const rootId = currentId ? rootSessionOf(sessionParents, currentId) : null;
+    return sessions.filter((session) => {
+      const nativeChild =
+        !!rootId && session.id !== rootId && rootSessionOf(sessionParents, session.id) === rootId;
+      const manualTask = !session.parentId && taskSessionIds.has(session.id);
+      return nativeChild || manualTask;
+    });
+  }, [currentId, sessionParents, sessions, taskSessionIds]);
   const latestPlanId = useMemo(() => {
     const latest = Object.values(sessionExecutions)
       .filter((execution) => execution.planId && execution.kind === "task")
@@ -597,9 +606,6 @@ export function LiveSessionPage() {
                   providers={providers}
                   selectedModel={defaultModel}
                   onModelChange={(model) => void setDefaultModel(model).catch(() => {})}
-                  routingMode={modelRoutingMode}
-                  onRoutingModeChange={setModelRoutingMode}
-                  lastModelRoute={lastModelRoute}
                   disabled={!connected || switching || working || taskBatchLaunching}
                   skillCount={skills.length}
                   onOpenSkills={() => navigate("/skills")}
@@ -636,9 +642,7 @@ export function LiveSessionPage() {
                 />
               ) : (
                 <ParallelTaskCenter
-                  sessions={sessions.filter(
-                    (session) => !session.parentId && taskSessionIds.has(session.id),
-                  )}
+                  sessions={visibleTaskSessions}
                   currentId={currentId}
                   runningSessions={runningSessions}
                   waitingSessions={waitingSessions}

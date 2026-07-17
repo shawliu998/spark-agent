@@ -58,11 +58,7 @@ import {
   recordTaskStartFailure,
   type TaskPlanRecord,
 } from "./taskPlans";
-import {
-  routeModelForTask,
-  type ModelRouteDecision,
-  type ModelRoutingMode,
-} from "./modelRouting";
+import { type ModelRouteDecision, type ModelRoutingMode } from "./modelRouting";
 import i18n from "@/i18n";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -90,8 +86,9 @@ function savedAgent(): string | null {
 }
 
 function savedModelRoutingMode(): ModelRoutingMode {
-  if (typeof window === "undefined") return "auto";
-  return window.localStorage.getItem(MODEL_ROUTING_MODE_KEY) === "manual" ? "manual" : "auto";
+  // Auto used to inspect prompt keywords and provider/model names. Preserve the
+  // stored key for migration, but make the selected model authoritative.
+  return "manual";
 }
 
 /** Pick only an agent actually reported by the current OpenCode instance. */
@@ -2549,11 +2546,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       assertBatchConnected();
       for (const task of cleanTasks) {
         assertBatchConnected();
-        const routed =
-          get().modelRoutingMode === "auto"
-            ? routeModelForTask(`${task.title}\n${task.prompt}`, get().providers, get().defaultModel)
-            : null;
-        const model = routed?.model ?? get().defaultModel ?? undefined;
+        const routed: ModelRouteDecision | null = null;
+        const model = get().defaultModel ?? undefined;
         const outputDirectory = `.spark/task-work/${planId}/${task.id}/`;
         const prompt = [
           `Parent objective: ${cleanObjective}`,
@@ -2572,8 +2566,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
             sessionId: id,
             agent: agent ?? null,
             requestedModel: model ?? null,
-            routeTier: routed?.tier ?? null,
-            matchedPreference: routed?.matchedPreference ?? null,
+            routeTier: null,
+            matchedPreference: null,
           });
           assertBatchConnected();
         } catch (error) {
@@ -2761,15 +2755,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       );
       assertSynthesisConnected();
       const objective = taskEntries[0][1].objective ?? "Synthesize the completed research tasks.";
-      const route =
-        get().modelRoutingMode === "auto"
-          ? routeModelForTask(
-              `Review, validate, and synthesize this task plan: ${objective}`,
-              get().providers,
-              get().defaultModel,
-            )
-          : null;
-      const model = route?.model ?? get().defaultModel ?? undefined;
+      const route: ModelRouteDecision | null = null;
+      const model = get().defaultModel ?? undefined;
       const agent = get().selectedAgent ?? undefined;
       const handoffs = histories
         .map(
@@ -2794,8 +2781,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         sessionId: id,
         agent: agent ?? null,
         requestedModel: model ?? null,
-        routeTier: route?.tier ?? null,
-        matchedPreference: route?.matchedPreference ?? null,
+        routeTier: null,
+        matchedPreference: null,
       });
       assertSynthesisConnected();
       const owner = Symbol("task-synthesis-turn");
@@ -2891,12 +2878,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // workspace and reconnect. That reconnect refreshes the catalog and must
     // not silently replace the selections for the turn already submitted.
     const agent = get().selectedAgent ?? undefined;
-    const route =
-      get().modelRoutingMode === "auto"
-        ? routeModelForTask(text, get().providers, get().defaultModel)
-        : null;
-    const model = route?.model ?? get().defaultModel ?? undefined;
-    if (route) set({ lastModelRoute: route });
+    const route: ModelRouteDecision | null = null;
+    const model = get().defaultModel ?? undefined;
     return performTurn(
       set,
       get,
@@ -2946,12 +2929,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     // a workspace and reconnect. Catalog refresh during that transition must
     // not silently drop the agent/model chosen for this command.
     const agent = get().selectedAgent ?? undefined;
-    const route =
-      get().modelRoutingMode === "auto"
-        ? routeModelForTask(`${name} ${args ?? ""}`, get().providers, get().defaultModel)
-        : null;
-    const model = route?.model ?? get().defaultModel ?? undefined;
-    if (route) set({ lastModelRoute: route });
+    const route: ModelRouteDecision | null = null;
+    const model = get().defaultModel ?? undefined;
     const options = agent || model ? { agent, model } : undefined;
     return performTurn(
       set,

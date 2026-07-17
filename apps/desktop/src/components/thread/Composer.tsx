@@ -590,6 +590,7 @@ export function Composer({
           <button
             className="flex h-7 w-7 shrink-0 items-center justify-center rounded-input bg-accent text-accent-fg hover:opacity-90 disabled:opacity-40"
             aria-label={t("composer.send.aria")}
+            title={t("composer.send.title")}
             onClick={submit}
             disabled={!canSend}
           >

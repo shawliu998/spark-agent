@@ -89,8 +89,7 @@ describe("ResearchSessionControls", () => {
     expect(screen.getByRole("option", { name: "No models available" })).toBeInTheDocument();
   });
 
-  it("offers task-aware routing and reports the latest decision", () => {
-    const onRoutingModeChange = vi.fn();
+  it("keeps the user-selected model visible without an auto-routing option", () => {
     render(
       <ResearchSessionControls
         mode="general"
@@ -101,17 +100,13 @@ describe("ResearchSessionControls", () => {
         providers={providers}
         selectedModel="openrouter/openai/gpt-5"
         onModelChange={vi.fn()}
-        routingMode="auto"
-        onRoutingModeChange={onRoutingModeChange}
-        lastModelRoute={{ tier: "deep", model: "openai/gpt-5.6-sol", matchedPreference: "sol" }}
         skillCount={0}
         onOpenSkills={vi.fn()}
       />,
     );
 
-    expect(screen.getByRole("option", { name: "Auto · deep → openai/gpt-5.6-sol" })).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "__auto__" } });
-    expect(onRoutingModeChange).toHaveBeenCalledWith("auto");
+    expect(screen.getByLabelText("Model")).toHaveValue("openrouter/openai/gpt-5");
+    expect(screen.queryByRole("option", { name: /auto/i })).not.toBeInTheDocument();
   });
 });
 

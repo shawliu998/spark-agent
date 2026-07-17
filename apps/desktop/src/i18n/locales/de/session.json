@@ -34,7 +34,8 @@
       "title": "Diesen Zug unterbrechen (Esc)"
     },
     "send": {
-      "aria": "Senden"
+      "aria": "Senden",
+      "title": "Autonom ausführen"
     },
     "approval": {
       "aria": "Genehmigungsmodus",

@@ -120,6 +120,12 @@ class FoundationProfileTest(unittest.TestCase):
             self.assertIn(f"### {stage}", text)
         self.assertIn("flexible method, not a mandatory state machine", text)
         self.assertIn("Never invent", text)
+        self.assertIn("Continue working until the requested deliverable is completed", text)
+        self.assertIn("desktop sends one Research Agent turn", text)
+        self.assertIn("`task` for independent parallel units", text)
+        self.assertIn("parent Research Agent must inspect and", text)
+        self.assertIn("For mixed PDF-and-data work", text)
+        self.assertIn("python -m jupyter nbconvert", text)
 
     def test_read_only_specialists_are_fail_closed(self) -> None:
         for name in ("literature-review", "critique", "reviewer", "explore"):

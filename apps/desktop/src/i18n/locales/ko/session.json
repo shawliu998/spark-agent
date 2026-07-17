@@ -34,7 +34,8 @@
       "title": "이 턴 중단 (Esc)"
     },
     "send": {
-      "aria": "전송"
+      "aria": "전송",
+      "title": "자율 실행"
     },
     "approval": {
       "aria": "승인 모드",

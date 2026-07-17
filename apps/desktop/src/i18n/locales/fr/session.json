@@ -34,7 +34,8 @@
       "title": "Interrompre ce tour (Échap)"
     },
     "send": {
-      "aria": "Envoyer"
+      "aria": "Envoyer",
+      "title": "Exécuter de manière autonome"
     },
     "approval": {
       "aria": "Mode d'approbation",

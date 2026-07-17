@@ -34,7 +34,8 @@
       "title": "Interrumpir este turno (Esc)"
     },
     "send": {
-      "aria": "Enviar"
+      "aria": "Enviar",
+      "title": "Ejecutar de forma autónoma"
     },
     "approval": {
       "aria": "Modo de aprobación",

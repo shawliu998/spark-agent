@@ -41,9 +41,8 @@ function StatusIcon({ status }: { status: ParallelTaskStatus }) {
   return <Clock3 size={15} className="text-muted" />;
 }
 
-/** A read-only overview of concurrently active sessions. It deliberately has
- * no scheduling controls: session execution and approval remain owned by the
- * runtime, while this component only opens a task or starts a new draft. */
+/** A read-only overview of native OpenCode child sessions and optional manual
+ * parallel tasks. The runtime owns execution, approval, and delegation. */
 export function ParallelTaskCenter({
   sessions,
   currentId,
@@ -70,7 +69,7 @@ export function ParallelTaskCenter({
         <div>
           <h2 className="text-sm font-medium text-text">{t("parallelTasks.title", { defaultValue: "Task center" })}</h2>
           <p className="mt-0.5 text-xs text-muted">
-            {t("parallelTasks.subtitle", { defaultValue: "Monitor independent research tasks" })}
+            {t("parallelTasks.subtitle", { defaultValue: "Native child agents and manual parallel tasks" })}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -95,7 +94,7 @@ export function ParallelTaskCenter({
             className="inline-flex items-center gap-1.5 rounded-input bg-accent px-2.5 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           >
             <Plus size={14} />
-            {t("parallelTasks.new", { defaultValue: "New task" })}
+            {t("parallelTasks.new", { defaultValue: "Create manual parallel plan" })}
           </button>
         </div>
       </header>

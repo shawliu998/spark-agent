@@ -34,7 +34,8 @@
       "title": "Interrupt this turn (Esc)"
     },
     "send": {
-      "aria": "Send"
+      "aria": "Send",
+      "title": "Run autonomously"
     },
     "approval": {
       "aria": "Approval mode",
@@ -83,8 +84,8 @@
   "parallelTasks": {
     "aria": "Parallel tasks",
     "title": "Task center",
-    "subtitle": "Monitor independent research tasks",
-    "new": "New task",
+    "subtitle": "Native child agents and manual parallel tasks",
+    "new": "Create manual parallel plan",
     "synthesize": "Synthesize",
     "empty": "No research tasks yet.",
     "listAria": "Research tasks",
@@ -95,7 +96,7 @@
   },
   "taskPlan": {
     "aria": "Task plan",
-    "title": "Plan parallel tasks",
+    "title": "Create manual parallel plan",
     "subtitle": "Break a research goal into independent tasks.",
     "objective": "Objective",
     "objectivePlaceholder": "What should this research accomplish?",

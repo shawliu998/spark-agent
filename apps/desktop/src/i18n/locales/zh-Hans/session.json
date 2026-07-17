@@ -34,7 +34,8 @@
       "title": "中断本轮（Esc）"
     },
     "send": {
-      "aria": "发送"
+      "aria": "发送",
+      "title": "自主运行"
     },
     "approval": {
       "aria": "审批模式",

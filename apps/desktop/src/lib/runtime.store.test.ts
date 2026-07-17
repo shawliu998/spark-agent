@@ -434,10 +434,11 @@ describe("General Research runtime selection", () => {
       agent: "research",
       model: "openrouter/anthropic/claude-sonnet",
     });
+    expect(mocks.createTaskPlanRecord).not.toHaveBeenCalled();
     expect(mocks.validateRuntimePermissions).toHaveBeenCalledWith("/ws/base");
   });
 
-  it("auto-routes planning and acceptance work to a reported Sol model", async () => {
+  it("keeps the selected model stable for planning and acceptance work", async () => {
     useRuntimeStore.setState({
       currentId: "ses_auto",
       agents: [{ name: "research", description: "Research", mode: "primary" }],
@@ -455,7 +456,7 @@ describe("General Research runtime selection", () => {
         },
       ],
       defaultModel: "moonshot/kimi-k3",
-      modelRoutingMode: "auto",
+      modelRoutingMode: "manual",
       threads: {},
     });
 
@@ -463,37 +464,25 @@ describe("General Research runtime selection", () => {
 
     expect(mocks.sendPromptOptions).toHaveBeenCalledWith({
       agent: "research",
-      model: "openai/gpt-5.6-sol",
+      model: "moonshot/kimi-k3",
     });
-    expect(useRuntimeStore.getState().lastModelRoute).toMatchObject({
-      tier: "deep",
-      model: "openai/gpt-5.6-sol",
-    });
+    expect(useRuntimeStore.getState().lastModelRoute).toBeNull();
     expect(useRuntimeStore.getState().sessionExecutions.ses_auto).toMatchObject({
       agent: "research",
-      model: "openai/gpt-5.6-sol",
-      route: { tier: "deep", model: "openai/gpt-5.6-sol" },
+      model: "moonshot/kimi-k3",
+      route: null,
     });
   });
 
-  it("launches a same-workspace task plan into independently routed sessions", async () => {
+  it("launches a manual same-workspace task plan with the selected model", async () => {
     mocks.createdSessionIds = ["ses_evidence", "ses_review"];
     useRuntimeStore.setState({
       workspacePinned: true,
       workspace: "/ws/base",
       agents: [{ name: "research", description: "Research", mode: "primary" }],
       selectedAgent: "research",
-      providers: [
-        {
-          id: "openai",
-          name: "OpenAI",
-          models: [
-            { id: "gpt-5.6-luna", name: "Codex Luna" },
-            { id: "gpt-5.6-sol", name: "Codex Sol" },
-          ],
-        },
-      ],
-      modelRoutingMode: "auto",
+      defaultModel: "openai/selected-model",
+      modelRoutingMode: "manual",
     });
 
     const ids = await useRuntimeStore.getState().launchTaskBatch("Assess the result", [
@@ -504,18 +493,18 @@ describe("General Research runtime selection", () => {
     expect(ids).toEqual(["ses_evidence", "ses_review"]);
     expect(mocks.sendPromptOptions).toHaveBeenNthCalledWith(1, {
       agent: "research",
-      model: "openai/gpt-5.6-luna",
+      model: "openai/selected-model",
     });
     expect(mocks.sendPromptOptions).toHaveBeenNthCalledWith(2, {
       agent: "research",
-      model: "openai/gpt-5.6-sol",
+      model: "openai/selected-model",
     });
     expect(useRuntimeStore.getState().runningSessions).toMatchObject({
       ses_evidence: true,
       ses_review: true,
     });
     expect(useRuntimeStore.getState().sessionExecutions.ses_review.model).toBe(
-      "openai/gpt-5.6-sol",
+      "openai/selected-model",
     );
     expect(useRuntimeStore.getState().taskBatchLaunching).toBe(false);
     expect(mocks.createTaskPlanRecord).toHaveBeenCalledOnce();
@@ -708,7 +697,7 @@ describe("General Research runtime selection", () => {
     );
   });
 
-  it("synthesizes completed task handoffs in a new deep-model session", async () => {
+  it("synthesizes completed manual task handoffs with the selected model", async () => {
     mocks.createdSessionIds = ["ses_synthesis"];
     mocks.messages = [
       {
@@ -724,15 +713,9 @@ describe("General Research runtime selection", () => {
         { id: "ses_a", title: "Evidence", directory: "/ws/base" },
         { id: "ses_b", title: "Review", directory: "/ws/base" },
       ],
-      providers: [
-        {
-          id: "openai",
-          name: "OpenAI",
-          models: [{ id: "gpt-5.6-sol", name: "Codex Sol" }],
-        },
-      ],
       selectedAgent: "research",
-      modelRoutingMode: "auto",
+      defaultModel: "openai/selected-model",
+      modelRoutingMode: "manual",
       sessionExecutions: {
         ses_a: {
           agent: "research",
@@ -764,12 +747,12 @@ describe("General Research runtime selection", () => {
     expect(mocks.getMessages).toHaveBeenCalledTimes(2);
     expect(mocks.sendPromptOptions).toHaveBeenCalledWith({
       agent: "research",
-      model: "openai/gpt-5.6-sol",
+      model: "openai/selected-model",
     });
     expect(useRuntimeStore.getState().sessionExecutions.ses_synthesis).toMatchObject({
       planId: "plan_1",
       kind: "synthesis",
-      model: "openai/gpt-5.6-sol",
+      model: "openai/selected-model",
     });
     expect(useRuntimeStore.getState().threads.ses_synthesis.blocks[0]).toMatchObject({
       kind: "user",

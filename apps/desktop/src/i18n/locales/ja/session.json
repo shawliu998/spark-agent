@@ -34,7 +34,8 @@
       "title": "このターンを中断（Esc）"
     },
     "send": {
-      "aria": "送信"
+      "aria": "送信",
+      "title": "自律実行"
     },
     "approval": {
       "aria": "承認モード",
