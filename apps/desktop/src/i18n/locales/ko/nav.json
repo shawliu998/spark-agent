@@ -36,6 +36,7 @@
     "runtime": "런타임",
     "model": "모델",
     "modelNotSet": "설정 안 됨",
+    "modelStarting": "시작 중…",
     "values": {
       "ready": "준비됨",
       "connecting": "연결 중",

@@ -36,6 +36,7 @@
     "runtime": "Runtime",
     "model": "Modèle",
     "modelNotSet": "non défini",
+    "modelStarting": "démarrage…",
     "values": {
       "ready": "prêt",
       "connecting": "connexion…",

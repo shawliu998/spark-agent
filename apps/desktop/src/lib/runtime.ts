@@ -1962,6 +1962,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     const disconnectAtStart = disconnectGeneration;
     const serverUrlIntentAtStart = serverUrlIntentGeneration;
     void logDebug("bootstrap: starting bundled runtime");
+    set({ status: "connecting", error: null });
     try {
       const url = await startRuntime();
       void logDebug(`bootstrap: runtime at ${url}`);
@@ -1969,7 +1970,7 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       void logDebug(`bootstrap FAILED: ${msg}`);
-      set({ error: msg });
+      set({ status: "error", error: msg });
       return;
     }
     if (

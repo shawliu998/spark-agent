@@ -1,5 +1,6 @@
 /* eslint-disable i18next/no-literal-string -- first-run product copy is intentionally English until the Phase 2 locale pass. */
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { BookOpen, FolderOpen, GraduationCap, Loader2, Plus, Settings2, Sparkles } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -247,6 +248,7 @@ function ProjectCreator({ initialTemplate, onCancel, onCreated }: { initialTempl
 }
 
 function RuntimeStatus() {
+  const { t } = useTranslation("nav");
   const status = useRuntimeStore((state) => state.status);
   const model = useRuntimeStore((state) => state.defaultModel);
   const [testing, setTesting] = useState(false);
@@ -264,7 +266,7 @@ function RuntimeStatus() {
       setTesting(false);
     }
   };
-  return <div className="mt-4 rounded-card border border-border bg-surface p-4 text-sm"><div className="flex justify-between"><span className="text-muted">Runtime</span><span className="capitalize text-text">{status}</span></div><div className="mt-2 flex justify-between gap-4"><span className="text-muted">Model</span><span className="truncate text-text">{model ?? "Not connected"}</span></div><button onClick={() => void testConnection()} disabled={testing} className={cn(secondaryButton, "mt-4 w-full justify-center")}>{testing && <Loader2 size={14} className="animate-spin" />} Test model connection</button></div>;
+  return <div className="mt-4 rounded-card border border-border bg-surface p-4 text-sm"><div className="flex justify-between"><span className="text-muted">Runtime</span><span className="capitalize text-text">{status}</span></div><div className="mt-2 flex justify-between gap-4"><span className="text-muted">Model</span><span className="truncate text-text">{model ?? (status === "connecting" ? t("status.modelStarting") : "Not connected")}</span></div><button onClick={() => void testConnection()} disabled={testing} className={cn(secondaryButton, "mt-4 w-full justify-center")}>{testing && <Loader2 size={14} className="animate-spin" />} Test model connection</button></div>;
 }
 
 function SectionHeading({ title, description }: { title: string; description: string }) { return <div><h2 className="font-serif text-xl text-text">{title}</h2><p className="mt-1 text-sm text-muted">{description}</p></div>; }

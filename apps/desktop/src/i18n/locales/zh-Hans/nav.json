@@ -36,6 +36,7 @@
     "runtime": "运行时",
     "model": "模型",
     "modelNotSet": "未设置",
+    "modelStarting": "启动中…",
     "values": {
       "ready": "就绪",
       "connecting": "连接中",

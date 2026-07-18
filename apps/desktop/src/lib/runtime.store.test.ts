@@ -3074,3 +3074,31 @@ describe("approval mode", () => {
     expect(useRuntimeStore.getState().status).toBe("ready");
   });
 });
+
+describe("bootstrap", () => {
+  it("sets status to connecting immediately while the bundled runtime starts", async () => {
+    const gate = deferred();
+    mocks.startRuntime.mockImplementationOnce(async () => {
+      expect(useRuntimeStore.getState().status).toBe("connecting");
+      gate.resolve();
+      return "http://127.0.0.1:43136";
+    });
+    useRuntimeStore.setState({ status: "offline", error: null });
+
+    const boot = useRuntimeStore.getState().bootstrap();
+    await gate.promise;
+    expect(useRuntimeStore.getState().status).toBe("connecting");
+    expect(useRuntimeStore.getState().error).toBe(null);
+    await boot;
+  });
+
+  it("sets status to error when the bundled runtime fails to start", async () => {
+    mocks.startRuntime.mockRejectedValueOnce(new Error("sidecar launch failed"));
+    useRuntimeStore.setState({ status: "offline", error: null });
+
+    await useRuntimeStore.getState().bootstrap();
+
+    expect(useRuntimeStore.getState().status).toBe("error");
+    expect(useRuntimeStore.getState().error).toBe("sidecar launch failed");
+  });
+});

@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-18 11:04 · fix(cold-start-status): replaced the packaged desktop's misleading initial Offline/Not connected state with localized runtime/model starting feedback, made sidecar launch failures explicit errors, and passed 137 focused Desktop tests, locale parity, typecheck, focused lint, and diff checks.
+
 2026-07-18 09:45 · fix(bibtex-artifacts): added first-class BibTeX support to the desktop artifact registry so `.bib` files are classified as data artifacts, discovered on the workspace shelf, extracted from agent Markdown as clickable references, previewed as text with `text/x-bibtex`/`bibtex` language, and covered by focused unit tests; `git diff --check` is clean, but Desktop tests could not run because this worktree has no `node_modules` installed.
 
 2026-07-18 01:43 · fix(literature-convergence): completed a fresh-folder DeepSeek V4 Flash papers-plus-data run with verified DOI-backed sources, executed analysis/notebook artifacts, local Git snapshots, and restart recovery, then converted the observed 42-command discovery loop and output-path miss into tested hard search budgets, no-repeat failure handling, exact-count stopping, and exact artifact-path contracts.

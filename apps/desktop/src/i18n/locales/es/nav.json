@@ -36,6 +36,7 @@
     "runtime": "Entorno de ejecución",
     "model": "Modelo",
     "modelNotSet": "sin configurar",
+    "modelStarting": "iniciando…",
     "values": {
       "ready": "listo",
       "connecting": "conectando",
