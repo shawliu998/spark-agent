@@ -7,6 +7,7 @@ import {
   extractArtifactRefs,
   extToKind,
   fileInspectorFromBlock,
+  mimeForExt,
   previewKind,
   previewKindForName,
   refToArtifactBlock,
@@ -31,6 +32,7 @@ describe("extToKind", () => {
     expect(extToKind("ipynb")).toBe("notebook");
     expect(extToKind("pdf")).toBe("report");
     expect(extToKind("xyz")).toBe("data");
+    expect(extToKind("bib")).toBe("data");
   });
 });
 
@@ -52,6 +54,16 @@ describe("deriveArtifact", () => {
     expect(a?.artifact).toBe("figure");
     expect(a?.filename).toBe("atlas.png");
     expect(a?.content).toBeUndefined();
+  });
+
+  it("classifies a BibTeX write as a data artifact with bibtex language", () => {
+    const a = deriveArtifact(write({ filePath: "references/references.bib", content: "@article{x,}" }));
+    expect(a).toMatchObject({
+      filename: "references.bib",
+      artifact: "data",
+      language: "bibtex",
+      content: "@article{x,}",
+    });
   });
 
   it("returns null for non-write tools, failures, and missing paths", () => {
@@ -108,6 +120,11 @@ describe("extractArtifactRefs", () => {
     const md = "Wrote project.docx, project.xlsx and project.pptx.";
     expect(extractArtifactRefs(md)).toEqual(["project.docx", "project.xlsx", "project.pptx"]);
   });
+
+  it("finds BibTeX references mentioned by the agent", () => {
+    const md = "Saved the bibliography to `references/references.bib`.";
+    expect(extractArtifactRefs(md)).toEqual(["references/references.bib"]);
+  });
 });
 
 describe("previewKind", () => {
@@ -147,6 +164,22 @@ describe("previewKind", () => {
   it("renders FITS astronomy files with the FITS viewer", () => {
     for (const ext of ["fits", "fit", "fts"]) expect(previewKind(ext)).toBe("fits");
   });
+
+  it("renders BibTeX files as plain text", () => {
+    expect(previewKind("bib")).toBe("text");
+    expect(previewKind("BIB")).toBe("text");
+  });
+});
+
+describe("mimeForExt", () => {
+  it("returns a text MIME type for BibTeX", () => {
+    expect(mimeForExt("bib")).toBe("text/x-bibtex");
+    expect(mimeForExt("BIB")).toBe("text/x-bibtex");
+  });
+
+  it("falls back to octet-stream for unknown extensions", () => {
+    expect(mimeForExt("unknown")).toBe("application/octet-stream");
+  });
 });
 
 describe("previewKindForName", () => {
@@ -175,6 +208,17 @@ describe("refToArtifactBlock", () => {
       filename: "canvas.pdf",
       artifact: "report",
       tool: "output",
+    });
+  });
+
+  it("classifies a BibTeX reference as a data artifact with bibtex language", () => {
+    expect(refToArtifactBlock("references/references.bib")).toMatchObject({
+      kind: "artifact",
+      path: "references/references.bib",
+      filename: "references.bib",
+      artifact: "data",
+      tool: "output",
+      language: "bibtex",
     });
   });
 });

@@ -19,7 +19,7 @@ const EXT_KIND: Record<string, ArtifactKind> = {
   ipynb: "notebook",
   pdf: "report", tex: "report", md: "report", docx: "report", pptx: "report",
   csv: "table", tsv: "table", parquet: "table", xlsx: "table",
-  mol: "data", sdf: "data", smi: "data", smiles: "data",
+  mol: "data", sdf: "data", smi: "data", smiles: "data", bib: "data",
   bed: "data", bedgraph: "data", bdg: "data", gff: "data", gff3: "data", gtf: "data", vcf: "data",
   stl: "model", obj: "model", ply: "model", gltf: "model", glb: "model",
   dos: "data", qcode: "data", anom: "figure", eigenval: "data", phase: "figure",
@@ -28,6 +28,7 @@ const EXT_KIND: Record<string, ArtifactKind> = {
 const EXT_LANG: Record<string, string> = {
   py: "python", r: "r", jl: "julia", sh: "bash",
   tex: "latex", md: "markdown", csv: "plaintext", tsv: "plaintext",
+  bib: "bibtex",
 };
 
 /** Tools whose input names a file path we can surface as an artifact. */
@@ -51,6 +52,7 @@ const REF_EXTS = [
   "mol", "mol2", "sdf", "smi", "smiles", "cif", "mcif", "mmcif", "pdb", "pqr", "xyz", "cube",
   "bed", "bedgraph", "bdg", "gff", "gff3", "gtf", "vcf",
   "stl", "obj", "ply", "gltf", "glb",
+  "bib",
 ];
 const REF_EXT_SET = new Set(REF_EXTS);
 const REF_RE = new RegExp(`[\\w./-]+\\.(?:${REF_EXTS.join("|")})\\b`, "gi");
@@ -93,6 +95,7 @@ const MIME: Record<string, string> = {
   csv: "text/csv", tsv: "text/tab-separated-values",
   md: "text/markdown", tex: "text/x-tex", json: "application/json",
   py: "text/x-python", r: "text/x-r", txt: "text/plain",
+  bib: "text/x-bibtex",
   bed: "text/plain", bedgraph: "text/plain", bdg: "text/plain",
   gff: "text/plain", gff3: "text/plain", gtf: "text/plain", vcf: "text/plain",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -159,6 +162,7 @@ export function previewKind(ext: string): PreviewKind {
   if (["mol", "mol2", "sdf", "smi", "smiles", "cif", "mcif", "mmcif", "pdb", "pqr", "xyz", "cube"].includes(e))
     return "molecule";
   if (["bed", "bedgraph", "bdg", "gff", "gff3", "gtf", "vcf"].includes(e)) return "genome";
+  if (e === "bib") return "text";
   return "text";
 }
 

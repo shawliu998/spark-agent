@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-18 09:45 · fix(bibtex-artifacts): added first-class BibTeX support to the desktop artifact registry so `.bib` files are classified as data artifacts, discovered on the workspace shelf, extracted from agent Markdown as clickable references, previewed as text with `text/x-bibtex`/`bibtex` language, and covered by focused unit tests; `git diff --check` is clean, but Desktop tests could not run because this worktree has no `node_modules` installed.
+
 2026-07-18 01:43 · fix(literature-convergence): completed a fresh-folder DeepSeek V4 Flash papers-plus-data run with verified DOI-backed sources, executed analysis/notebook artifacts, local Git snapshots, and restart recovery, then converted the observed 42-command discovery loop and output-path miss into tested hard search budgets, no-repeat failure handling, exact-count stopping, and exact artifact-path contracts.
 
 2026-07-18 01:06 · test(pr-scope-ui): completed the Draft PR scope audit with no review comments, untracked build outputs, oversized repository blobs, or credible credential matches, and verified the existing branch Debug App reaches Runtime Ready, passes a real DeepSeek V4 Flash connection check, restores the autonomous dataset/literature session with its scripts, tables, figures, report, and executed notebook, and opens the task center; an exact-HEAD repack remains blocked only because this isolated worktree has no frontend node_modules installed.

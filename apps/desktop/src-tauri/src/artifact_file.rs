@@ -39,6 +39,7 @@ pub fn mime_for(ext: &str) -> (&'static str, bool) {
         "tsv" => ("text/tab-separated-values", true),
         "md" => ("text/markdown", true),
         "tex" => ("text/x-tex", true),
+        "bib" => ("text/x-bibtex", true),
         "json" => ("application/json", true),
         "ipynb" => ("application/x-ipynb+json", true),
         "yaml" | "yml" => ("text/yaml", true),
@@ -715,12 +716,12 @@ mod tests {
 
     #[test]
     fn unknown_extension_sniffs_text_vs_binary() {
-        // A .bib file (unknown to mime_for) is valid UTF-8 → previews as text.
-        let (mime, is_text) = mime_for("bib");
+        // An unknown text file still previews as text after UTF-8 sniffing.
+        let (mime, is_text) = mime_for("rst");
         assert!(!is_text);
-        let (m, enc, data) = encode_for_preview(mime, is_text, b"@article{k, title={T}}".to_vec());
+        let (m, enc, data) = encode_for_preview(mime, is_text, b"Heading\n=======".to_vec());
         assert_eq!((m, enc), ("text/plain", "utf8"));
-        assert_eq!(data, "@article{k, title={T}}");
+        assert_eq!(data, "Heading\n=======");
 
         // NUL bytes or invalid UTF-8 stay binary (base64).
         let (_, enc, _) = encode_for_preview(mime, is_text, vec![b'a', 0, b'b']);
@@ -732,6 +733,12 @@ mod tests {
         let (mime, is_text) = mime_for("pdf");
         let (_, enc, _) = encode_for_preview(mime, is_text, b"plain ascii".to_vec());
         assert_eq!(enc, "base64");
+    }
+
+    #[test]
+    fn bibtex_is_known_text() {
+        assert_eq!(mime_for("bib"), ("text/x-bibtex", true));
+        assert_eq!(mime_for("BIB"), ("text/x-bibtex", true));
     }
 
     #[test]

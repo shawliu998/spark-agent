@@ -101,6 +101,20 @@ describe("discoverWorkspaceArtifacts", () => {
       "volume.fits",
     ]);
   });
+
+  it("discovers BibTeX bibliography files as data artifacts", async () => {
+    const trees: Record<string, DirEntry[]> = {
+      "": [entry("references", { isDir: true }), entry("paper.md", { isDir: false })],
+      references: [entry("references/references.bib", { isDir: false, modified: 7 })],
+    };
+    const list = vi.fn(async (dir: string) => trees[dir] ?? []);
+
+    const found = await discoverWorkspaceArtifacts({ list });
+
+    expect(found.map((item) => item.block.path)).toEqual(["references/references.bib", "paper.md"]);
+    expect(found[0].block.artifact).toBe("data");
+    expect(found[0].block.language).toBe("bibtex");
+  });
 });
 
 describe("createdWorkspaceArtifacts", () => {
