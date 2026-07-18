@@ -6,7 +6,10 @@ import { WORKFLOW_STARTERS, WorkflowStarters } from "./WorkflowStarters";
 // Plain closures instead of vi.fn: tinyspy's result tracking derives an extra
 // promise from a rejecting spy, which vitest then reports as unhandled.
 const installCalls: string[] = [];
+const connectorCalls: string[] = [];
+const toastErrors: string[] = [];
 let failInstall = false;
+let failConnector = false;
 vi.mock("@/lib/tauri", () => ({
   isTauri: true,
   installExample: async (name: string) => {
@@ -15,11 +18,25 @@ vi.mock("@/lib/tauri", () => ({
     return name;
   },
 }));
+vi.mock("@/lib/setup", () => ({
+  ensureScienceConnector: async (id: string) => {
+    connectorCalls.push(id);
+    if (failConnector) throw new Error("connector unavailable");
+  },
+}));
+vi.mock("@/lib/toast", () => ({
+  toast: {
+    error: (message: string) => toastErrors.push(message),
+  },
+}));
 
 describe("WorkflowStarters", () => {
   beforeEach(() => {
     installCalls.length = 0;
+    connectorCalls.length = 0;
+    toastErrors.length = 0;
     failInstall = false;
+    failConnector = false;
   });
 
   it("renders one card per starter workflow, including the climate example", () => {
@@ -30,8 +47,41 @@ describe("WorkflowStarters", () => {
     expect(screen.getByText("Run a demo analysis, end to end")).toBeInTheDocument();
     expect(screen.getByText("Analyze my data")).toBeInTheDocument();
     expect(screen.getByText("Audit a report for traceability")).toBeInTheDocument();
+    expect(screen.getByText("Connect papers and data")).toBeInTheDocument();
     expect(screen.getByText("Explore an example: climate trends")).toBeInTheDocument();
-    expect(WORKFLOW_STARTERS).toHaveLength(4);
+    expect(WORKFLOW_STARTERS).toHaveLength(5);
+  });
+
+  it("ensures literature search before sending the papers-and-data prompt", async () => {
+    const onPick = vi.fn();
+    render(<WorkflowStarters onPick={onPick} />);
+
+    await userEvent.click(screen.getByText("Connect papers and data"));
+
+    await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
+    expect(connectorCalls).toEqual(["paper-search"]);
+    for (const path of [
+      "references/corpus.csv",
+      "references/references.bib",
+      "scripts/papers_data_analysis.py",
+      "tables/papers_data_summary.csv",
+      "figures/papers_data_analysis.png",
+      "reports/papers-data-synthesis.md",
+    ]) {
+      expect(onPick.mock.calls[0][0]).toContain(path);
+    }
+  });
+
+  it("does not send the papers-and-data prompt when connector setup fails", async () => {
+    failConnector = true;
+    const onPick = vi.fn();
+    render(<WorkflowStarters onPick={onPick} />);
+
+    await userEvent.click(screen.getByText("Connect papers and data"));
+
+    await waitFor(() => expect(connectorCalls).toEqual(["paper-search"]));
+    expect(onPick).not.toHaveBeenCalled();
+    expect(toastErrors.join(" ")).toContain("connector unavailable");
   });
 
   it("sends the full-workflow prompt on click", async () => {

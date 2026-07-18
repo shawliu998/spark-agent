@@ -12,6 +12,7 @@ from ._analysis_service.execution import (
 from ._analysis_service.filesystem import cleanup_stale_analysis_exchange
 from ._analysis_service.integrity import validate_workflow_analysis_intent
 from ._analysis_service.intents import (
+    CompiledIntentProvenance,
     WorkflowIntentBundle,
     analysis_intent_out,
     create_standalone_analysis_intent,
@@ -28,6 +29,7 @@ from ._analysis_service.recovery import recover_interrupted_analysis_state
 
 __all__ = [
     "AnalysisServiceError",
+    "CompiledIntentProvenance",
     "WorkflowIntentBundle",
     "analysis_code_diff",
     "analysis_intent_out",

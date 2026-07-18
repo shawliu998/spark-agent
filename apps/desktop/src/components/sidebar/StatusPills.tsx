@@ -33,7 +33,13 @@ export function StatusPills() {
       <Pill
         dot={MODEL_TONE[model]}
         label={t("status.model")}
-        value={defaultModel ? defaultModel.split("/").pop()! : t("status.modelNotSet")}
+        value={
+          defaultModel
+            ? defaultModel.split("/").pop()!
+            : runtime === "connecting"
+              ? t("status.modelStarting")
+              : t("status.modelNotSet")
+        }
       />
     </div>
   );

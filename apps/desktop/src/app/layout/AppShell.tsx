@@ -10,8 +10,32 @@ import { mockProject } from "@/lib/mock";
 import { useRuntimeStore } from "@/lib/runtime";
 import { ensureSetupProgressListener } from "@/lib/setup";
 import { useOverlayTitlebar, useUiStore } from "@/lib/store";
-import { ensureJupyter, openExternal, watchFullscreen } from "@/lib/tauri";
+import { openExternal, reconcileJupyter, watchFullscreen } from "@/lib/tauri";
+import { toast } from "@/lib/toast";
 import { useUpdateStore } from "@/lib/update";
+
+let desktopServicesStart: Promise<void> | null = null;
+
+/** Reconcile native-owned Jupyter state exactly once before OpenCode can read
+ * its config. Sharing this promise also makes React StrictMode remounts safe. */
+export function ensureDesktopServicesStarted(): Promise<void> {
+  if (!desktopServicesStart) {
+    desktopServicesStart = (async () => {
+      try {
+        await reconcileJupyter();
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const message =
+          `Spark Agent blocked runtime startup because Jupyter security reconciliation failed: ${detail}`;
+        useRuntimeStore.setState({ status: "error", error: message });
+        toast.error(message);
+        return;
+      }
+      await useRuntimeStore.getState().bootstrap();
+    })();
+  }
+  return desktopServicesStart;
+}
 
 export function AppShell() {
   const { t } = useTranslation("nav");
@@ -28,11 +52,10 @@ export function AppShell() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // In the packaged desktop app, auto-start the bundled OpenCode and connect,
-  // and bring the Jupyter server back up if the user enabled it before.
+  // Native reconciliation must finish before OpenCode can read its config.
+  // The shared startup promise prevents StrictMode from racing two launches.
   useEffect(() => {
-    void useRuntimeStore.getState().bootstrap();
-    void ensureJupyter();
+    void ensureDesktopServicesStarted();
     // One app-lifetime listener for uv provisioning progress, so a running
     // download's live output survives navigating between pages.
     ensureSetupProgressListener();

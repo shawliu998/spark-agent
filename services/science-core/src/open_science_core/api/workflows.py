@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from ..db import database_session
 from ..models import ProjectRecord, WorkflowRecord
+from ..workflow.agent_schemas import AgentRunSnapshot
+from ..workflow.agent_service import agent_run_snapshot
 from ..workflow.schemas import (
     AcceptReviewWarningsIn,
     ApprovePlanIn,
@@ -34,6 +36,7 @@ from ..workflow.service import (
 )
 
 router = APIRouter(tags=["research-workflows"])
+WorkflowSnapshotResponse = ResearchWorkflowSnapshot | AgentRunSnapshot
 
 
 def get_workflow_session() -> Generator[Session, None, None]:
@@ -65,7 +68,7 @@ def _raise_conflict(error: WorkflowConflict) -> Never:
     ) from error
 
 
-def _snapshot_or_conflict(
+def _fixed_snapshot_or_conflict(
     session: Session,
     workflow: WorkflowRecord,
 ) -> ResearchWorkflowSnapshot:
@@ -78,6 +81,25 @@ def _snapshot_or_conflict(
             WorkflowConflict(
                 "workflow-snapshot-integrity-failed",
                 "The stored workflow does not satisfy its public snapshot contract.",
+            )
+        )
+
+
+def _snapshot_or_conflict(
+    session: Session,
+    workflow: WorkflowRecord,
+) -> WorkflowSnapshotResponse:
+    if workflow.creation_mode != "autonomous":
+        return _fixed_snapshot_or_conflict(session, workflow)
+    try:
+        return agent_run_snapshot(session, workflow)
+    except WorkflowConflict as error:
+        _raise_conflict(error)
+    except ValidationError:
+        _raise_conflict(
+            WorkflowConflict(
+                "agent-run-snapshot-integrity-failed",
+                "The stored autonomous run does not satisfy its public snapshot contract.",
             )
         )
 
@@ -100,19 +122,19 @@ def create_workflow(
         workflow = start_workflow(session, project, payload, idempotency_key)
     except WorkflowConflict as error:
         _raise_conflict(error)
-    return _snapshot_or_conflict(session, workflow)
+    return _fixed_snapshot_or_conflict(session, workflow)
 
 
 @router.post(
     "/v1/workflows/{workflow_id}/analysis-intents/{intent_id}/decision",
-    response_model=ResearchWorkflowSnapshot,
+    response_model=WorkflowSnapshotResponse,
 )
 def decide_workflow_analysis(
     workflow_id: str,
     intent_id: str,
     payload: WorkflowAnalysisDecisionIn,
     session: Session = Depends(get_workflow_session),
-) -> ResearchWorkflowSnapshot:
+) -> WorkflowSnapshotResponse:
     workflow = _workflow_or_404(session, workflow_id)
     try:
         workflow = decide_analysis_execution(
@@ -132,13 +154,13 @@ def decide_workflow_analysis(
 
 @router.post(
     "/v1/workflows/{workflow_id}/accept-review-warnings",
-    response_model=ResearchWorkflowSnapshot,
+    response_model=WorkflowSnapshotResponse,
 )
 def accept_workflow_review_warnings(
     workflow_id: str,
     payload: AcceptReviewWarningsIn,
     session: Session = Depends(get_workflow_session),
-) -> ResearchWorkflowSnapshot:
+) -> WorkflowSnapshotResponse:
     workflow = _workflow_or_404(session, workflow_id)
     try:
         workflow = accept_review_warnings(
@@ -166,7 +188,7 @@ def get_project_workflows(
 ) -> list[ResearchWorkflowSnapshot]:
     _project_or_404(session, project_id)
     return [
-        _snapshot_or_conflict(session, workflow)
+        _fixed_snapshot_or_conflict(session, workflow)
         for workflow in list_workflows(
             session,
             project_id,
@@ -178,12 +200,12 @@ def get_project_workflows(
 
 @router.get(
     "/v1/workflows/{workflow_id}",
-    response_model=ResearchWorkflowSnapshot,
+    response_model=WorkflowSnapshotResponse,
 )
 def get_workflow(
     workflow_id: str,
     session: Session = Depends(get_workflow_session),
-) -> ResearchWorkflowSnapshot:
+) -> WorkflowSnapshotResponse:
     return _snapshot_or_conflict(
         session,
         _workflow_or_404(session, workflow_id),
@@ -192,13 +214,13 @@ def get_workflow(
 
 @router.post(
     "/v1/workflows/{workflow_id}/approve-plan",
-    response_model=ResearchWorkflowSnapshot,
+    response_model=WorkflowSnapshotResponse,
 )
 def approve_workflow_plan(
     workflow_id: str,
     payload: ApprovePlanIn,
     session: Session = Depends(get_workflow_session),
-) -> ResearchWorkflowSnapshot:
+) -> WorkflowSnapshotResponse:
     workflow = _workflow_or_404(session, workflow_id)
     try:
         workflow = approve_plan(
@@ -218,14 +240,14 @@ def approve_workflow_plan(
 
 @router.post(
     "/v1/workflows/{workflow_id}/cancel",
-    response_model=ResearchWorkflowSnapshot,
+    response_model=WorkflowSnapshotResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 def cancel_workflow(
     workflow_id: str,
     payload: WorkflowMutationIn,
     session: Session = Depends(get_workflow_session),
-) -> ResearchWorkflowSnapshot:
+) -> WorkflowSnapshotResponse:
     workflow = _workflow_or_404(session, workflow_id)
     try:
         workflow = request_cancel(
@@ -241,7 +263,7 @@ def cancel_workflow(
 
 @router.post(
     "/v1/workflows/{workflow_id}/retry",
-    response_model=ResearchWorkflowSnapshot,
+    response_model=WorkflowSnapshotResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 def retry_failed_workflow(
@@ -251,7 +273,7 @@ def retry_failed_workflow(
         alias="Idempotency-Key", min_length=8, max_length=200
     ),
     session: Session = Depends(get_workflow_session),
-) -> ResearchWorkflowSnapshot:
+) -> WorkflowSnapshotResponse:
     workflow = _workflow_or_404(session, workflow_id)
     try:
         workflow = retry_workflow(
@@ -269,7 +291,7 @@ def retry_failed_workflow(
 
 @router.post(
     "/v1/workflows/{workflow_id}/resume",
-    response_model=ResearchWorkflowSnapshot,
+    response_model=WorkflowSnapshotResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 def resume_blocked_workflow(
@@ -279,7 +301,7 @@ def resume_blocked_workflow(
         alias="Idempotency-Key", min_length=8, max_length=200
     ),
     session: Session = Depends(get_workflow_session),
-) -> ResearchWorkflowSnapshot:
+) -> WorkflowSnapshotResponse:
     workflow = _workflow_or_404(session, workflow_id)
     try:
         workflow = resume_workflow(

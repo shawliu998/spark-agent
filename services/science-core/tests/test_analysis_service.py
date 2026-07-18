@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -432,6 +433,71 @@ def test_v3_canonical_payload_binds_the_fixed_execution_policy() -> None:
     historical_v2["schema_version"] = "analysis-intent-v2"
     with pytest.raises(ValueError, match="does not bind an execution policy"):
         canonical_workflow_analysis_payload(**historical_v2)
+
+
+def test_v4_canonical_payload_binds_exact_compiled_provenance() -> None:
+    code = "import pandas as pd\nprint(pd.__version__)"
+    arguments: dict[str, Any] = {
+        "project_id": "project-1",
+        "workflow_id": "workflow-1",
+        "plan_id": "plan-1",
+        "task_id": "task-1",
+        "analysis_intent_id": "intent-1",
+        "plan_step_id": "execute-analysis",
+        "dataset_source_id": "dataset-1",
+        "dataset_content_hash": "a" * 64,
+        "objective": "Analyze",
+        "expected_outputs": ["executed-notebook", "analysis-log"],
+        "timeout_seconds": 600,
+        "code": code,
+        "code_diff": None,
+        "error_summary": None,
+        "previous_intent_id": None,
+        "repair_attempt": 0,
+        "expected_workflow_revision": 7,
+        "schema_version": "analysis-intent-v4",
+        "policy_profile_id": "dataset-analysis-spec-v1",
+        "policy_template": "analysis-spec-compiler-v1",
+        "analysis_spec_id": "spec-1",
+        "analysis_spec_sha256": "b" * 64,
+        "dataset_profile_sha256": "c" * 64,
+        "compiler_version": "analysis-spec-compiler-v1",
+        "code_sha256": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+        "runtime_policy_id": "dataset-analysis-spec-v1",
+    }
+
+    encoded, digest = canonical_workflow_analysis_payload(**arguments)
+    decoded = json.loads(encoded)
+
+    assert decoded["schemaVersion"] == "analysis-intent-v4"
+    assert decoded["analysisSpecId"] == "spec-1"
+    assert decoded["analysisSpecSha256"] == "b" * 64
+    assert decoded["datasetProfileSha256"] == "c" * 64
+    assert decoded["compilerVersion"] == "analysis-spec-compiler-v1"
+    assert decoded["codeSha256"] == arguments["code_sha256"]
+    assert decoded["runtimePolicyId"] == "dataset-analysis-spec-v1"
+
+    for field in (
+        "analysis_spec_id",
+        "analysis_spec_sha256",
+        "dataset_profile_sha256",
+        "compiler_version",
+        "code_sha256",
+        "runtime_policy_id",
+    ):
+        changed = copy.deepcopy(arguments)
+        changed[field] = None
+        with pytest.raises(ValueError, match="compiled provenance is invalid"):
+            canonical_workflow_analysis_payload(**changed)
+
+    changed_code = copy.deepcopy(arguments)
+    changed_code["code"] = code + "\nprint('tampered')"
+    with pytest.raises(ValueError, match="compiled provenance is invalid"):
+        canonical_workflow_analysis_payload(**changed_code)
+
+    changed_spec = copy.deepcopy(arguments)
+    changed_spec["analysis_spec_sha256"] = "d" * 64
+    assert canonical_workflow_analysis_payload(**changed_spec)[1] != digest
 
 
 def test_create_and_decide_do_not_commit_callers_session(

@@ -37,6 +37,19 @@
       "addCellLabel": "Add cell"
     }
   },
+  "labNotebook": {
+    "title": "Living research notebook",
+    "description": "A recoverable, workspace-local record of explicit scientific findings, decisions, and limitations.",
+    "path": "Stored at",
+    "refresh": "Refresh",
+    "refreshAria": "Refresh living research notebook",
+    "exportMarkdown": "Markdown",
+    "exportJson": "JSON",
+    "type": "Type",
+    "session": "Session",
+    "all": "All",
+    "empty": "No notebook entries match these filters. Ask the Research Agent to record an explicit scientific finding, decision, or limitation."
+  },
   "files": {
     "loading": "Loading…",
     "folderEmpty": "This folder is empty.",
@@ -56,8 +69,8 @@
   "skills": {
     "title": "Skills & Agents",
     "description": {
-      "prefix": "Loaded live from the OpenCode runtime — the bundled ai4s-skills pack plus anything under ",
-      "suffix": " in your workspace."
+      "prefix": "Loaded live from OpenCode — bundled Spark scientific skills plus project and user OpenCode skills, including ",
+      "suffix": "."
     },
     "install": {
       "sectionTitle": "Install a skill",
@@ -89,10 +102,36 @@
       "source": {
         "builtin": "built-in",
         "project": "project",
-        "user": "user"
+        "global": "global / bundled",
+        "unknown": "source unknown"
       }
     },
     "disconnected": "Connect the runtime to list the skills and agents it has loaded."
+  },
+  "research": {
+    "title": "Structured / Verified Workflows",
+    "refreshAria": "Refresh verified workflow workspace",
+    "libraryTitle": "Verified workflow library",
+    "newProjectAria": "Create a verified workflow project",
+    "workflows": {
+      "heading": "Verified workflows",
+      "newAria": "Start a new verified workflow",
+      "empty": "No saved verified workflows yet."
+    },
+    "workflow": {
+      "composerLabel": "Give Spark Agent a structured research goal",
+      "modeLabel": "Workflow assurance mode",
+      "typeLabel": "Verified workflow type",
+      "typeLiterature": "Verified Literature Synthesis",
+      "typeDataset": "Verified Dataset Analysis",
+      "listAutoType": " · verified auto-routing",
+      "listDatasetType": " · verified dataset analysis · local isolated runtime",
+      "listLiteratureRemoteType": " · verified literature synthesis · model-assisted",
+      "listLiteratureLocalType": " · verified literature synthesis · local",
+      "goal": "Verified research goal",
+      "startAuto": "Start verified workflow",
+      "start": "Create verified plan"
+    }
   },
   "notFound": {
     "title": "404 — Not found",

@@ -1,9 +1,13 @@
 import type {
   AcceptWorkflowReviewWarningsInput,
+  AgentResearchWorkflowSnapshot,
   AnalysisIntent,
   AnalysisRun,
+  CreateAgentRunInput,
   CreateResearchWorkflowInput as DomainCreateResearchWorkflowInput,
   DecideWorkflowAnalysisIntentInput,
+  InteractionRequest,
+  RespondToInteractionInput,
   ResearchAnswer,
   ResearchProject,
   ResearchSource,
@@ -16,7 +20,13 @@ import type {
 
 export type {
   AcceptWorkflowReviewWarningsInput,
+  AgentResearchWorkflowSnapshot,
+  CreateAgentRunInput,
   DecideWorkflowAnalysisIntentInput,
+  InteractionRequest,
+  InteractionResponseValue,
+  IntentDecision,
+  RespondToInteractionInput,
 } from "@spark/research-domain";
 
 export interface ScienceCoreClientOptions {
@@ -202,6 +212,72 @@ export class ScienceCoreClient {
     return this.request<ResearchWorkflowSnapshot[]>(
       `/v1/projects/${encodeURIComponent(projectId)}/workflows${suffix}`,
       { signal: options.signal },
+    );
+  }
+
+  async listAgentRuns(
+    projectId: string,
+    options: ResearchWorkflowListOptions = {},
+  ): Promise<AgentResearchWorkflowSnapshot[]> {
+    const query = new URLSearchParams();
+    if (options.activeOnly != null) query.set("activeOnly", String(options.activeOnly));
+    if (options.limit != null) query.set("limit", String(options.limit));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request<AgentResearchWorkflowSnapshot[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/agent-runs${suffix}`,
+      { signal: options.signal },
+    );
+  }
+
+  async createAgentRun(
+    projectId: string,
+    input: CreateAgentRunInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/projects/${encodeURIComponent(projectId)}/agent-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async getAgentRun(
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/agent-runs/${encodeURIComponent(workflowId)}`,
+      { signal: options.signal },
+    );
+  }
+
+  async listWorkflowInteractions(
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<InteractionRequest[]> {
+    return this.request<InteractionRequest[]>(
+      `/v1/workflows/${encodeURIComponent(workflowId)}/interactions`,
+      { signal: options.signal },
+    );
+  }
+
+  async respondToInteraction(
+    interactionId: string,
+    input: RespondToInteractionInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/interactions/${encodeURIComponent(interactionId)}/respond`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
     );
   }
 

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "research",
+  "share": "disabled",
+  "autoupdate": false,
+  "permission": {
+    "*": "ask",
+    "read": {
+      "*": "allow",
+      "*.env": "ask",
+      "*.env.*": "ask",
+      "*.env.example": "allow",
+      "mcp:*": "ask"
+    },
+    "glob": "allow",
+    "grep": "allow",
+    "list": "allow",
+    "lsp": "allow",
+    "edit": "ask",
+    "apply_patch": "ask",
+    "bash": "ask",
+    "external_directory": "deny",
+    "mcp": "ask",
+    "doom_loop": "ask",
+    "question": "allow",
+    "webfetch": "ask",
+    "websearch": "ask",
+    "skill": "allow"
+  }
+}

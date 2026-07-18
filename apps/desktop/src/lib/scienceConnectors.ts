@@ -1,7 +1,7 @@
 // Curated open-source science MCP connectors (P1-2). These are existing,
-// maintained open-source MCP servers — we one-click provision them into a
-// shared isolated env (bundled uv) and register them; we do not reimplement
-// literature/database access ourselves. Keep this list small and vetted.
+// maintained open-source MCP servers — native code maps each id to an exact
+// pinned package and an isolated/shared managed env, then we register its
+// non-secret launch config. Keep this display/launch list small and vetted.
 import type { McpConfig } from "@ai4s/sdk";
 
 export interface ScienceConnector {
@@ -11,16 +11,18 @@ export interface ScienceConnector {
   /** Short discipline chip, e.g. "materials", "economics". */
   discipline: string;
   description: string;
-  /** PyPI package installed into the shared science-MCP env. */
-  pkg: string;
   /** Console script the package installs (resolved next to the managed python).
    *  Preferred when set — many MCP servers ship a script, not a `-m` module. */
   bin?: string;
   /** Fallback: Python `-m` module the server runs as, plus any args. */
   module?: string;
   args?: string[];
-  /** Env var the server reads its API key from (free keys; never logged). */
+  /** Env var the server reads its API key from. Spark stores the value in the
+   * OS credential manager; only the native broker gives it to the child. */
   apiKeyEnv?: string;
+  /** Credential-bearing execution stays visible but cannot be enabled until
+   * its native approval and immutable-target security gate is complete. */
+  securityGated?: boolean;
   /** Where the user gets a free key. */
   apiKeyUrl?: string;
   /** Shown before Enable when the install is large. */
@@ -36,8 +38,6 @@ export const SCIENCE_CONNECTORS: ScienceConnector[] = [
     discipline: "all fields",
     description:
       "arXiv · PubMed · Crossref · Semantic Scholar · bioRxiv/medRxiv — search & fetch papers",
-    // Exact pin: curated connectors must not drift between internal builds.
-    pkg: "paper-search-mcp==0.1.4",
     module: "paper_search_mcp.server",
     source: "github.com/openags/paper-search-mcp",
   },
@@ -46,7 +46,6 @@ export const SCIENCE_CONNECTORS: ScienceConnector[] = [
     label: "Biomedical databases",
     discipline: "biology",
     description: "PubMed articles, ClinicalTrials.gov, and genomic variants (MyVariant/ClinVar)",
-    pkg: "biomcp-python",
     module: "biomcp",
     args: ["run"],
     source: "github.com/genomoncology/biomcp",
@@ -57,9 +56,9 @@ export const SCIENCE_CONNECTORS: ScienceConnector[] = [
     discipline: "materials",
     description:
       "Query material properties, crystal structures, and phase diagrams from the Materials Project database",
-    pkg: "mcp-materials-project",
     bin: "mcp-materials-project",
     apiKeyEnv: "MP_API_KEY",
+    securityGated: true,
     apiKeyUrl: "https://next-gen.materialsproject.org/api",
     installNote: "large — installs pymatgen + mp-api on first enable",
     source: "github.com/luffysolution-svg/mcp-materials-project",
@@ -70,9 +69,9 @@ export const SCIENCE_CONNECTORS: ScienceConnector[] = [
     discipline: "economics",
     description:
       "Federal Reserve (FRED) economic time series — GDP, inflation, unemployment, rates, and more",
-    pkg: "fred-mcp",
     bin: "fred-mcp",
     apiKeyEnv: "FRED_API_KEY",
+    securityGated: true,
     apiKeyUrl: "https://fred.stlouisfed.org/docs/api/api_key.html",
     source: "github.com/tosin2013/fred-mcp",
   },
@@ -82,7 +81,6 @@ export const SCIENCE_CONNECTORS: ScienceConnector[] = [
     discipline: "physics",
     description:
       "Solar wind, solar flares, Kp/Dst geomagnetic indices, radiation storms, and aurora forecasts (NOAA SWPC · NASA DONKI · USGS)",
-    pkg: "spaceweather-mcp",
     bin: "spaceweather-mcp",
     source: "github.com/hoon1983/spaceweather-mcp",
   },
@@ -92,7 +90,6 @@ export const SCIENCE_CONNECTORS: ScienceConnector[] = [
     discipline: "earth/climate",
     description:
       "Current & historical weather, air quality, and timezones from Open-Meteo — free, no key",
-    pkg: "mcp-weather-server",
     module: "mcp_weather_server",
     source: "github.com/isdaniel/mcp_weather_server",
   },
@@ -102,7 +99,6 @@ export const SCIENCE_CONNECTORS: ScienceConnector[] = [
     discipline: "earth/climate",
     description:
       "USGS Water Services — streamflow, flood stages, peak events, and monitoring sites across the US",
-    pkg: "usgs-mcp",
     bin: "usgs-mcp",
     source: "github.com/mansurjisan/ocean-mcp",
   },
@@ -117,19 +113,14 @@ function scriptBeside(python: string, bin: string): string {
   return `${dir}${sep}${bin}${exe}`;
 }
 
-/** Local-MCP config for a connector, given the managed interpreter path and an
- *  optional API key (passed via env, never written to provenance/logs). */
-export function connectorConfig(
-  c: ScienceConnector,
-  python: string,
-  apiKey?: string,
-): McpConfig {
+/** Non-secret local-MCP config for an unkeyed connector. Keyed connectors must
+ * use the native credential/broker transaction and never cross this path. */
+export function connectorConfig(c: ScienceConnector, python: string): McpConfig {
+  if (c.apiKeyEnv) {
+    throw new Error(`Keyed science connector ${c.id} requires native credential setup.`);
+  }
   const command = c.bin
     ? [scriptBeside(python, c.bin)]
     : [python, "-m", c.module ?? "", ...(c.args ?? [])];
-  const config: McpConfig = { type: "local", command, enabled: true };
-  if (c.apiKeyEnv && apiKey && apiKey.trim()) {
-    config.environment = { [c.apiKeyEnv]: apiKey.trim() };
-  }
-  return config;
+  return { type: "local", command, enabled: true };
 }

@@ -74,22 +74,23 @@ export async function importOpenCodeLogin(): Promise<ImportOpenCodeLoginResult> 
   return invoke<ImportOpenCodeLoginResult>("import_opencode_login");
 }
 
-/** Legacy approval-mode shape kept for config migration compatibility.
- *  Internal builds accept only "approve"; "full" is rejected by JS and Rust. */
-export type ApprovalMode = "approve" | "full";
+/** Persisted native OpenCode permission state. `full` is the compatibility
+ * value for Autonomous. Custom is preserved but not selectable in Spark. */
+export type ApprovalMode = "balanced" | "full" | "custom";
 
-/** The approval mode OpenCode's config currently holds ("approve" until changed). */
+/** The permission preset OpenCode's config currently holds (Balanced by default). */
 export async function getApprovalMode(): Promise<ApprovalMode> {
-  if (!isTauri) return "approve";
+  if (!isTauri) return "balanced";
   const { invoke } = await import("@tauri-apps/api/core");
   const mode = await invoke<string>("get_approval_mode");
-  return mode === "full" ? "full" : "approve";
+  if (mode === "balanced" || mode === "full" || mode === "custom") return mode;
+  throw new Error(`Unsupported approval mode returned by the runtime: ${mode}`);
 }
 
-/** Switch the approval mode; the sidecar restarts — the caller must reconnect. */
+/** Switch the native preset; `full` selects Autonomous and restarts the sidecar. */
 export async function setApprovalMode(mode: ApprovalMode): Promise<RuntimeRestartResult> {
-  if (mode !== "approve") {
-    throw new Error("Full access is disabled by the internal safety policy.");
+  if (mode === "custom") {
+    throw new Error("Custom permission policies are report-only and cannot be selected in Spark Agent.");
   }
   if (!isTauri) return { runtimeUrl: null };
   const { invoke } = await import("@tauri-apps/api/core");
@@ -130,12 +131,69 @@ export async function removeConfigEntry(
   return invoke<RuntimeRestartResult>("remove_config_entry", { section, key });
 }
 
+/** Save a provider API key in the OS credential manager and reconnect the
+ * bundled runtime with only an environment placeholder in OpenCode config. */
+export async function saveProviderApiKey(
+  providerId: string,
+  apiKey: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("save_provider_api_key", { providerId, apiKey });
+}
+
+/** Remove a provider's keychain item and every live file-backed API-key
+ * reference. Custom endpoints may request removal of their entire config. */
+export async function removeProviderApiKey(
+  providerId: string,
+  removeProviderConfig: boolean,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("remove_provider_api_key", {
+    providerId,
+    removeProviderConfig,
+  });
+}
+
+/** Save an allowlisted curated connector key in the OS credential manager.
+ * Native code derives the exact managed executable and complete MCP config. */
+export async function saveScienceConnectorApiKey(
+  connectorId: string,
+  apiKey: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("save_science_connector_api_key", {
+    connectorId,
+    apiKey,
+  });
+}
+
+/** Remove an allowlisted curated connector's config references and credential. */
+export async function removeScienceConnector(
+  connectorId: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("remove_science_connector", { connectorId });
+}
+
+/** Finalize a login written by OpenCode: API keys move to the keychain while
+ * OAuth records remain OpenCode-owned in its app-private auth file. */
+export async function finalizeProviderLogin(
+  providerId: string,
+): Promise<RuntimeRestartResult> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<RuntimeRestartResult>("finalize_provider_login", { providerId });
+}
+
 export interface JupyterStatus {
   installed: boolean;
   running: boolean;
-  url: string | null;
-  token: string | null;
-  mcp_command: string | null;
+  /** Native-validated Spark-owned registration; no connection secret crosses IPC. */
+  registered: boolean;
 }
 
 /** State of the app-managed Jupyter environment (desktop only). */
@@ -152,6 +210,25 @@ export async function setupJupyter(): Promise<void> {
   await invoke("setup_jupyter");
 }
 
+export interface ProjectPythonStatus {
+  installed: boolean;
+  path: string;
+}
+
+/** Status of the active project's isolated `.spark/python` research environment. */
+export async function projectPythonStatus(): Promise<ProjectPythonStatus | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ProjectPythonStatus>("project_python_status");
+}
+
+/** Provision the active project's pinned research environment with bundled uv. */
+export async function setupProjectPython(): Promise<ProjectPythonStatus> {
+  if (!isTauri) throw new Error("not running in the desktop app");
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ProjectPythonStatus>("setup_project_python");
+}
+
 /** Start the managed headless jupyter-lab (idempotent). */
 export async function startJupyter(): Promise<JupyterStatus> {
   if (!isTauri) throw new Error("not running in the desktop app");
@@ -159,24 +236,39 @@ export async function startJupyter(): Promise<JupyterStatus> {
   return invoke<JupyterStatus>("start_jupyter");
 }
 
-/** Open the app-managed JupyterLab in the system browser, starting the server
- *  if needed. Returns false when Jupyter has not been set up yet (the caller
- *  should point the user at Settings). Same env the agent drives, same files.
+/** Reconcile legacy Jupyter config and the managed process before the bundled
+ * runtime boots. The caller must not start OpenCode until this succeeds: native
+ * reconciliation is the pre-launch boundary that removes unsafe legacy state. */
+export async function reconcileJupyter(): Promise<RuntimeRestartResult> {
+  if (!isTauri) return { runtimeUrl: null };
+  const { invoke } = await import("@tauri-apps/api/core");
+  const result = await invoke<RuntimeRestartResult>("reconcile_jupyter");
+  // Restoring the optional local Lab is intentionally best-effort. Config
+  // reconciliation above is the security boundary and must succeed before
+  // OpenCode starts; a broken optional Python environment must not strand the
+  // rest of the desktop after that boundary has passed.
+  try {
+    const status = await jupyterStatus();
+    if (status?.installed && !status.running) await startJupyter();
+  } catch {
+    /* Settings reports and repairs optional Jupyter setup failures. */
+  }
+  return result;
+}
+
+/** Ask native code to start and open the app-managed JupyterLab. Returns false
+ * when Jupyter has not been set up yet (the caller should point the user at
+ * Settings). Same environment and files, with all authorization kept native.
  *
  *  `notebook` is a path RELATIVE TO THE LAB ROOT (the active workspace) — pass
- *  it to open that file directly (`/lab/tree/<path>`); omit to land on the lab
- *  home. Only pass a path you know is under the workspace root. */
+ *  it to open that file directly; omit to land on the lab home. Native code
+ *  validates that it remains under the workspace root. */
 export async function openJupyterLab(notebook?: string): Promise<boolean> {
   if (!isTauri) return false;
-  const st = await jupyterStatus();
-  if (!st?.installed) return false;
-  const s = await startJupyter(); // idempotent; yields the fixed url + token
-  if (!s.url || !s.token) return false;
-  const rel = notebook?.trim().replace(/^\/+/, "");
-  // Encode each segment but keep the "/" separators so nested paths resolve.
-  const tree = rel ? "/tree/" + rel.split("/").map(encodeURIComponent).join("/") : "";
-  await openExternal(`${s.url}/lab${tree}?token=${encodeURIComponent(s.token)}`);
-  return true;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<boolean>("open_jupyter_lab", {
+    notebook: notebook?.trim() || null,
+  });
 }
 
 /** The interpreter local Python kernels resolve to, and where it came from. */
@@ -204,7 +296,7 @@ export async function setPythonPath(path: string): Promise<void> {
 
 /** One live output line from a uv provisioning run (jupyter / science MCP). */
 export interface SetupProgress {
-  task: "jupyter" | "science";
+  task: "jupyter" | "science" | "project-python";
   line: string;
 }
 
@@ -225,22 +317,12 @@ export async function scienceMcpPython(): Promise<string | null> {
   return invoke<string | null>("science_mcp_python");
 }
 
-/** Provision one open-source MCP pip package into the shared isolated env and
- *  return the managed Python path to launch it with (desktop only). */
-export async function setupScienceMcp(pkg: string): Promise<string> {
+/** Provision one native-allowlisted science connector and return its managed
+ * Python path (desktop only). The renderer never supplies a package spec. */
+export async function setupScienceMcp(connectorId: string): Promise<string> {
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
-  return invoke<string>("setup_science_mcp", { package: pkg });
-}
-
-/** Auto-start Jupyter on launch when it was enabled before. Silent no-op otherwise. */
-export async function ensureJupyter(): Promise<void> {
-  try {
-    const s = await jupyterStatus();
-    if (s?.installed && !s.running) await startJupyter();
-  } catch {
-    /* Jupyter is optional — never block the app on it */
-  }
+  return invoke<string>("setup_science_mcp", { connectorId });
 }
 
 /** Open an http(s) URL in the system browser (never navigates the webview). */
@@ -328,6 +410,16 @@ export async function setWorkspace(path: string): Promise<string> {
   if (!isTauri) throw new Error("not running in the desktop app");
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<string>("set_workspace", { path });
+}
+
+/** Fail closed unless the pinned runtime's resolved agents retain Spark's
+ *  effective permission floor for the active workspace. Called immediately
+ *  before every desktop turn; browser development has no native sidecar gate. */
+export async function validateRuntimePermissions(path: string | null): Promise<void> {
+  if (!isTauri) return;
+  if (!path) throw new Error("The active workspace is unavailable for permission validation.");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("validate_runtime_permissions", { path });
 }
 
 /** Record which session owns the active workspace (written to
@@ -533,7 +625,8 @@ export async function watchFullscreen(cb: (fullscreen: boolean) => void): Promis
   return win.onResized(() => void sync());
 }
 
-/** Write the provider key/model into OpenCode's config via the Rust command. */
+/** Legacy onboarding bridge. Rust stores the key in the OS credential manager
+ * and writes only its env placeholder alongside non-secret model settings. */
 export async function configureOpenCode(
   creds: OpenCodeCredentials,
 ): Promise<ConfigureResult> {

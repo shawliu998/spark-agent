@@ -6,15 +6,35 @@ import type {
   WorkflowEvent,
 } from "@spark/research-domain";
 
-export interface WorkflowCreateIntent {
+interface WorkflowCreateIntentBase {
   projectId: string;
   goal: string;
+  idempotencyKey: string;
+}
+
+export interface AutonomousWorkflowCreateIntent extends WorkflowCreateIntentBase {
+  mode: "autonomous";
+  sourceIds: string[];
+  remoteDataApproved: boolean;
+}
+
+export interface AdvancedWorkflowCreateIntent extends WorkflowCreateIntentBase {
+  mode: "advanced";
   workflowType: ResearchWorkflowType;
   datasetSourceId: string | null;
   generationMode: ResearchGenerationMode;
   remoteDataApproved: boolean;
-  idempotencyKey: string;
 }
+
+export type WorkflowCreateIntent =
+  | AutonomousWorkflowCreateIntent
+  | AdvancedWorkflowCreateIntent;
+
+export type WorkflowCreateCandidate = WorkflowCreateIntent extends infer Intent
+  ? Intent extends WorkflowCreateIntent
+    ? Omit<Intent, "idempotencyKey">
+    : never
+  : never;
 
 export type WorkflowResultReviewState =
   | "passed"
@@ -87,11 +107,25 @@ export function mergeWorkflowEvents(
 
 export function sameCreateIntent(
   intent: WorkflowCreateIntent | null,
-  candidate: Omit<WorkflowCreateIntent, "idempotencyKey">,
+  candidate: WorkflowCreateCandidate,
 ): intent is WorkflowCreateIntent {
+  if (
+    intent?.projectId !== candidate.projectId ||
+    intent.goal !== candidate.goal ||
+    intent.mode !== candidate.mode
+  ) {
+    return false;
+  }
+  if (intent.mode === "autonomous" && candidate.mode === "autonomous") {
+    return (
+      intent.remoteDataApproved === candidate.remoteDataApproved &&
+      intent.sourceIds.length === candidate.sourceIds.length &&
+      intent.sourceIds.every((sourceId, index) => sourceId === candidate.sourceIds[index])
+    );
+  }
   return (
-    intent?.projectId === candidate.projectId &&
-    intent.goal === candidate.goal &&
+    intent.mode === "advanced" &&
+    candidate.mode === "advanced" &&
     intent.workflowType === candidate.workflowType &&
     intent.datasetSourceId === candidate.datasetSourceId &&
     intent.generationMode === candidate.generationMode &&

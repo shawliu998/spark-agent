@@ -8,10 +8,12 @@
     "settings": "Configuración"
   },
   "items": {
+    "home": "Inicio",
     "new": "Nuevo",
-    "research": "Investigación",
+    "research": "Flujos verificados",
     "analysis": "Análisis de datos",
     "notebooks": "Cuadernos",
+    "labNotebook": "Cuaderno de investigación",
     "files": "Archivos",
     "runs": "Ejecuciones",
     "skills": "Habilidades"
@@ -34,6 +36,7 @@
     "runtime": "Entorno de ejecución",
     "model": "Modelo",
     "modelNotSet": "sin configurar",
+    "modelStarting": "iniciando…",
     "values": {
       "ready": "listo",
       "connecting": "conectando",
@@ -47,7 +50,7 @@
     "noResults": "Sin resultados.",
     "actions": {
       "newSession": "Nueva sesión",
-      "analyzeData": "Analizar mis datos (nuevo flujo de trabajo)",
+      "analyzeData": "Iniciar análisis verificado de datos",
       "auditReport": "Auditar un informe (revisión de trazabilidad)",
       "openNotebooks": "Abrir cuadernos",
       "manageSkills": "Gestionar habilidades",

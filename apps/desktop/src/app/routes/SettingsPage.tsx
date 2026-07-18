@@ -51,7 +51,7 @@ import { RUNTIME_POLICY } from "@/lib/runtimePolicy";
 
 /**
  * Settings. ONE configuration surface: everything talks to the bundled
- * OpenCode's own config/auth API — no separate "model key" concept.
+ * OpenCode's config/auth API, with native credential custody for secrets.
  */
 export function SettingsPage() {
   const theme = useUiStore((s) => s.theme);
@@ -72,6 +72,10 @@ export function SettingsPage() {
   const defaultModel = useRuntimeStore((s) => s.defaultModel);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
   const removeConfigEntry = useRuntimeStore((s) => s.removeConfigEntry);
+  const removeScienceConnector = useRuntimeStore((s) => s.removeScienceConnector);
+  const saveProviderApiKey = useRuntimeStore((s) => s.saveProviderApiKey);
+  const removeProviderApiKey = useRuntimeStore((s) => s.removeProviderApiKey);
+  const finalizeProviderLogin = useRuntimeStore((s) => s.finalizeProviderLogin);
   const importOpenCodeLogin = useRuntimeStore((s) => s.importOpenCodeLogin);
   const connected = status === "ready";
   const updateEnabled = useUpdateStore((s) => s.enabled);
@@ -314,10 +318,14 @@ export function SettingsPage() {
 
   const saveKey = (providerID: string) =>
     run(t("toast.couldNotSaveKey"), async () => {
-      const actionClient = getClient();
-      if (!actionClient) throw new Error("Runtime endpoint is not connected.");
-      await actionClient.setProviderApiKey(providerID, keyInput.trim());
-      if (getClient() !== actionClient) return;
+      if (isTauri) {
+        await saveProviderApiKey(providerID, keyInput.trim());
+      } else {
+        const actionClient = getClient();
+        if (!actionClient) throw new Error("Runtime endpoint is not connected.");
+        await actionClient.setProviderApiKey(providerID, keyInput.trim());
+        if (getClient() !== actionClient) return;
+      }
       cancelOAuth(); // a pending browser login for this panel is now moot
       setKeyInput("");
       setConnectQuery("");
@@ -378,9 +386,12 @@ export function SettingsPage() {
       if (getClient() !== oauthClient) return;
       const abort = new AbortController();
       oauthAbort.current = abort;
+      let callbackCompleted = false;
       try {
         await oauthClient.oauthCallback(providerID, methodIndex, undefined, abort.signal);
+        callbackCompleted = true;
         if (getClient() !== oauthClient) return;
+        if (isTauri) await finalizeProviderLogin(providerID);
         if (gen !== oauthGen.current) {
           // Cancelled in the UI, but the login DID complete — refresh silently
           // so the now-connected provider still shows up in the list.
@@ -392,6 +403,18 @@ export function SettingsPage() {
         await refreshAll();
         return;
       } catch (e) {
+        // Once the callback succeeded, a native finalization failure is a
+        // credential-custody error, not a dropped browser wait. Surface it and
+        // never emit the connected toast (the native command rolls back an
+        // unsupported just-created API record before rejecting).
+        if (callbackCompleted) {
+          if (gen !== oauthGen.current) return;
+          setOauth(null);
+          toast.error(
+            `${t("toast.loginDidNotComplete")}: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return;
+        }
         if (gen !== oauthGen.current || getClient() !== oauthClient) return;
         // Webview fetch failures (idle timeout, transient drop) are TypeError;
         // apiError() throws plain Error for the server's HTTP verdicts.
@@ -431,6 +454,7 @@ export function SettingsPage() {
       if (!oauthClient) throw new Error("Runtime endpoint is not connected.");
       await oauthClient.oauthCallback(providerID, methodIndex, codeInput.trim() || undefined);
       if (getClient() !== oauthClient) return;
+      if (isTauri) await finalizeProviderLogin(providerID);
       toast.success(t("toast.providerConnected", { providerID }));
       setOauth(null);
       setCodeInput("");
@@ -440,13 +464,23 @@ export function SettingsPage() {
     run(t("toast.couldNotRemove"), async () => {
       const actionClient = getClient();
       if (!actionClient) throw new Error("Runtime endpoint is not connected.");
-      if (customIds.includes(providerID)) {
+      const custom = customIds.includes(providerID);
+      if (isTauri && custom) {
+        await removeProviderApiKey(providerID, true);
+      } else if (isTauri) {
+        // OAuth is OpenCode-owned, while API keys are keychain-owned. Delete
+        // the former first, then let the native transaction remove every
+        // keychain/config reference and restart against the authoritative URL.
+        await actionClient.removeProviderAuth(providerID);
+        if (getClient() !== actionClient) return;
+        await removeProviderApiKey(providerID, false);
+      } else if (custom) {
         // Custom endpoints live in the config file; removal restarts the sidecar.
         await removeConfigEntry("provider", providerID);
       } else {
         await actionClient.removeProviderAuth(providerID);
       }
-      if (getClient() !== actionClient) return;
+      if (!isTauri && getClient() !== actionClient) return;
       toast.success(t("toast.providerRemoved", { providerID }));
     });
 
@@ -460,14 +494,19 @@ export function SettingsPage() {
         toast.error(t("toast.endpointFieldsRequired"));
         return;
       }
+      const apiKey = cKey.trim();
       await actionClient.addCustomProvider(id, {
         name: cName.trim(),
         npm: cNpm,
         baseURL: cUrl.trim(),
-        apiKey: cKey.trim() || undefined,
+        // Never send desktop secrets through OpenCode's config PATCH. The
+        // native transaction below writes the keychain entry and an env-only
+        // placeholder after the non-secret endpoint metadata exists.
+        apiKey: isTauri ? undefined : apiKey || undefined,
         models,
       });
-      if (getClient() !== actionClient) return;
+      if (isTauri && apiKey) await saveProviderApiKey(id, apiKey);
+      else if (getClient() !== actionClient) return;
       toast.success(t("toast.endpointAdded", { name: cName.trim() }));
       setShowCustom(false);
       setCName("");
@@ -512,7 +551,11 @@ export function SettingsPage() {
 
   const removeMcp = (name: string) =>
     run(t("toast.couldNotRemoveMcp"), async () => {
-      await removeConfigEntry("mcp", name);
+      const managedCredential = SCIENCE_CONNECTORS.some(
+        (connector) => connector.id === name && Boolean(connector.apiKeyEnv),
+      );
+      if (managedCredential) await removeScienceConnector(name);
+      else await removeConfigEntry("mcp", name);
       toast.success(t("toast.mcpRemoved", { name }));
     });
 
@@ -914,6 +957,7 @@ export function SettingsPage() {
                 SCIENCE_CONNECTORS.filter((c) => !mcpServers.some((s) => s.name === c.id)).map(
                   (c) => {
                     const keyMissing = Boolean(c.apiKeyEnv) && !connectorKeys[c.id]?.trim();
+                    const securityGated = Boolean(c.securityGated);
                     return (
                       <div
                         key={c.id}
@@ -938,15 +982,23 @@ export function SettingsPage() {
                           <button
                             className={btnAccent("h-8")}
                             onClick={() => void enableConnector(c.id)}
-                            disabled={enablingConnector !== null || busy || keyMissing}
-                            title={keyMissing ? t("mcp.enterKeyFirstTitle") : undefined}
+                            disabled={
+                              enablingConnector !== null || busy || keyMissing || securityGated
+                            }
+                            title={
+                              securityGated
+                                ? t("mcp.securityGatedTitle")
+                                : keyMissing
+                                  ? t("mcp.enterKeyFirstTitle")
+                                  : undefined
+                            }
                           >
                             {enablingConnector === c.id ? (
                               <>
                                 <Loader2 size={12} className="animate-spin" /> {t("mcp.settingUp")}
                               </>
                             ) : (
-                              t("mcp.enable")
+                              t(securityGated ? "mcp.securityGated" : "mcp.enable")
                             )}
                           </button>
                         </div>
@@ -954,6 +1006,7 @@ export function SettingsPage() {
                           <div className="mt-2 flex items-center gap-2 pl-6">
                             <input
                               type="password"
+                              disabled={securityGated}
                               value={connectorKeys[c.id] ?? ""}
                               onChange={(e) =>
                                 setConnectorKeys((k) => ({ ...k, [c.id]: e.target.value }))
@@ -977,8 +1030,9 @@ export function SettingsPage() {
                     );
                   },
                 )}
-              {/* Featured: one-click Jupyter (shown until its MCP entry exists). */}
-              {isTauri && !mcpServers.some((s) => s.name === "jupyter") && (
+              {/* Only native validation can declare the managed Jupyter MCP
+                  registration safe; an arbitrary same-named entry is not proof. */}
+              {isTauri && !jupyter?.registered && (
                 <div className="flex items-center gap-2.5 border-b border-border bg-surface px-3 py-2.5 text-[13px]">
                   <NotebookPen size={14} className="shrink-0 text-muted" />
                   <div className="min-w-0 flex-1">
@@ -990,14 +1044,21 @@ export function SettingsPage() {
                   <button
                     className={btnAccent("h-8")}
                     onClick={() => void useSetupStore.getState().enableJupyter()}
-                    disabled={jupyterBusy || busy}
+                    disabled={
+                      jupyterBusy || busy || Boolean(jupyter?.installed && jupyter.running)
+                    }
+                    title={
+                      jupyter?.installed && jupyter.running
+                        ? t("mcp.securityGatedTitle")
+                        : undefined
+                    }
                   >
                     {jupyterBusy ? (
                       <>
                         <Loader2 size={12} className="animate-spin" /> {t("mcp.settingUp")}
                       </>
-                    ) : jupyter?.installed ? (
-                      t("mcp.enable")
+                    ) : jupyter?.installed && jupyter.running ? (
+                      t("mcp.localReady")
                     ) : (
                       t("mcp.setUpAndEnable")
                     )}

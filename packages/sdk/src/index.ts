@@ -13,6 +13,7 @@ export {
   type SessionMeta,
   type SkillInfo,
   type AgentInfo,
+  type OpenCodePromptOptions,
   type CommandInfo,
   type HistoryMessage,
   type ProviderInfo,

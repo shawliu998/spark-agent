@@ -19,7 +19,7 @@ vi.mock("@/lib/tauri", () => ({
   },
   newDatedWorkspace: async (name: string) => `/ws/${name}`,
   pickFolder: async () => mocks.pickedFolder,
-  getApprovalMode: async () => "approve",
+  getApprovalMode: async () => "balanced",
   setApprovalMode: async () => {},
 }));
 vi.mock("@/lib/kernel", () => ({ kernelReset: async () => {} }));

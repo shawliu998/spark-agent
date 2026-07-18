@@ -8,10 +8,12 @@
     "settings": "设置"
   },
   "items": {
+    "home": "主页",
     "new": "新建",
-    "research": "科研",
+    "research": "验证工作流",
     "analysis": "数据分析",
     "notebooks": "笔记本",
+    "labNotebook": "实验记录",
     "files": "文件",
     "runs": "运行",
     "skills": "技能"
@@ -34,6 +36,7 @@
     "runtime": "运行时",
     "model": "模型",
     "modelNotSet": "未设置",
+    "modelStarting": "启动中…",
     "values": {
       "ready": "就绪",
       "connecting": "连接中",
@@ -47,7 +50,7 @@
     "noResults": "无结果。",
     "actions": {
       "newSession": "新建会话",
-      "analyzeData": "分析我的数据（新建工作流）",
+      "analyzeData": "开始验证数据集分析",
       "auditReport": "审查报告（溯源性审查）",
       "openNotebooks": "打开笔记本",
       "manageSkills": "管理技能",

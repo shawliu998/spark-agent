@@ -36,6 +36,12 @@ jobs:
       - name: Install workspace dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Fetch bundled ai4s-skills pack
+        run: bash scripts/dev/fetch-skills.sh
+
+      - name: Fetch curated K-Dense scientific skills
+        run: bash scripts/dev/fetch-kdense-skills.sh
+
       - name: Verify release asset integrity policy
         run: pnpm test:release-assets
 
@@ -47,6 +53,15 @@ jobs:
 
       - name: Test desktop
         run: pnpm test:desktop
+
+      - name: Fetch pinned OpenCode sidecar for Foundation live smoke
+        run: bash scripts/dev/fetch-opencode.sh x86_64-unknown-linux-gnu
+
+      - name: Fetch pinned ripgrep sidecar for Foundation live smoke
+        run: bash scripts/dev/fetch-ripgrep.sh x86_64-unknown-linux-gnu
+
+      - name: Test Foundation profile, runtime contracts, and live agent/tool slice
+        run: pnpm test:foundation:live
 
   rust:
     name: Rust desktop

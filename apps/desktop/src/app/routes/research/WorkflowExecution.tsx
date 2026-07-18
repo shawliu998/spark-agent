@@ -133,6 +133,8 @@ export function WorkflowNeedsAttention({
   const { workflow } = snapshot;
   const allowedActions: readonly ResearchWorkflowAllowedAction[] =
     snapshot.allowedActions;
+  const statusReason =
+    "statusReason" in workflow ? workflow.statusReason : null;
 
   return (
     <section className="rounded-card border border-warn/35 bg-warn/5 p-4">
@@ -149,7 +151,8 @@ export function WorkflowNeedsAttention({
                 })}
           </h3>
           <p className="mt-1 text-xs leading-relaxed text-muted">
-            {workflow.blockingReason?.userMessage ??
+            {statusReason?.userMessage ??
+              workflow.blockingReason?.userMessage ??
               t("research.workflow.attentionDefault", {
                 defaultValue:
                   "Review the completed steps and choose an available recovery action.",

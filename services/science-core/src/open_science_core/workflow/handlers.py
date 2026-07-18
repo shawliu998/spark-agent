@@ -167,8 +167,10 @@ from ._handlers.text import (
 from ._handlers.text import (
     terms as terms,
 )
+from .agent_service import handle_route_intent as _handle_route_intent_impl
 from .schemas import (
     AnalysisApprovalEventData,
+    AnalysisCompiledEventData,
     AnalysisIntentCreatedEventData,
     FrozenSourceDescriptor,
     PlanSpec,
@@ -203,6 +205,19 @@ def handle_generate_plan(
         job,
         model_gateway,
         legacy_handler=legacy_handler,
+    )
+
+
+def handle_route_intent(
+    session: Session,
+    workflow: WorkflowRecord,
+    job: JobRecord,
+) -> None:
+    _handle_route_intent_impl(
+        session,
+        workflow,
+        job,
+        gateway=model_gateway,
     )
 
 
@@ -282,43 +297,92 @@ def _handle_task(
         execution_task = prepared_analysis.execution_task
         bundle = prepared_analysis.intent_bundle
         transition_task(session, execution_task, "waiting-approval")
+        analysis_events: list[tuple[str, Any, str | None, str | None]] = [
+            (
+                "analysis.intent-created",
+                AnalysisIntentCreatedEventData(
+                    analysis_intent_id=bundle.intent.id,
+                    task_id=execution_task.id,
+                    job_id=job.id,
+                    plan_step_id="execute-analysis",
+                    dataset_source_id=bundle.intent.dataset_source_id,
+                    dataset_content_hash=bundle.intent.dataset_content_hash or "",
+                    payload_sha256=bundle.intent.payload_sha256,
+                    repair_attempt=0,
+                ),
+                execution_task.id,
+                job.id,
+            )
+        ]
+        if bundle.intent.analysis_spec_id is not None:
+            if not all(
+                (
+                    bundle.intent.spec_sha256,
+                    bundle.intent.dataset_profile_sha256,
+                    bundle.intent.compiler_version,
+                    bundle.intent.code_sha256,
+                    bundle.intent.runtime_policy_id,
+                )
+            ):
+                raise WorkflowFailure(
+                    "analysis-compiled-provenance-missing",
+                    "The compiled analysis intent is missing immutable provenance.",
+                )
+            analysis_events.append(
+                (
+                    "analysis.compiled",
+                    AnalysisCompiledEventData(
+                        analysis_intent_id=bundle.intent.id,
+                        analysis_spec_id=bundle.intent.analysis_spec_id,
+                        spec_sha256=cast(str, bundle.intent.spec_sha256),
+                        dataset_profile_sha256=cast(
+                            str, bundle.intent.dataset_profile_sha256
+                        ),
+                        compiler_version=cast(str, bundle.intent.compiler_version),
+                        approved_code_sha256=cast(str, bundle.intent.code_sha256),
+                        runtime_policy_id=cast(str, bundle.intent.runtime_policy_id),
+                    ),
+                    execution_task.id,
+                    job.id,
+                )
+            )
+        approval_event = AnalysisApprovalEventData(
+            approval_id=bundle.approval.id,
+            analysis_intent_id=bundle.intent.id,
+            task_id=execution_task.id,
+            job_id=job.id,
+            payload_sha256=bundle.intent.payload_sha256,
+            approval_schema_version=cast(
+                Literal[
+                    "analysis-intent-v2",
+                    "analysis-intent-v3",
+                    "analysis-intent-v4",
+                ],
+                bundle.approval.payload_schema_version,
+            ),
+            expected_workflow_revision=bundle.expected_workflow_revision,
+        )
+        analysis_events.append(
+            (
+                "analysis.approval-requested",
+                approval_event,
+                execution_task.id,
+                job.id,
+            )
+        )
+        if bundle.intent.analysis_spec_id is not None:
+            analysis_events.append(
+                (
+                    "analysis.execution-approval-requested",
+                    approval_event,
+                    execution_task.id,
+                    job.id,
+                )
+            )
         append_workflow_events(
             session,
             workflow,
-            [
-                (
-                    "analysis.intent-created",
-                    AnalysisIntentCreatedEventData(
-                        analysis_intent_id=bundle.intent.id,
-                        task_id=execution_task.id,
-                        job_id=job.id,
-                        plan_step_id="execute-analysis",
-                        dataset_source_id=bundle.intent.dataset_source_id,
-                        dataset_content_hash=bundle.intent.dataset_content_hash or "",
-                        payload_sha256=bundle.intent.payload_sha256,
-                        repair_attempt=0,
-                    ),
-                    execution_task.id,
-                    job.id,
-                ),
-                (
-                    "analysis.approval-requested",
-                    AnalysisApprovalEventData(
-                        approval_id=bundle.approval.id,
-                        analysis_intent_id=bundle.intent.id,
-                        task_id=execution_task.id,
-                        job_id=job.id,
-                        payload_sha256=bundle.intent.payload_sha256,
-                        approval_schema_version=cast(
-                            Literal["analysis-intent-v2", "analysis-intent-v3"],
-                            bundle.approval.payload_schema_version,
-                        ),
-                        expected_workflow_revision=bundle.expected_workflow_revision,
-                    ),
-                    execution_task.id,
-                    job.id,
-                ),
-            ],
+            analysis_events,
         )
         return
     advance_after_task(
@@ -390,6 +454,7 @@ def execute_leased_job(session: Session, job_id: str, lease_token: str) -> None:
         session,
         job_id,
         lease_token,
+        handle_route_intent=handle_route_intent,
         handle_generate_plan=handle_generate_plan,
         handle_task=_handle_task,
         handle_review=handle_review,

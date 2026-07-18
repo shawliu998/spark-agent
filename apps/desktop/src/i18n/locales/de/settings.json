@@ -85,11 +85,14 @@
     "enterKeyFirstTitle": "Zuerst den API-Schlüssel eingeben",
     "settingUp": "Wird eingerichtet…",
     "enable": "Aktivieren",
+    "securityGated": "Sicherheitsgesperrt",
+    "securityGatedTitle": "Deaktiviert, bis native Freigaben pro Aufruf, unveränderliche verifizierte Ziele, vollständig hashgebundene atomare Installation und paketierte macOS-E2E-Tests durchgesetzt werden",
     "freeKeySuffix": "(kostenloser Schlüssel)",
     "getFreeKey": "Kostenlosen Schlüssel anfordern",
     "jupyterLabel": "Jupyter",
-    "jupyterDescription": "ermöglicht dem Agenten die Steuerung echter Notebooks · isolierte Umgebung mit numpy·pandas·matplotlib, ~500 MB beim ersten Ausführen · nach der Einrichtung nutzt auch die „Ausführen“-Schaltfläche der App sie, sodass Sie und der Agent sich ein Python teilen",
-    "setUpAndEnable": "Einrichten & aktivieren",
+    "jupyterDescription": "lokales JupyterLab mit gemeinsam genutzter In-App-Python-Umgebung · Token bleibt außerhalb von Renderer-IPC und Prozessargumenten · Agent-MCP-Zugriff ist sicherheitsgesperrt und nicht verfügbar",
+    "setUpAndEnable": "Lokales Jupyter einrichten",
+    "localReady": "Lokal bereit",
     "startingDownload": "Download wird gestartet…",
     "typeLocal": "lokal",
     "typeRemote": "remote",
@@ -107,7 +110,7 @@
   },
   "python": {
     "title": "Lokaler Python-Kernel",
-    "hint": "Führt Notebook-Zellen in der App aus. Nutzt Ihre Jupyter-Umgebung, falls eingerichtet (gleiches Python wie der Agent), sonst automatische Erkennung — oder unten einen expliziten Interpreter festlegen",
+    "hint": "Führt Notebook-Zellen in der App aus. Nutzt nach der Einrichtung dasselbe App-verwaltete Python wie das lokale JupyterLab, sonst automatische Erkennung — oder unten einen expliziten Interpreter festlegen",
     "sourceManual": "manuell",
     "sourceAppManaged": "app-verwaltet",
     "sourceAutoDetected": "automatisch erkannt",
@@ -152,7 +155,7 @@
       "workspaceFiles": "Ihre Arbeitsbereichsdateien und Rohdaten",
       "codeExecution": "Codeausführung — der Python-Kernel und Jupyter laufen lokal; Datensätze werden hier verarbeitet, nie in großen Mengen hochgeladen.",
       "sessionHistory": "Sitzungsverlauf und Herkunftsnachweise, im privaten Datenordner der App.",
-      "providerKeys": "Anbieterschlüssel und Anmelde-Token — eine app-private Datei, die nur von Ihrem Konto gelesen werden kann; wird nie in den Arbeitsbereich, die Herkunftsdaten, Protokolle oder Exporte geschrieben."
+      "providerKeys": "Einfache Anbieter-API-Schlüssel und von Spark verwaltete Materials-Project-/FRED-Connector-Schlüssel sind im Ruhezustand durch die Anmeldeinformationsverwaltung des Betriebssystems geschützt. Die MP/FRED-Migration und die private Broker-Infrastruktur sind implementiert; der veraltete DYLD-empfindliche Spark-Starter ist entfernt. Die verwalteten Einträge sind standardmäßig deaktiviert: Eine Ausführung mit Anmeldedaten schlägt geschlossen fehl und wird in den Einstellungen als sicherheitsgesperrt markiert. Der gestufte Pfad verwendet nur das von Apple für die Plattform signierte /usr/bin/nc -U zu einem privaten Unix-Domain-Socket; der Tauri-Broker bindet UID, PID, Programmdatei und Elternprozess des Relays an PID, Startzeit und Generation des aktuell von Spark verwalteten OpenCode-Prozesses und validiert die strikte App-Konfiguration sowie das kanonische Ziel. Dies ist gestufte Tiefenverteidigung und keine ausgelieferte Zusicherung, dass der Schlüsselpfad unüberwindbar oder das Ziel hart isoliert ist. Freigabesperren: P0 — unveränderliche signierte/verifizierte heruntergeladene Ziele oder Isolation vor Änderungen durch Prozesse derselben UID, native Freigabe pro Aufruf und Schließen der Umgehung bei Konfigurationsabhängigkeiten; P1 — eine vollständig hashgebundene transitive Sperrdatei mit gestufter atomarer Installation; P1 — paketierte macOS-E2E-Tests. OAuth-Datensätze verwenden weiterhin eine kontoeigene App-Datei. Das von der App verwaltete Jupyter-Token ist im Ruhezustand durch die Anmeldeinformationsverwaltung geschützt; veraltete Klartext-Metadaten/-Konfiguration werden vor dem OpenCode-Start bereinigt, und das Token gelangt weder in Renderer-IPC noch in Prozessargumente. Agent-Jupyter-MCP bleibt sicherheitsgesperrt und schlägt geschlossen fehl. Jupyter-Kindprozessumgebung beim Start, Browser-Token-URL/-Verlauf, Inspektion durch Prozesse derselben UID und breitere Ausführungsisolation bleiben offen. Anmeldedaten eigener/BYO-MCPs fallen nicht unter diese Grenze; genehmigte lokale Tools können weiterhin Anbieter- oder andere Laufzeitgeheimnisse erben."
     },
     "remote": {
       "heading": "An Ihren Modellanbieter gesendet",

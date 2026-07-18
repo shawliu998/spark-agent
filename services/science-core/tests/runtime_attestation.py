@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import cast
 
 from open_science_core.analysis import (
     RuntimeArtifactInfo,
@@ -41,6 +42,7 @@ def write_attested_runtime_result(
     if not isinstance(timeout_seconds, int):
         raise TypeError("timeout_seconds must be an integer")
     policy_template = policy_template_value
+    compiled_provenance = _compiled_provenance(evidence)
     relative_run_dir = run_dir.relative_to(exchange_root).as_posix()
     relative_dataset = (run_dir / "input.csv").relative_to(exchange_root).as_posix()
 
@@ -49,6 +51,7 @@ def write_attested_runtime_result(
         "executionPolicy": {
             "profileId": policy_profile_id,
             "template": policy_template,
+            **compiled_provenance,
         },
     }
     environment_bytes = _json_bytes(environment)
@@ -61,6 +64,7 @@ def write_attested_runtime_result(
         "environmentHash": environment_hash,
         "policyProfileId": policy_profile_id,
         "policyTemplate": policy_template,
+        **compiled_provenance,
     }
     dataset_literal = json.dumps(str(run_dir / "input.csv"), ensure_ascii=False)
     run_dir_literal = json.dumps(str(run_dir), ensure_ascii=False)
@@ -101,6 +105,9 @@ def write_attested_runtime_result(
         "nbformat_minor": 5,
     }
     notebook_bytes = _json_bytes(notebook)
+    compiled_log_lines = tuple(
+        f"{key}: {value}" for key, value in compiled_provenance.items()
+    )
     log = "\n".join(
         (
             "Spark Agent notebook execution",
@@ -110,6 +117,7 @@ def write_attested_runtime_result(
             f"environmentHash: {environment_hash}",
             f"policyProfileId: {policy_profile_id}",
             f"policyTemplate: {policy_template or '-'}",
+            *compiled_log_lines,
             f"runDir: {relative_run_dir}",
             f"datasetPath: {relative_dataset}",
             f"timeoutSeconds: {timeout_seconds}",
@@ -168,6 +176,25 @@ def _request_string(request: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str):
         raise TypeError(f"{key} must be a string")
     return value
+
+
+def _compiled_provenance(request: Mapping[str, object]) -> dict[str, str]:
+    field_map = {
+        "analysis_spec_id": "analysisSpecId",
+        "analysis_spec_sha256": "analysisSpecSha256",
+        "dataset_profile_sha256": "datasetProfileSha256",
+        "compiler_version": "compilerVersion",
+        "approved_code_sha256": "approvedCodeSha256",
+    }
+    values = {source: request.get(source) for source in field_map}
+    if all(value is None for value in values.values()):
+        return {}
+    if any(not isinstance(value, str) for value in values.values()):
+        raise TypeError("compiled provenance must be complete strings")
+    return {
+        target: cast(str, values[source])
+        for source, target in field_map.items()
+    }
 
 
 def _json_bytes(value: object) -> bytes:

@@ -1,0 +1,284 @@
+{
+  "schemaVersion": 1,
+  "namespace": "spark-core",
+  "source": "bundled",
+  "version": "1.1.0",
+  "license": "MIT",
+  "skills": [
+    {
+      "name": "literature-review",
+      "path": "core/literature-review",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/writing/literature-review/SKILL.md"
+    },
+    {
+      "name": "citation-management",
+      "path": "core/citation-management",
+      "category": "writing",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/writing/citation-management/SKILL.md"
+    },
+    {
+      "name": "hypothesis-generation",
+      "path": "core/hypothesis-generation",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/research/hypothesis-generation/SKILL.md"
+    },
+    {
+      "name": "scientific-critical-thinking",
+      "path": "core/scientific-critical-thinking",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/research/scientific-critical-thinking/SKILL.md"
+    },
+    {
+      "name": "scientific-writing",
+      "path": "core/scientific-writing",
+      "category": "writing",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/writing/scientific-writing/SKILL.md"
+    },
+    {
+      "name": "exploratory-data-analysis",
+      "path": "core/exploratory-data-analysis",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/coding/exploratory-data-analysis/SKILL.md"
+    },
+    {
+      "name": "statistical-analysis",
+      "path": "core/statistical-analysis",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/coding/statistical-analysis/SKILL.md"
+    },
+    {
+      "name": "matplotlib",
+      "path": "core/matplotlib",
+      "category": "visualization",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "behavior-only",
+      "upstreamPath": "backend/cli/skills/visualization/matplotlib/SKILL.md"
+    },
+    {
+      "name": "domain-check",
+      "path": "core/domain-check",
+      "category": "review",
+      "entry": false,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "large-file",
+      "path": "core/large-file",
+      "category": "data",
+      "entry": false,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "modal-run",
+      "path": "core/modal-run",
+      "category": "compute",
+      "entry": false,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "publication-figures",
+      "path": "core/publication-figures",
+      "category": "visualization",
+      "entry": false,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "remote-compute",
+      "path": "core/remote-compute",
+      "category": "compute",
+      "entry": false,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "stats-integrity",
+      "path": "core/stats-integrity",
+      "category": "review",
+      "entry": false,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "traceability-review",
+      "path": "core/traceability-review",
+      "category": "review",
+      "entry": false,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "research-lookup",
+      "path": "core/research-lookup",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "systematic-review",
+      "path": "core/systematic-review",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "evidence-synthesis",
+      "path": "core/evidence-synthesis",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "scientific-brainstorming",
+      "path": "core/scientific-brainstorming",
+      "category": "research",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "peer-review",
+      "path": "core/peer-review",
+      "category": "review",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "data-cleaning",
+      "path": "core/data-cleaning",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "pandas",
+      "path": "core/pandas",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "numpy-scipy",
+      "path": "core/numpy-scipy",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "statsmodels",
+      "path": "core/statsmodels",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "scikit-learn",
+      "path": "core/scikit-learn",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "notebook-analysis",
+      "path": "core/notebook-analysis",
+      "category": "data",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "reproducible-python",
+      "path": "core/reproducible-python",
+      "category": "compute",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "model-evaluation",
+      "path": "core/model-evaluation",
+      "category": "review",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    },
+    {
+      "name": "scientific-visualization",
+      "path": "core/scientific-visualization",
+      "category": "visualization",
+      "entry": true,
+      "license": "MIT",
+      "origin": "spark",
+      "reuseType": "original"
+    }
+  ],
+  "upstreamReference": {
+    "repository": "https://github.com/synthetic-sciences/openscience",
+    "commit": "e9844a49f1f4d93cbf5f88b8f4880c003adc6e61",
+    "license": "Apache-2.0",
+    "notice": "Foundation skills are Spark-authored implementations. The eight initial skills were informed by OpenScience behavior-only references; no upstream skill file is copied or substantially adapted. New Batch 2 skills are original Spark content under MIT. If an Apache-adapted skill is added later, retain this repository, path, pinned commit, license, and modification notice in its entry."
+  }
+}

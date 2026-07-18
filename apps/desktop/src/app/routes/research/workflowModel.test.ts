@@ -21,6 +21,7 @@ function snapshot(
       id: "workflow-1",
       projectId: "project-1",
       goal: "Compare studies",
+      mode: "advanced" as const,
       workflowType: "literature-synthesis",
       status: "running",
       revision,
@@ -157,6 +158,7 @@ describe("workflow model", () => {
     const intent = {
       projectId: "project-1",
       goal: "Compare studies",
+      mode: "advanced" as const,
       workflowType: "literature-synthesis" as const,
       datasetSourceId: null,
       generationMode: "remote-model-assisted" as const,
@@ -166,6 +168,22 @@ describe("workflow model", () => {
     expect(sameCreateIntent(intent, { ...intent })).toBe(true);
     expect(
       sameCreateIntent(intent, { ...intent, remoteDataApproved: false }),
+    ).toBe(false);
+
+    const autonomousIntent = {
+      projectId: "project-1",
+      goal: "Route selected sources",
+      mode: "autonomous" as const,
+      sourceIds: ["paper-1"],
+      remoteDataApproved: true,
+      idempotencyKey: "intent-2",
+    };
+    expect(sameCreateIntent(autonomousIntent, { ...autonomousIntent })).toBe(true);
+    expect(
+      sameCreateIntent(autonomousIntent, {
+        ...autonomousIntent,
+        remoteDataApproved: false,
+      }),
     ).toBe(false);
   });
 });

@@ -34,20 +34,27 @@
       "title": "中断本轮（Esc）"
     },
     "send": {
-      "aria": "发送"
+      "aria": "发送",
+      "title": "自主运行"
     },
     "approval": {
       "aria": "审批模式",
       "title": "代理操作如何获得批准",
       "menuAria": "审批模式",
-      "menuTitle": "代理操作应如何获得批准？",
-      "approve": {
-        "label": "由我批准",
-        "description": "在删除、安装或访问远程资源前询问"
+      "menuTitle": "选择 OpenCode 原生权限预设",
+      "balanced": {
+        "label": "均衡",
+        "description": "允许读取和搜索；编辑、命令、网络及 MCP 操作均会询问"
       },
       "full": {
-        "label": "完全访问",
-        "description": "不询问即运行所有命令"
+        "label": "自主",
+      "description": "普通项目研究自动进行；破坏性、外部、凭据及系统操作仍受保护",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "自主模式可以编辑项目文件、运行本地命令、安装项目依赖、使用已配置的研究工具并访问网络。破坏性或外部操作仍需确认。"
+      },
+      "custom": {
+        "label": "外部自定义策略",
+        "description": "不由 Spark 管理；请选择均衡或自主预设"
       }
     },
     "error": {
@@ -59,6 +66,60 @@
     "newDescription": "在当前文件夹内清空聊天上下文",
     "clearDescription": "等同于 /new；文件仍保留在当前文件夹",
     "cleared": "聊天记录已清空。文件内容仍保留在同一个文件夹下。"
+  },
+  "researchControls": {
+    "mode": { "aria": "执行模式", "general": "通用研究", "verified": "验证工作流" },
+    "agent": { "aria": "科研 Agent", "empty": "没有可用 Agent", "primaryGroup": "主要 Agent", "subagentGroup": "子 Agent", "otherGroup": "其他 Agent" },
+    "model": {
+      "aria": "模型",
+      "empty": "没有可用模型",
+      "auto": "自动 · 按任务路由",
+      "runtimeDefault": "运行时默认模型",
+      "autoRoute": {
+        "quick": "自动 · 简单 → {{model}}",
+        "standard": "自动 · 中等 → {{model}}",
+        "deep": "自动 · 复杂 → {{model}}"
+      }
+    },
+    "skills": { "aria": "打开科研技能", "title": "浏览 OpenCode 返回的技能", "count": "{{count}} 个技能" }
+  },
+  "parallelTasks": {
+    "aria": "并行任务",
+    "title": "任务中心",
+    "subtitle": "查看独立科研任务的状态",
+    "new": "新建任务",
+    "synthesize": "综合结果",
+    "empty": "还没有科研任务。",
+    "listAria": "科研任务",
+    "runtimeDefault": "运行时默认模型",
+    "requestedModel": "请求模型",
+    "current": "当前任务",
+    "status": { "running": "运行中", "waiting": "等待处理", "recovering": "恢复状态中", "complete": "已完成", "failed": "启动失败" }
+  },
+  "taskPlan": {
+    "aria": "任务计划",
+    "title": "规划并行任务",
+    "subtitle": "把一个研究目标拆成相互独立的任务。",
+    "objective": "总目标",
+    "objectivePlaceholder": "这次研究需要完成什么？",
+    "taskCount": "{{count}} / 5 个任务",
+    "generate": "生成计划",
+    "generating": "生成中…",
+    "generateError": "无法生成任务计划，请重试。",
+    "taskList": "计划任务",
+    "taskNumber": "任务 {{number}}",
+    "remove": "移除任务 {{number}}",
+    "titleLabel": "任务 {{number}} 标题",
+    "titlePlaceholder": "任务标题",
+    "promptLabel": "任务 {{number}} 提示词",
+    "promptPlaceholder": "这个任务需要完成什么",
+    "add": "添加任务",
+    "launch": "启动任务",
+    "launching": "启动中…",
+    "launchError": "无法启动该计划，请重试。"
+  },
+  "workspaceArtifacts": {
+    "heading": "工作区产物", "count": "已发现 {{count}} 个", "refreshAria": "刷新工作区产物"
   },
   "starters": {
     "newSession": "新建会话",
@@ -75,6 +136,10 @@
     "audit": {
       "title": "审查报告的可追溯性",
       "description": "检查引用、无来源数字，以及图表与代码的一致性。"
+    },
+    "papers-data": {
+      "title": "关联论文与数据",
+      "description": "盘点本地论文和数据集，补齐必要证据，并生成可追溯的综合结论。"
     },
     "example-climate": {
       "title": "探索示例：气候趋势",
@@ -103,6 +168,10 @@
     "runsToggle": {
       "label": "运行",
       "title": "此会话的实验运行——在聊天旁显示"
+    },
+    "tasksToggle": {
+      "label": "任务",
+      "title": "查看并行科研任务"
     },
     "notebook": {
       "openTitle": "打开 {{path}} — 代理在此会话中处理此笔记本"

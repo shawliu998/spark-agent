@@ -19,10 +19,18 @@ const RUNTIME_DEFAULTS = {
 afterEach(() => useRuntimeStore.setState(RUNTIME_DEFAULTS));
 
 describe("Composer strings (i18n)", () => {
-  it("renders the default placeholder without the unsafe approval-mode switch", () => {
-    render(<Composer onSend={() => {}} approvalMode="approve" onApprovalModeChange={() => {}} />);
+  it("renders the default placeholder with the manual-approval control", () => {
+    render(<Composer onSend={() => {}} approvalMode="balanced" onApprovalModeChange={() => {}} />);
     expect(screen.getByPlaceholderText("Ask anything")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Approval mode")).toBeNull();
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Balanced");
+  });
+
+  it("renders the Autonomous label and concise disclosure for the full alias", () => {
+    render(<Composer onSend={() => {}} approvalMode="full" onApprovalModeChange={() => {}} />);
+    expect(screen.getByLabelText("Approval mode")).toHaveTextContent("Autonomous");
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Destructive or external operations still require confirmation",
+    );
   });
 });
 

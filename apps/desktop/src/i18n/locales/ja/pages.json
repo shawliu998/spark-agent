@@ -37,6 +37,7 @@
       "addCellLabel": "セルを追加"
     }
   },
+  "labNotebook": {"title":"Living research notebook","description":"A recoverable, workspace-local record of explicit scientific findings, decisions, and limitations.","path":"Stored at","refresh":"Refresh","refreshAria":"Refresh living research notebook","exportMarkdown":"Markdown","exportJson":"JSON","type":"Type","session":"Session","all":"All","empty":"No notebook entries match these filters."},
   "files": {
     "loading": "読み込み中…",
     "folderEmpty": "このフォルダは空です。",
@@ -56,8 +57,8 @@
   "skills": {
     "title": "スキル & エージェント",
     "description": {
-      "prefix": "OpenCode ランタイムからライブで読み込まれます — バンドルされた ai4s-skills パックと、ワークスペース内の ",
-      "suffix": " にあるものすべて。"
+      "prefix": "OpenCode からライブ読み込み — Spark の科学スキルと、プロジェクト／ユーザーの OpenCode スキル（例: ",
+      "suffix": "）。"
     },
     "install": {
       "sectionTitle": "スキルをインストール",
@@ -89,10 +90,36 @@
       "source": {
         "builtin": "組み込み",
         "project": "プロジェクト",
-        "user": "ユーザー"
+        "global": "グローバル / 同梱",
+        "unknown": "出所不明"
       }
     },
     "disconnected": "読み込まれたスキルとエージェントを一覧表示するには、ランタイムに接続してください。"
+  },
+  "research": {
+    "title": "構造化／検証済みワークフロー",
+    "refreshAria": "検証済みワークフローを更新",
+    "libraryTitle": "検証済みワークフローライブラリ",
+    "newProjectAria": "検証済みワークフローのプロジェクトを作成",
+    "workflows": {
+      "heading": "検証済みワークフロー",
+      "newAria": "新しい検証済みワークフローを開始",
+      "empty": "保存済みの検証ワークフローはありません。"
+    },
+    "workflow": {
+      "composerLabel": "Spark Agent に構造化された研究目標を入力",
+      "modeLabel": "ワークフロー保証モード",
+      "typeLabel": "検証済みワークフローの種類",
+      "typeLiterature": "検証済み文献統合",
+      "typeDataset": "検証済みデータセット分析",
+      "listAutoType": " · 検証済み自動ルーティング",
+      "listDatasetType": " · 検証済みデータセット分析 · ローカル隔離環境",
+      "listLiteratureRemoteType": " · 検証済み文献統合 · モデル支援",
+      "listLiteratureLocalType": " · 検証済み文献統合 · ローカル",
+      "goal": "検証済み研究目標",
+      "startAuto": "検証済みワークフローを開始",
+      "start": "検証済み計画を作成"
+    }
   },
   "notFound": {
     "title": "404 — 見つかりません",

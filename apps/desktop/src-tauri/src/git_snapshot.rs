@@ -17,6 +17,7 @@ fn git_lock() -> &'static Mutex<()> {
 
 const AUTHOR_NAME: &str = "Spark Agent";
 const AUTHOR_EMAIL: &str = "spark-agent@local";
+const LOCAL_RUNTIME_EXCLUDES: &str = "# Spark Agent local runtime\n.spark/python/\n";
 
 fn git(root: &Path) -> std::process::Command {
     let mut cmd = quiet_command("git");
@@ -63,6 +64,29 @@ fn snapshot_marker(root: &Path) -> PathBuf {
     root.join(".git").join(".openscience-snapshots")
 }
 
+fn ensure_local_runtime_excludes(root: &Path) -> Result<(), String> {
+    let path = root.join(".git").join("info").join("exclude");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if existing.contains(".spark/python/") {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "git exclude file has no parent".to_string())?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create git info directory: {error}"))?;
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    std::fs::write(
+        &path,
+        format!("{existing}{separator}{LOCAL_RUNTIME_EXCLUDES}"),
+    )
+    .map_err(|error| format!("could not exclude local project runtime: {error}"))
+}
+
 /// Ensure an app-owned snapshot repo exists. Returns `Ok(false)` when the folder
 /// already holds a git repo we did not create — the caller must then NOT commit,
 /// so the user's own history and staged work are left untouched.
@@ -72,11 +96,16 @@ fn ensure_owned_repo(root: &Path) -> Result<bool, String> {
     }
     if root.join(".git").exists() {
         // A pre-existing repo is only ours if we planted the marker at init.
-        return Ok(snapshot_marker(root).exists());
+        let owned = snapshot_marker(root).exists();
+        if owned {
+            ensure_local_runtime_excludes(root)?;
+        }
+        return Ok(owned);
     }
     run(root, &["init"])?;
     std::fs::write(snapshot_marker(root), b"1")
         .map_err(|e| format!("could not mark snapshot repo: {e}"))?;
+    ensure_local_runtime_excludes(root)?;
     Ok(true)
 }
 
@@ -114,7 +143,7 @@ pub fn commit_workspace_snapshot(app: AppHandle, message: String) -> Result<bool
 
 #[cfg(test)]
 mod tests {
-    use super::{commit, git_available};
+    use super::{commit, git, git_available};
     use std::fs;
 
     #[test]
@@ -127,9 +156,20 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("AGENTS.md"), "rules\n").unwrap();
+        fs::create_dir_all(root.join(".spark/python/bin")).unwrap();
+        fs::write(
+            root.join(".spark/python/bin/python"),
+            "large local runtime\n",
+        )
+        .unwrap();
 
         assert!(commit(&root, "Initialize workspace").unwrap());
         assert!(root.join(".git").is_dir());
+        let tracked = git(&root).args(["ls-files"]).output().unwrap();
+        assert!(!String::from_utf8_lossy(&tracked.stdout).contains(".spark/python"));
+        assert!(fs::read_to_string(root.join(".git/info/exclude"))
+            .unwrap()
+            .contains(".spark/python/"));
         assert!(!commit(&root, "No changes").unwrap());
 
         fs::write(root.join("AGENTS.md"), "rules\nmore\n").unwrap();

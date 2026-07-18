@@ -34,20 +34,27 @@
       "title": "Interrupt this turn (Esc)"
     },
     "send": {
-      "aria": "Send"
+      "aria": "Send",
+      "title": "Run autonomously"
     },
     "approval": {
       "aria": "Approval mode",
       "title": "How agent actions get approved",
       "menuAria": "Approval modes",
-      "menuTitle": "How should agent actions be approved?",
-      "approve": {
-        "label": "Approve for me",
-        "description": "Asks before deleting, installing, or going remote"
+      "menuTitle": "Choose a native OpenCode permission preset",
+      "balanced": {
+        "label": "Balanced",
+        "description": "Reads and searches freely; asks before edits, commands, web requests, and MCP tools"
       },
       "full": {
-        "label": "Full access",
-        "description": "Runs every command without asking"
+        "label": "Autonomous",
+      "description": "Ordinary project research proceeds automatically; destructive, external, credential, and system operations remain guarded",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "Autonomous mode can edit project files, run local commands, install project dependencies, use configured research tools, and access the web. Destructive or external operations still require confirmation."
+      },
+      "custom": {
+        "label": "External custom policy",
+        "description": "Not managed by Spark; choose Balanced or Autonomous to use a named native preset"
       }
     },
     "error": {
@@ -59,6 +66,60 @@
     "newDescription": "Clear chat context in this folder",
     "clearDescription": "Same as /new; files stay in this folder",
     "cleared": "Chat context cleared. Files stay in the same folder."
+  },
+  "researchControls": {
+    "mode": { "aria": "Execution mode", "general": "General Research", "verified": "Verified Workflows" },
+    "agent": { "aria": "Research agent", "empty": "No agents available", "primaryGroup": "Primary agents", "subagentGroup": "Sub-agents", "otherGroup": "Other agents" },
+    "model": {
+      "aria": "Model",
+      "empty": "No models available",
+      "auto": "Auto · task-aware",
+      "runtimeDefault": "runtime default",
+      "autoRoute": {
+        "quick": "Auto · quick → {{model}}",
+        "standard": "Auto · standard → {{model}}",
+        "deep": "Auto · deep → {{model}}"
+      }
+    },
+    "skills": { "aria": "Open research skills", "title": "Browse skills reported by OpenCode", "count": "{{count}} skills" }
+  },
+  "parallelTasks": {
+    "aria": "Parallel tasks",
+    "title": "Task center",
+    "subtitle": "Native child agents and manual parallel tasks",
+    "new": "Create manual parallel plan",
+    "synthesize": "Synthesize",
+    "empty": "No research tasks yet.",
+    "listAria": "Research tasks",
+    "runtimeDefault": "Runtime default",
+    "requestedModel": "Requested",
+    "current": "Current task",
+    "status": { "running": "Running", "waiting": "Waiting", "recovering": "Recovering", "complete": "Complete", "failed": "Failed" }
+  },
+  "taskPlan": {
+    "aria": "Task plan",
+    "title": "Create manual parallel plan",
+    "subtitle": "Break a research goal into independent tasks.",
+    "objective": "Objective",
+    "objectivePlaceholder": "What should this research accomplish?",
+    "taskCount": "{{count}} of 5 tasks",
+    "generate": "Generate",
+    "generating": "Generating…",
+    "generateError": "Could not generate a task plan. Try again.",
+    "taskList": "Planned tasks",
+    "taskNumber": "Task {{number}}",
+    "remove": "Remove task {{number}}",
+    "titleLabel": "Task {{number}} title",
+    "titlePlaceholder": "Task title",
+    "promptLabel": "Task {{number}} prompt",
+    "promptPlaceholder": "Instructions for this task",
+    "add": "Add task",
+    "launch": "Launch tasks",
+    "launching": "Launching…",
+    "launchError": "Could not launch this plan. Try again."
+  },
+  "workspaceArtifacts": {
+    "heading": "Workspace artifacts", "count": "{{count}} discovered", "refreshAria": "Refresh workspace artifacts"
   },
   "starters": {
     "newSession": "New session",
@@ -75,6 +136,10 @@
     "audit": {
       "title": "Audit a report for traceability",
       "description": "Check citations, unsourced numbers, and figure-versus-code consistency."
+    },
+    "papers-data": {
+      "title": "Connect papers and data",
+      "description": "Inventory local papers and datasets, fill useful evidence gaps, and produce a traceable synthesis."
     },
     "example-climate": {
       "title": "Explore an example: climate trends",
@@ -103,6 +168,10 @@
     "runsToggle": {
       "label": "Runs",
       "title": "This session's experiment runs — beside the chat"
+    },
+    "tasksToggle": {
+      "label": "Tasks",
+      "title": "Monitor parallel research tasks"
     },
     "notebook": {
       "openTitle": "Open {{path}} — the agent works on this notebook in this session"

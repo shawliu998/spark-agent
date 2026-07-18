@@ -132,6 +132,19 @@ class OpenAICompatibleModelGateway:
         user_prompt: str,
         model: str | None = None,
     ) -> dict[str, Any]:
+        result, _token_usage = await self.complete_json_with_metadata(
+            system_prompt,
+            user_prompt,
+            model,
+        )
+        return result
+
+    async def complete_json_with_metadata(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         try:
             selected_model = normalize_model_identifier(model or self._settings.llm_model)
         except ValueError:
@@ -172,7 +185,7 @@ class OpenAICompatibleModelGateway:
         selected_model: str,
         system_prompt: str,
         user_prompt: str,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         response_body = bytearray()
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(self._timeout_seconds),
@@ -218,7 +231,7 @@ class OpenAICompatibleModelGateway:
                         raise ModelGatewayResponseTooLargeError()
                     response_body.extend(chunk)
 
-        content = _response_content(bytes(response_body))
+        content, token_usage = _response_content_and_token_usage(bytes(response_body))
         if not content.strip():
             raise ModelGatewayEmptyResponseError()
         try:
@@ -227,10 +240,12 @@ class OpenAICompatibleModelGateway:
             raise ModelGatewayInvalidResponseError() from None
         if not isinstance(result_object, dict):
             raise ModelGatewayInvalidResponseError()
-        return cast(dict[str, Any], result_object)
+        return cast(dict[str, Any], result_object), token_usage
 
 
-def _response_content(response_body: bytes) -> str:
+def _response_content_and_token_usage(
+    response_body: bytes,
+) -> tuple[str, dict[str, int]]:
     try:
         payload_object: object = json.loads(response_body)
         if not isinstance(payload_object, dict):
@@ -251,7 +266,15 @@ def _response_content(response_body: bytes) -> str:
             raise ModelGatewayEmptyResponseError()
         if not isinstance(content, str):
             raise ModelGatewayInvalidResponseError()
-        return content
+        usage_object = payload.get("usage")
+        token_usage: dict[str, int] = {}
+        if isinstance(usage_object, dict):
+            usage = cast(dict[str, object], usage_object)
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    token_usage[key] = value
+        return content, token_usage
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise ModelGatewayInvalidResponseError() from None
 

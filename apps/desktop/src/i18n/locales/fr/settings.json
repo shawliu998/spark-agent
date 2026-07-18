@@ -85,11 +85,14 @@
     "enterKeyFirstTitle": "Entrez d'abord la clé API",
     "settingUp": "Configuration en cours…",
     "enable": "Activer",
+    "securityGated": "Bloqué par sécurité",
+    "securityGatedTitle": "Désactivé jusqu'à l'application d'une approbation native par appel, de cibles immuables vérifiées, d'une installation atomique entièrement hachée et d'un E2E macOS empaqueté",
     "freeKeySuffix": "(clé gratuite)",
     "getFreeKey": "Obtenir une clé gratuite",
     "jupyterLabel": "Jupyter",
-    "jupyterDescription": "permet à l'agent de piloter de véritables notebooks · environnement isolé avec numpy·pandas·matplotlib, ~500 Mo au premier lancement · une fois configuré, le bouton Exécuter de l'application l'utilise aussi, afin que vous et l'agent partagiez le même Python",
-    "setUpAndEnable": "Configurer et activer",
+    "jupyterDescription": "JupyterLab local avec environnement Python partagé dans l'application · le jeton reste hors de l'IPC du moteur de rendu et des arguments de processus · l'accès MCP de l'agent est bloqué par sécurité et indisponible",
+    "setUpAndEnable": "Configurer Jupyter local",
+    "localReady": "Prêt en local",
     "startingDownload": "démarrage du téléchargement…",
     "typeLocal": "local",
     "typeRemote": "distant",
@@ -107,7 +110,7 @@
   },
   "python": {
     "title": "Noyau Python local",
-    "hint": "Exécute les cellules de notebook dans l'application. Utilise votre environnement Jupyter s'il est configuré (même Python que l'agent), sinon détection automatique — ou définissez un interpréteur explicite ci-dessous",
+    "hint": "Exécute les cellules de notebook dans l'application. Une fois configuré, utilise le même Python géré par l'application que JupyterLab local, sinon détection automatique — ou définissez un interpréteur explicite ci-dessous",
     "sourceManual": "manuel",
     "sourceAppManaged": "géré par l'application",
     "sourceAutoDetected": "détecté automatiquement",
@@ -152,7 +155,7 @@
       "workspaceFiles": "Vos fichiers d'espace de travail et données brutes",
       "codeExecution": "Exécution du code — le noyau Python et Jupyter s'exécutent localement ; les jeux de données sont traités ici, jamais téléversés en masse.",
       "sessionHistory": "L'historique des sessions et les enregistrements de provenance, dans le dossier de données privé de l'application.",
-      "providerKeys": "Les clés de fournisseur et jetons de connexion — un fichier privé à l'application, lisible uniquement par votre compte ; jamais écrit dans l'espace de travail, la provenance, les journaux ou les exports."
+      "providerKeys": "Les clés API simples des fournisseurs et les clés des connecteurs Materials Project/FRED gérés par Spark sont protégées au repos par le gestionnaire d'identifiants du système. La migration MP/FRED et l'infrastructure du courtier privé sont implémentées, et l'ancien lanceur Spark sensible à DYLD a été supprimé. Leurs entrées gérées sont désactivées par défaut : l'exécution avec identifiants échoue en mode fermé et les Réglages les indiquent comme bloquées par sécurité. Le chemin préparé utilise /usr/bin/nc -U, signé par Apple pour la plateforme, vers un socket de domaine Unix privé ; le courtier Tauri lie l'UID, le PID, l'exécutable et le processus parent du relais au PID, à l'heure de démarrage et à la génération du processus OpenCode actuellement détenu par Spark, puis valide la configuration stricte de l'application et la cible canonique. Il s'agit d'une défense en profondeur préparée, pas d'une garantie livrée que le chemin de clé est infranchissable ou que la cible est strictement confinée. Portes de publication : P0 — cibles téléchargées immuables et signées/vérifiées ou isolation contre les modifications par la même UID, approbation native par appel et fermeture du contournement d'approbation des dépendances de configuration ; P1 — verrou transitif entièrement haché avec installation atomique par étapes ; P1 — E2E macOS empaqueté. Les enregistrements OAuth utilisent encore un fichier privé de l'application lisible uniquement par votre compte. Le jeton Jupyter géré par l'application est protégé au repos par le gestionnaire d'identifiants ; les anciens métadonnées/configurations en clair sont supprimées avant le démarrage d'OpenCode, et le jeton n'entre ni dans l'IPC du moteur de rendu ni dans les arguments de processus. Le MCP Jupyter de l'agent reste bloqué par sécurité et échoue en mode fermé. L'environnement de démarrage du processus enfant Jupyter, l'URL/l'historique du jeton dans le navigateur, l'inspection par des processus du même UID et l'isolation générale d'exécution restent ouverts. Les identifiants des MCP personnalisés/BYO sortent de cette limite ; les outils locaux approuvés peuvent encore hériter des secrets du fournisseur ou d'autres secrets d'exécution."
     },
     "remote": {
       "heading": "Envoyé à votre fournisseur de modèle",

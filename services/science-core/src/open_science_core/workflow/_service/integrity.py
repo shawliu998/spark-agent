@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from ...models import ApprovalRecord, EventRecord, PlanRecord, TaskRecord, WorkflowRecord
 from ..schemas import (
+    AUTONOMOUS_REMOTE_DATA_CATEGORIES,
     DatasetAnalysisPlanSpec,
     ExecuteAnalysisPlanStep,
     InspectSourcesInput,
@@ -20,6 +21,9 @@ from ..schemas import (
 )
 
 PLAN_HANDLER_VERSION = "research-plan-v2"
+
+
+ROUTER_HANDLER_VERSION = "intent-router-v1"
 
 
 TASK_HANDLER_VERSION = "literature-synthesis-v2"
@@ -205,10 +209,15 @@ def expected_plan_approval_semantics(
         .order_by(EventRecord.sequence)
     )
     recorded_destination = approval_event.payload if approval_event is not None else {}
+    approved_categories = (
+        list(AUTONOMOUS_REMOTE_DATA_CATEGORIES)
+        if workflow.creation_mode == "autonomous"
+        else ["user-goal"]
+    )
     if (
         recorded_destination.get("provider") != "openai-compatible"
         or recorded_destination.get("model") != plan.model
-        or recorded_destination.get("dataCategories") != ["user-goal"]
+        or recorded_destination.get("dataCategories") != approved_categories
     ):
         raise WorkflowConflict(
             "remote-gateway-approval-mismatch",
@@ -268,7 +277,23 @@ def assert_plan_for_workflow(
                 "plan-dataset-mismatch",
                 "The approved plan no longer matches the workflow dataset identity.",
             )
-        expected_provenance = ("dataset-template-v1", None, "dataset-template-v1")
+        expected_provenance = (
+            (
+                "goal-aware-dataset-plan-v1",
+                (
+                    plan.model
+                    if workflow.generation_mode == "remote-model-assisted"
+                    and plan.model is not None
+                    and bool(plan.model.strip())
+                    else None
+                ),
+                plan.prompt_version,
+            )
+            if spec.analysis_spec_id is not None
+            and plan.prompt_version is not None
+            and bool(plan.prompt_version.strip())
+            else ("dataset-template-v1", None, "dataset-template-v1")
+        )
     else:
         expected_provenance = (
             ("template-v1", None, "template-v1")

@@ -8,10 +8,12 @@
     "settings": "Einstellungen"
   },
   "items": {
+    "home": "Startseite",
     "new": "Neu",
-    "research": "Forschung",
+    "research": "Verifizierte Workflows",
     "analysis": "Datenanalyse",
     "notebooks": "Notebooks",
+    "labNotebook": "Forschungsnotizbuch",
     "files": "Dateien",
     "runs": "Durchläufe",
     "skills": "Skills"
@@ -34,6 +36,7 @@
     "runtime": "Runtime",
     "model": "Modell",
     "modelNotSet": "nicht festgelegt",
+    "modelStarting": "wird gestartet …",
     "values": {
       "ready": "bereit",
       "connecting": "verbindet …",
@@ -47,7 +50,7 @@
     "noResults": "Keine Ergebnisse.",
     "actions": {
       "newSession": "Neue Sitzung",
-      "analyzeData": "Meine Daten analysieren (neuer Workflow)",
+      "analyzeData": "Verifizierte Datensatzanalyse starten",
       "auditReport": "Bericht prüfen (Nachvollziehbarkeitsprüfung)",
       "openNotebooks": "Notebooks öffnen",
       "manageSkills": "Skills verwalten",

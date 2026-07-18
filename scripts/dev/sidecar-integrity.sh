@@ -16,10 +16,17 @@ SIDECAR_ASSET_MANIFEST=(
   'uv|0.11.26|x86_64-unknown-linux-gnu|uv-x86_64-unknown-linux-gnu.tar.gz|6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0'
   'uv|0.11.26|aarch64-pc-windows-msvc|uv-aarch64-pc-windows-msvc.zip|98246149741f558e25e45ecf2b0b20f34de0634269f2bf0dcb4012d4b6ba289a'
   'uv|0.11.26|x86_64-pc-windows-msvc|uv-x86_64-pc-windows-msvc.zip|4e1278ede866be6c0bf32d2f466cc6de7a9fb399ecf20c9ce2d186e52424be47'
+  'ripgrep|15.1.0|aarch64-apple-darwin|ripgrep-15.1.0-aarch64-apple-darwin.tar.gz|378e973289176ca0c6054054ee7f631a065874a352bf43f0fa60ef079b6ba715'
+  'ripgrep|15.1.0|x86_64-apple-darwin|ripgrep-15.1.0-x86_64-apple-darwin.tar.gz|64811cb24e77cac3057d6c40b63ac9becf9082eedd54ca411b475b755d334882'
+  'ripgrep|15.1.0|aarch64-unknown-linux-gnu|ripgrep-15.1.0-aarch64-unknown-linux-gnu.tar.gz|2b661c6ef508e902f388e9098d9c4c5aca72c87b55922d94abdba830b4dc885e'
+  'ripgrep|15.1.0|x86_64-unknown-linux-gnu|ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz|1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599'
+  'ripgrep|15.1.0|aarch64-pc-windows-msvc|ripgrep-15.1.0-aarch64-pc-windows-msvc.zip|00d931fb5237c9696ca49308818edb76d8eb6fc132761cb2a1bd616b2df02f8e'
+  'ripgrep|15.1.0|x86_64-pc-windows-msvc|ripgrep-15.1.0-x86_64-pc-windows-msvc.zip|124510b94b6baa3380d051fdf4650eaa80a302c876d611e9dba0b2e18d87493a'
 )
 
 SKILLS_ARCHIVE_MANIFEST=(
   'ai4s-skills|8fa2ab0523082c135598909b227ed8feb48263ad|cbe373236b85e952762c5cbae7d72eb72c1e11077865c71b9ac59a084dd9a408'
+  'kdense-scientific-agent-skills|3f825caafe149b7853ec8c4d1dd7f4553ea6b2a5|44a0aeb6246edc5944b5cc0f4c228e7c8dd003cb1e066f26534cf632461e11d1'
 )
 
 sidecar_pinned_version() {

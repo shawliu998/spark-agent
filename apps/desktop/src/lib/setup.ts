@@ -21,7 +21,7 @@ interface SetupState {
   /** Bumped when any provisioning run finishes, so open pages re-read status. */
   generation: number;
   enableJupyter: () => Promise<void>;
-  enableConnector: (id: string, apiKey?: string) => Promise<void>;
+  enableConnector: (id: string, apiKey?: string) => Promise<boolean>;
 }
 
 export const useSetupStore = create<SetupState>((set, get) => ({
@@ -34,32 +34,15 @@ export const useSetupStore = create<SetupState>((set, get) => ({
     // One provisioning run at a time: a second `uv venv` / `pip install` into
     // the same env dir races the first and fails.
     if (get().jupyterBusy) return;
-    const setupClient = getClient();
-    if (!setupClient) {
-      toast.error("Connect the runtime before enabling Jupyter MCP.");
-      return;
-    }
     set({ jupyterBusy: true, line: null });
     try {
       toast.success("Setting up Jupyter — first run downloads a few hundred MB, please wait…");
       await setupJupyter();
       const s = await startJupyter();
-      if (!s.url || !s.token || !s.mcp_command) throw new Error("setup finished incomplete");
-      if (getClient() !== setupClient) {
-        toast.error(
-          "Jupyter was installed locally, but the runtime endpoint changed before MCP registration. Reconnect and enable it again.",
-        );
-        return;
-      }
-      await setupClient.addMcpServer("jupyter", {
-        type: "local",
-        command: [s.mcp_command],
-        enabled: true,
-        environment: { JUPYTER_URL: s.url, JUPYTER_TOKEN: s.token, ALLOW_IMG_OUTPUT: "true" },
-      });
-      if (getClient() !== setupClient) return;
-      toast.success("Jupyter MCP enabled — the agent can now drive notebooks.");
-      await useRuntimeStore.getState().loadCatalog();
+      if (!s.installed || !s.running) throw new Error("setup finished incomplete");
+      toast.success(
+        "Local JupyterLab is ready. Agent MCP access remains security-gated until the native broker passes its release gates.",
+      );
     } catch (e) {
       toast.error(`Jupyter setup failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -68,35 +51,78 @@ export const useSetupStore = create<SetupState>((set, get) => ({
   },
 
   enableConnector: async (id, apiKey) => {
-    if (get().connectorId) return; // one connector provisioning at a time
+    if (get().connectorId) return false; // one connector provisioning at a time
     const c = SCIENCE_CONNECTORS.find((x) => x.id === id);
-    if (!c) return;
+    if (!c) return false;
+    if (c.securityGated) {
+      toast.error(
+        `${c.label} remains disabled until native per-call approval and immutable connector targets are enforced.`,
+      );
+      return false;
+    }
+    const connectorApiKey = apiKey?.trim();
+    if (c.apiKeyEnv && !connectorApiKey) {
+      toast.error(`${c.label} requires an API key.`);
+      return false;
+    }
     const setupClient = getClient();
     if (!setupClient) {
       toast.error("Connect the runtime before enabling a science connector.");
-      return;
+      return false;
     }
     set({ connectorId: id, line: null });
     try {
       toast.success(`Setting up ${c.label} — first run downloads a managed Python, please wait…`);
-      const python = await setupScienceMcp(c.pkg);
+      const python = await setupScienceMcp(c.id);
       if (getClient() !== setupClient) {
         toast.error(
           `${c.label} was installed locally, but the runtime endpoint changed before MCP registration. Reconnect and enable it again.`,
         );
-        return;
+        return false;
       }
-      await setupClient.addMcpServer(c.id, connectorConfig(c, python, apiKey));
-      if (getClient() !== setupClient) return;
+      if (c.apiKeyEnv) {
+        // Native code owns the whole credential/config/restart transaction and
+        // reconnects to the authoritative endpoint. The secret never enters
+        // the OpenCode config API.
+        await useRuntimeStore
+          .getState()
+          .saveScienceConnectorApiKey(c.id, connectorApiKey!);
+      } else {
+        const config = connectorConfig(c, python);
+        await setupClient.addMcpServer(c.id, config);
+        if (getClient() !== setupClient) return false;
+      }
       toast.success(`${c.label} enabled — the agent can now use it from chat.`);
       await useRuntimeStore.getState().loadCatalog();
+      return true;
     } catch (e) {
       toast.error(`${c.label} setup failed: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
     } finally {
       set((st) => ({ connectorId: null, line: null, generation: st.generation + 1 }));
     }
   },
 }));
+
+/** Ensure one curated connector is present on the current runtime endpoint.
+ * Provisioning remains inside the native allowlist; callers only select an id. */
+export async function ensureScienceConnector(id: string): Promise<void> {
+  const setupClient = getClient();
+  if (!setupClient) throw new Error("Connect the runtime before setting up a science connector.");
+
+  const isPresent = async () =>
+    (await setupClient.listMcpServers()).some((server) => server.name === id);
+  if (await isPresent()) return;
+
+  const enabled = await useSetupStore.getState().enableConnector(id);
+  if (!enabled) throw new Error(`Science connector ${id} setup did not complete.`);
+  if (getClient() !== setupClient) {
+    throw new Error("The runtime endpoint changed during connector setup. Reconnect and try again.");
+  }
+  if (!(await isPresent())) {
+    throw new Error(`Science connector ${id} was not registered after setup.`);
+  }
+}
 
 // A SINGLE app-lifetime uv-progress listener. Registered once from AppShell so
 // a page unmount can never sever it — the old per-page listener died with

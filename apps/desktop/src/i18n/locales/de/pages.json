@@ -37,6 +37,7 @@
       "addCellLabel": "Zelle hinzufügen"
     }
   },
+  "labNotebook": {"title":"Living research notebook","description":"A recoverable, workspace-local record of explicit scientific findings, decisions, and limitations.","path":"Stored at","refresh":"Refresh","refreshAria":"Refresh living research notebook","exportMarkdown":"Markdown","exportJson":"JSON","type":"Type","session":"Session","all":"All","empty":"No notebook entries match these filters."},
   "files": {
     "loading": "Wird geladen…",
     "folderEmpty": "Dieser Ordner ist leer.",
@@ -56,8 +57,8 @@
   "skills": {
     "title": "Skills & Agenten",
     "description": {
-      "prefix": "Live aus der OpenCode-Runtime geladen — das gebündelte ai4s-skills-Paket plus alles unter ",
-      "suffix": " in Ihrem Arbeitsbereich."
+      "prefix": "Live aus OpenCode geladen — gebündelte Spark-Wissenschaftsskills sowie OpenCode-Skills von Projekten und Nutzern, einschließlich ",
+      "suffix": "."
     },
     "install": {
       "sectionTitle": "Einen Skill installieren",
@@ -89,10 +90,36 @@
       "source": {
         "builtin": "integriert",
         "project": "Projekt",
-        "user": "Benutzer"
+        "global": "global / mitgeliefert",
+        "unknown": "Quelle unbekannt"
       }
     },
     "disconnected": "Verbinden Sie die Runtime, um die geladenen Skills und Agenten aufzulisten."
+  },
+  "research": {
+    "title": "Strukturierte / verifizierte Workflows",
+    "refreshAria": "Arbeitsbereich für verifizierte Workflows aktualisieren",
+    "libraryTitle": "Bibliothek verifizierter Workflows",
+    "newProjectAria": "Projekt für verifizierte Workflows erstellen",
+    "workflows": {
+      "heading": "Verifizierte Workflows",
+      "newAria": "Neuen verifizierten Workflow starten",
+      "empty": "Noch keine verifizierten Workflows gespeichert."
+    },
+    "workflow": {
+      "composerLabel": "Spark Agent ein strukturiertes Forschungsziel geben",
+      "modeLabel": "Absicherungsmodus",
+      "typeLabel": "Typ des verifizierten Workflows",
+      "typeLiterature": "Verifizierte Literatursynthese",
+      "typeDataset": "Verifizierte Datensatzanalyse",
+      "listAutoType": " · verifizierte automatische Zuordnung",
+      "listDatasetType": " · verifizierte Datensatzanalyse · lokale isolierte Runtime",
+      "listLiteratureRemoteType": " · verifizierte Literatursynthese · modellgestützt",
+      "listLiteratureLocalType": " · verifizierte Literatursynthese · lokal",
+      "goal": "Verifiziertes Forschungsziel",
+      "startAuto": "Verifizierten Workflow starten",
+      "start": "Verifizierten Plan erstellen"
+    }
   },
   "notFound": {
     "title": "404 — Nicht gefunden",

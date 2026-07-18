@@ -34,20 +34,27 @@
       "title": "이 턴 중단 (Esc)"
     },
     "send": {
-      "aria": "전송"
+      "aria": "전송",
+      "title": "자율 실행"
     },
     "approval": {
       "aria": "승인 모드",
       "title": "에이전트 작업이 승인되는 방식",
       "menuAria": "승인 모드",
-      "menuTitle": "에이전트 작업을 어떻게 승인하시겠습니까?",
-      "approve": {
-        "label": "직접 승인",
-        "description": "삭제, 설치, 원격 연결 전에 확인을 요청합니다"
+      "menuTitle": "OpenCode 기본 권한 프리셋 선택",
+      "balanced": {
+        "label": "균형",
+        "description": "읽기와 검색은 허용하고 편집, 명령, 웹, MCP는 확인합니다"
       },
       "full": {
-        "label": "전체 권한",
-        "description": "확인 없이 모든 명령을 실행합니다"
+        "label": "자율",
+      "description": "일반 프로젝트 연구는 자동으로 진행되며 파괴적, 외부, 자격 증명 및 시스템 작업은 계속 보호됩니다",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "자율 모드에서는 프로젝트 파일 편집, 로컬 명령 실행, 프로젝트 종속성 설치, 구성된 연구 도구 사용 및 웹 접근이 가능합니다. 파괴적이거나 외부 작업은 여전히 확인이 필요합니다."
+      },
+      "custom": {
+        "label": "외부 사용자 지정 정책",
+        "description": "Spark에서 관리하지 않습니다. 균형 또는 자율을 선택하세요"
       }
     },
     "error": {
@@ -59,6 +66,17 @@
     "newDescription": "이 폴더에서 채팅 컨텍스트 지우기",
     "clearDescription": "/new와 동일합니다. 파일은 이 폴더에 남습니다",
     "cleared": "채팅 컨텍스트를 지웠습니다. 파일은 같은 폴더에 남아 있습니다."
+  },
+  "researchControls": {
+    "mode": { "aria": "실행 모드", "general": "일반 연구", "verified": "검증 워크플로" },
+    "agent": { "aria": "연구 에이전트", "empty": "사용 가능한 에이전트 없음", "primaryGroup": "기본 에이전트", "subagentGroup": "하위 에이전트", "otherGroup": "기타 에이전트" },
+    "model": { "aria": "모델", "empty": "사용 가능한 모델 없음", "auto": "Auto · task-aware", "runtimeDefault": "runtime default", "autoRoute": { "quick": "Auto · quick → {{model}}", "standard": "Auto · standard → {{model}}", "deep": "Auto · deep → {{model}}" } },
+    "skills": { "aria": "연구 스킬 열기", "title": "OpenCode가 보고한 스킬 보기", "count": "스킬 {{count}}개" }
+  },
+  "parallelTasks": { "aria": "Parallel tasks", "title": "Task center", "subtitle": "Monitor independent research tasks", "new": "New task", "synthesize": "Synthesize", "empty": "No research tasks yet.", "listAria": "Research tasks", "runtimeDefault": "Runtime default", "requestedModel": "Requested", "current": "Current task", "status": { "running": "Running", "waiting": "Waiting", "recovering": "Recovering", "complete": "Complete", "failed": "Failed" } },
+  "taskPlan": { "aria": "Task plan", "title": "Plan parallel tasks", "subtitle": "Break a research goal into independent tasks.", "objective": "Objective", "objectivePlaceholder": "What should this research accomplish?", "taskCount": "{{count}} of 5 tasks", "generate": "Generate", "generating": "Generating…", "generateError": "Could not generate a task plan. Try again.", "taskList": "Planned tasks", "taskNumber": "Task {{number}}", "remove": "Remove task {{number}}", "titleLabel": "Task {{number}} title", "titlePlaceholder": "Task title", "promptLabel": "Task {{number}} prompt", "promptPlaceholder": "Instructions for this task", "add": "Add task", "launch": "Launch tasks", "launching": "Launching…", "launchError": "Could not launch this plan. Try again." },
+  "workspaceArtifacts": {
+    "heading": "작업공간 산출물", "count": "{{count}}개 발견", "refreshAria": "작업공간 산출물 새로고침"
   },
   "starters": {
     "newSession": "새 세션",
@@ -75,6 +93,10 @@
     "audit": {
       "title": "리포트 추적성 감사",
       "description": "인용, 출처 없는 수치, 그림과 코드 간 일치 여부를 확인합니다."
+    },
+    "papers-data": {
+      "title": "논문과 데이터 연결",
+      "description": "로컬 논문과 데이터셋을 정리하고 필요한 근거를 보완해 추적 가능한 종합 결과를 만듭니다."
     },
     "example-climate": {
       "title": "예제 살펴보기: 기후 변화 추세",
@@ -104,6 +126,7 @@
       "label": "실행",
       "title": "이 세션의 실험 실행 — 대화 옆에 표시"
     },
+    "tasksToggle": { "label": "Tasks", "title": "Plan, launch, and monitor parallel research tasks" },
     "notebook": {
       "openTitle": "{{path}} 열기 — 에이전트가 이 세션에서 이 노트북을 작업합니다"
     },

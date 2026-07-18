@@ -8,10 +8,12 @@
     "settings": "Settings"
   },
   "items": {
+    "home": "Home",
     "new": "New",
-    "research": "Research",
+    "research": "Verified Workflows",
     "analysis": "Data analysis",
     "notebooks": "Notebooks",
+    "labNotebook": "Lab notebook",
     "files": "Files",
     "runs": "Runs",
     "skills": "Skills"
@@ -34,6 +36,7 @@
     "runtime": "Runtime",
     "model": "Model",
     "modelNotSet": "not set",
+    "modelStarting": "Starting…",
     "values": {
       "ready": "ready",
       "connecting": "connecting",
@@ -47,7 +50,7 @@
     "noResults": "No results.",
     "actions": {
       "newSession": "New session",
-      "analyzeData": "Analyze my data (new workflow)",
+      "analyzeData": "Start Verified Dataset Analysis",
       "auditReport": "Audit a report (traceability review)",
       "openNotebooks": "Open notebooks",
       "manageSkills": "Manage skills",

@@ -1,5 +1,6 @@
 // Read/open files the agent produced in the workspace, for artifact previews.
 // Strictly sandboxed to the workspace root: a path that escapes it is rejected.
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
@@ -38,6 +39,7 @@ pub fn mime_for(ext: &str) -> (&'static str, bool) {
         "tsv" => ("text/tab-separated-values", true),
         "md" => ("text/markdown", true),
         "tex" => ("text/x-tex", true),
+        "bib" => ("text/x-bibtex", true),
         "json" => ("application/json", true),
         "ipynb" => ("application/x-ipynb+json", true),
         "yaml" | "yml" => ("text/yaml", true),
@@ -523,8 +525,7 @@ pub async fn add_files_to_workspace(app: AppHandle) -> Result<Vec<String>, Strin
             .ok_or("picked path has no file name")?
             .to_string_lossy()
             .to_string();
-        let dst_name = unique_name(&ws, &name);
-        std::fs::copy(&src, ws.join(&dst_name)).map_err(|e| format!("copy failed: {e}"))?;
+        let dst_name = copy_file_into_unique(&src, &ws, &name)?;
         added.push(dst_name);
     }
     if !added.is_empty() {
@@ -548,31 +549,89 @@ pub fn add_text_to_workspace(
         .to_string_lossy()
         .to_string();
     let ws = workspace_dir(&app)?;
-    let name = unique_name(&ws, &base);
-    std::fs::write(ws.join(&name), content).map_err(|e| format!("write failed: {e}"))?;
+    let name = write_text_into_unique(&ws, &base, &content)?;
     crate::git_snapshot::commit_best_effort(&ws, "Add workspace file");
     Ok(name)
 }
 
 /// First free variant of `name` in `dir`: name.ext, name-1.ext, name-2.ext, …
-fn unique_name(dir: &Path, name: &str) -> String {
-    if !dir.join(name).exists() {
-        return name.to_string();
-    }
+fn unique_name(dir: &Path, name: &str) -> std::io::Result<String> {
     let (stem, ext) = match name.rsplit_once('.') {
         Some((s, e)) if !s.is_empty() => (s, Some(e)),
         _ => (name, None),
     };
-    for n in 1.. {
-        let candidate = match ext {
-            Some(e) => format!("{stem}-{n}.{e}"),
-            None => format!("{stem}-{n}"),
+    for n in 0.. {
+        let candidate = match (n, ext) {
+            (0, _) => name.to_string(),
+            (_, Some(e)) => format!("{stem}-{n}.{e}"),
+            (_, None) => format!("{stem}-{n}"),
         };
-        if !dir.join(&candidate).exists() {
-            return candidate;
+        match std::fs::symlink_metadata(dir.join(&candidate)) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+            Err(error) => return Err(error),
         }
     }
     unreachable!()
+}
+
+/// Reserve a unique destination atomically. `create_new` is an O_EXCL-style
+/// operation: a file or symlink created after `unique_name` wins the race and
+/// we retry a suffix instead of following or truncating it.
+fn create_unique_file(dir: &Path, name: &str) -> std::io::Result<(String, std::fs::File)> {
+    create_unique_file_with(dir, name, |_| {})
+}
+
+fn create_unique_file_with(
+    dir: &Path,
+    name: &str,
+    mut before_open: impl FnMut(&Path),
+) -> std::io::Result<(String, std::fs::File)> {
+    loop {
+        let candidate = unique_name(dir, name)?;
+        let path = dir.join(&candidate);
+        before_open(&path);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn copy_file_into_unique(src: &Path, dir: &Path, name: &str) -> Result<String, String> {
+    let mut source = std::fs::File::open(src).map_err(|error| format!("copy failed: {error}"))?;
+    let permissions = source
+        .metadata()
+        .map_err(|error| format!("copy failed: {error}"))?
+        .permissions();
+    let (candidate, mut destination) =
+        create_unique_file(dir, name).map_err(|error| format!("copy failed: {error}"))?;
+    let path = dir.join(&candidate);
+    let result = std::io::copy(&mut source, &mut destination)
+        .and_then(|_| destination.set_permissions(permissions));
+    if let Err(error) = result {
+        drop(destination);
+        let _ = std::fs::remove_file(path);
+        return Err(format!("copy failed: {error}"));
+    }
+    Ok(candidate)
+}
+
+fn write_text_into_unique(dir: &Path, name: &str, content: &str) -> Result<String, String> {
+    let (candidate, mut destination) =
+        create_unique_file(dir, name).map_err(|error| format!("write failed: {error}"))?;
+    let path = dir.join(&candidate);
+    if let Err(error) = destination.write_all(content.as_bytes()) {
+        drop(destination);
+        let _ = std::fs::remove_file(path);
+        return Err(format!("write failed: {error}"));
+    }
+    Ok(candidate)
 }
 
 /// Open an http(s) URL in the user's default browser. The webview itself must
@@ -640,8 +699,9 @@ fn base64_encode(input: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        base64_encode, dir_entries, encode_for_preview, exceeds_preview_cap, locate_under,
-        mime_for, open_url, unique_name,
+        base64_encode, copy_file_into_unique, create_unique_file_with, dir_entries,
+        encode_for_preview, exceeds_preview_cap, locate_under, mime_for, open_url, unique_name,
+        write_text_into_unique,
     };
 
     #[test]
@@ -656,12 +716,12 @@ mod tests {
 
     #[test]
     fn unknown_extension_sniffs_text_vs_binary() {
-        // A .bib file (unknown to mime_for) is valid UTF-8 → previews as text.
-        let (mime, is_text) = mime_for("bib");
+        // An unknown text file still previews as text after UTF-8 sniffing.
+        let (mime, is_text) = mime_for("rst");
         assert!(!is_text);
-        let (m, enc, data) = encode_for_preview(mime, is_text, b"@article{k, title={T}}".to_vec());
+        let (m, enc, data) = encode_for_preview(mime, is_text, b"Heading\n=======".to_vec());
         assert_eq!((m, enc), ("text/plain", "utf8"));
-        assert_eq!(data, "@article{k, title={T}}");
+        assert_eq!(data, "Heading\n=======");
 
         // NUL bytes or invalid UTF-8 stay binary (base64).
         let (_, enc, _) = encode_for_preview(mime, is_text, vec![b'a', 0, b'b']);
@@ -673,6 +733,12 @@ mod tests {
         let (mime, is_text) = mime_for("pdf");
         let (_, enc, _) = encode_for_preview(mime, is_text, b"plain ascii".to_vec());
         assert_eq!(enc, "base64");
+    }
+
+    #[test]
+    fn bibtex_is_known_text() {
+        assert_eq!(mime_for("bib"), ("text/x-bibtex", true));
+        assert_eq!(mime_for("BIB"), ("text/x-bibtex", true));
     }
 
     #[test]
@@ -733,19 +799,106 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
-        assert_eq!(unique_name(&dir, "data.csv"), "data.csv");
+        assert_eq!(unique_name(&dir, "data.csv").unwrap(), "data.csv");
         std::fs::write(dir.join("data.csv"), "x").unwrap();
-        assert_eq!(unique_name(&dir, "data.csv"), "data-1.csv");
+        assert_eq!(unique_name(&dir, "data.csv").unwrap(), "data-1.csv");
         std::fs::write(dir.join("data-1.csv"), "x").unwrap();
-        assert_eq!(unique_name(&dir, "data.csv"), "data-2.csv");
+        assert_eq!(unique_name(&dir, "data.csv").unwrap(), "data-2.csv");
 
         // No extension, and dotfiles (no stem before the dot) keep their whole name.
         std::fs::write(dir.join("README"), "x").unwrap();
-        assert_eq!(unique_name(&dir, "README"), "README-1");
+        assert_eq!(unique_name(&dir, "README").unwrap(), "README-1");
         std::fs::write(dir.join(".env"), "x").unwrap();
-        assert_eq!(unique_name(&dir, ".env"), ".env-1");
+        assert_eq!(unique_name(&dir, ".env").unwrap(), ".env-1");
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_writes_treat_broken_symlinks_as_occupied() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "spark-attachment-symlink-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let paste_target = outside.join("must-not-be-created.txt");
+        symlink(&paste_target, workspace.join("pasted.txt")).unwrap();
+        let pasted = write_text_into_unique(&workspace, "pasted.txt", "research notes").unwrap();
+        assert_eq!(pasted, "pasted-1.txt");
+        assert!(!paste_target.exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("pasted-1.txt")).unwrap(),
+            "research notes"
+        );
+
+        let source = root.join("source.csv");
+        std::fs::write(&source, "x,y\n1,2\n").unwrap();
+        let copy_target = outside.join("must-not-be-created.csv");
+        symlink(&copy_target, workspace.join("data.csv")).unwrap();
+        let copied = copy_file_into_unique(&source, &workspace, "data.csv").unwrap();
+        assert_eq!(copied, "data-1.csv");
+        assert!(!copy_target.exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("data-1.csv")).unwrap(),
+            "x,y\n1,2\n"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_attachment_reservation_loses_a_symlink_race_without_following_it() {
+        use std::io::Write;
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "spark-attachment-race-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = root.join("outside.txt");
+        std::fs::write(&outside, "outside stays unchanged").unwrap();
+
+        let mut raced = false;
+        let (name, mut destination) =
+            create_unique_file_with(&workspace, "payload.txt", |candidate| {
+                if !raced {
+                    symlink(&outside, candidate).unwrap();
+                    raced = true;
+                }
+            })
+            .unwrap();
+        destination.write_all(b"workspace payload").unwrap();
+        drop(destination);
+
+        assert_eq!(name, "payload-1.txt");
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "outside stays unchanged"
+        );
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("payload-1.txt")).unwrap(),
+            "workspace payload"
+        );
+        assert!(std::fs::symlink_metadata(workspace.join("payload.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -66,6 +66,130 @@ describe("OpenCodeClient ↔ OpenCode server", () => {
     expect(commands[1].source).toBe("skill");
   });
 
+  it("does not misclassify a built-in provider key reference as a custom endpoint", async () => {
+    const client = new OpenCodeClient({
+      baseUrl: "http://127.0.0.1:4096",
+      fetchImpl: (async () =>
+        Response.json({
+          provider: {
+            anthropic: { options: { apiKey: "{env:SPARK_OPENCODE_KEY_ANTHROPIC}" } },
+            "my-lab": {
+              name: "My Lab",
+              npm: "@ai-sdk/openai-compatible",
+              options: { baseURL: "https://lab.example/v1" },
+              models: { "lab-model": { name: "lab-model" } },
+            },
+            incomplete: {
+              npm: "@ai-sdk/openai-compatible",
+              options: { baseURL: "https://incomplete.example/v1" },
+            },
+          },
+        })) as typeof fetch,
+    });
+
+    await expect(client.listCustomProviderIds()).resolves.toEqual(["my-lab"]);
+  });
+
+  it("scopes agents, skills, and commands to the selected workspace", async () => {
+    const requested: string[] = [];
+    const capturing = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      requested.push(url);
+      if (url.includes("/skill")) {
+        return Response.json([
+          { name: "research", location: "/profile/skills/research/SKILL.md" },
+        ]);
+      }
+      if (url.includes("/agent")) {
+        return Response.json([{ name: "research", mode: "primary" }]);
+      }
+      return Response.json([{ name: "review", template: "Review $ARGUMENTS" }]);
+    }) as typeof fetch;
+    const client = new OpenCodeClient({
+      baseUrl: "http://127.0.0.1:4096",
+      directory: "/workspace/research",
+      fetchImpl: capturing,
+    });
+
+    const [agents, skills, commands] = await Promise.all([
+      client.listAgents(),
+      client.listSkills(),
+      client.listCommands(),
+    ]);
+
+    expect(requested).toEqual([
+      "http://127.0.0.1:4096/agent?directory=%2Fworkspace%2Fresearch",
+      "http://127.0.0.1:4096/skill?directory=%2Fworkspace%2Fresearch",
+      "http://127.0.0.1:4096/command?directory=%2Fworkspace%2Fresearch",
+    ]);
+    expect(agents).toEqual([{ name: "research", description: "", mode: "primary" }]);
+    expect(skills).toEqual([
+      {
+        name: "research",
+        description: "",
+        location: "/profile/skills/research/SKILL.md",
+      },
+    ]);
+    expect(commands).toEqual([
+      {
+        name: "review",
+        description: undefined,
+        source: undefined,
+        agent: undefined,
+        template: "Review $ARGUMENTS",
+      },
+    ]);
+  });
+
+  it("sends explicit agent and provider/model selection in OpenCode's native shape", async () => {
+    let requestBody: unknown;
+    const capturing = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const client = new OpenCodeClient({
+      baseUrl: "http://127.0.0.1:4096",
+      fetchImpl: capturing,
+    });
+
+    await client.sendPrompt("ses_general", "Analyze these results", {
+      agent: "research",
+      model: "openrouter/anthropic/claude-sonnet-4.5",
+    });
+
+    expect(requestBody).toEqual({
+      parts: [{ type: "text", text: "Analyze these results" }],
+      agent: "research",
+      model: {
+        providerID: "openrouter",
+        modelID: "anthropic/claude-sonnet-4.5",
+      },
+    });
+  });
+
+  it("preserves the two-argument prompt contract and rejects invalid selections before I/O", async () => {
+    const bodies: unknown[] = [];
+    const capturing = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const client = new OpenCodeClient({
+      baseUrl: "http://127.0.0.1:4096",
+      fetchImpl: capturing,
+    });
+
+    await client.sendPrompt("ses_general", "Continue");
+    expect(bodies).toEqual([{ parts: [{ type: "text", text: "Continue" }] }]);
+
+    await expect(
+      client.sendPrompt("ses_general", "Continue", { model: "missing-provider" }),
+    ).rejects.toThrow('expected "provider/model"');
+    await expect(
+      client.sendPrompt("ses_general", "Continue", { agent: "  " }),
+    ).rejects.toThrow("expected a non-empty name");
+    expect(bodies).toHaveLength(1);
+  });
+
   it("runs a shell command: bash tool part + session.idle stream back", async () => {
     const events: OpenCodeEvent[] = [];
     const client = new OpenCodeClient({ baseUrl: `http://127.0.0.1:${server.port}` });
@@ -91,6 +215,33 @@ describe("OpenCodeClient ↔ OpenCode server", () => {
     await waitFor(() => events.some((e) => e.type === "session.idle"));
     expect(events.map((e) => e.type)).toContain("text.updated");
     client.close();
+  });
+
+  it("sends the selected agent and model when invoking a slash command", async () => {
+    let requestBody: unknown;
+    const capturing = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(null, { status: 204 });
+    }) as typeof fetch;
+    const client = new OpenCodeClient({
+      baseUrl: "http://127.0.0.1:4096",
+      fetchImpl: capturing,
+    });
+
+    await client.runCommand("ses_general", "literature-review", "climate attribution", {
+      agent: "research",
+      model: "openrouter/anthropic/claude-sonnet-4.5",
+    });
+
+    expect(requestBody).toEqual({
+      command: "literature-review",
+      arguments: "climate attribution",
+      agent: "research",
+      model: {
+        providerID: "openrouter",
+        modelID: "anthropic/claude-sonnet-4.5",
+      },
+    });
   });
 
   it("maps time.completed onto history messages and aborts a session", async () => {

@@ -92,14 +92,16 @@ write_transaction_journal_fixture() {
   printf '%s\n' "$phase" >"$lock/phase"
 }
 
-[[ "${#SIDECAR_ASSET_MANIFEST[@]}" -eq 12 ]] || \
-  fail "expected 12 sidecar manifest records, found ${#SIDECAR_ASSET_MANIFEST[@]}"
+[[ "${#SIDECAR_ASSET_MANIFEST[@]}" -eq 18 ]] || \
+  fail "expected 18 sidecar manifest records, found ${#SIDECAR_ASSET_MANIFEST[@]}"
 
 seen_keys=$'\n'
 opencode_triples=$'\n'
 uv_triples=$'\n'
+ripgrep_triples=$'\n'
 opencode_count=0
 uv_count=0
+ripgrep_count=0
 for record in "${SIDECAR_ASSET_MANIFEST[@]}"; do
   IFS='|' read -r tool version triple asset digest extra <<<"$record"
   [[ -n "$tool" && -n "$version" && -n "$triple" && -n "$asset" &&
@@ -131,11 +133,17 @@ for record in "${SIDECAR_ASSET_MANIFEST[@]}"; do
       uv_triples+="${triple}"$'\n'
       uv_count=$((uv_count + 1))
       ;;
+    ripgrep)
+      [[ "$ripgrep_triples" != *$'\n'"$triple"$'\n'* ]] || \
+        fail "duplicate ripgrep target triple: $triple"
+      ripgrep_triples+="${triple}"$'\n'
+      ripgrep_count=$((ripgrep_count + 1))
+      ;;
     *) fail "unknown tool in sidecar manifest: $tool" ;;
   esac
 done
-[[ "$opencode_count" -eq 6 && "$uv_count" -eq 6 ]] || \
-  fail "expected six OpenCode and six uv assets"
+[[ "$opencode_count" -eq 6 && "$uv_count" -eq 6 && "$ripgrep_count" -eq 6 ]] || \
+  fail "expected six OpenCode, six uv, and six ripgrep assets"
 
 sdk_opencode_version="$(sed -n 's/^export const OPENCODE_VERSION = "\([^"]*\)";$/\1/p' \
   "$ROOT/packages/sdk/src/types.ts")"
@@ -163,21 +171,23 @@ if sidecar_pinned_version unknown >/dev/null 2>&1; then
   fail "unknown sidecar tools must not have a pinned version"
 fi
 
-[[ "${#SKILLS_ARCHIVE_MANIFEST[@]}" -eq 1 ]] || \
-  fail "expected one skills archive manifest record"
-IFS='|' read -r skills_pack skills_commit skills_digest skills_extra \
-  <<<"${SKILLS_ARCHIVE_MANIFEST[0]}"
-[[ "$skills_pack" == ai4s-skills && "$skills_commit" =~ ^[0-9a-f]{40}$ &&
-  "$skills_digest" =~ ^[0-9a-f]{64}$ && -z "$skills_extra" ]] || \
-  fail "malformed skills archive manifest record"
-[[ "$(skills_pinned_commit "$skills_pack")" == "$skills_commit" ]] || \
-  fail "skills commit lookup drift"
-[[ "$(skills_archive_sha256 "$skills_pack" "$skills_commit")" == "$skills_digest" ]] || \
-  fail "skills digest lookup drift"
-if skills_archive_sha256 "$skills_pack" 0000000000000000000000000000000000000000 \
-  >/dev/null 2>&1; then
-  fail "unknown skills commits must fail closed"
-fi
+[[ "${#SKILLS_ARCHIVE_MANIFEST[@]}" -eq 2 ]] || \
+  fail "expected two skills archive manifest records"
+for skills_record in "${SKILLS_ARCHIVE_MANIFEST[@]}"; do
+  IFS='|' read -r skills_pack skills_commit skills_digest skills_extra \
+    <<<"$skills_record"
+  [[ "$skills_pack" =~ ^[a-z0-9-]+$ && "$skills_commit" =~ ^[0-9a-f]{40}$ &&
+    "$skills_digest" =~ ^[0-9a-f]{64}$ && -z "$skills_extra" ]] || \
+    fail "malformed skills archive manifest record"
+  [[ "$(skills_pinned_commit "$skills_pack")" == "$skills_commit" ]] || \
+    fail "skills commit lookup drift"
+  [[ "$(skills_archive_sha256 "$skills_pack" "$skills_commit")" == "$skills_digest" ]] || \
+    fail "skills digest lookup drift"
+  if skills_archive_sha256 "$skills_pack" 0000000000000000000000000000000000000000 \
+    >/dev/null 2>&1; then
+    fail "unknown skills commits must fail closed"
+  fi
+done
 
 # Keep this list aligned with the skill resources in
 # apps/desktop/src-tauri/tauri.conf.json. Restricting the roots avoids scanning
@@ -185,6 +195,7 @@ fi
 packaged_skill_sources=(
   "$ROOT/runtime/skills/core"
   "$ROOT/runtime/skills/external/ai4s-skills"
+  "$ROOT/runtime/skills/external/kdense-scientific-agent-skills"
 )
 for skill_source in "${packaged_skill_sources[@]}"; do
   check_packaged_skill_bytecode "$skill_source"
@@ -241,7 +252,7 @@ printf '%s\n' \
   'exit 98' \
   >"$unknown_target_bin/curl"
 chmod 755 "$unknown_target_bin/curl"
-for fetch_script in fetch-opencode.sh fetch-uv.sh; do
+for fetch_script in fetch-opencode.sh fetch-uv.sh fetch-ripgrep.sh; do
   marker="$test_root/${fetch_script}.curl-invoked"
   if PATH="$unknown_target_bin:$PATH" UNKNOWN_TARGET_CURL_MARKER="$marker" \
     bash "$ROOT/scripts/dev/$fetch_script" unknown-target >/dev/null 2>&1; then
@@ -883,8 +894,10 @@ bash -n \
   "$ROOT/scripts/dev/sidecar-integrity.sh" \
   "$ROOT/scripts/dev/fetch-opencode.sh" \
   "$ROOT/scripts/dev/fetch-uv.sh" \
+  "$ROOT/scripts/dev/fetch-ripgrep.sh" \
   "$ROOT/scripts/dev/fetch-skills.sh" \
+  "$ROOT/scripts/dev/fetch-kdense-skills.sh" \
   "$ROOT/scripts/quality/check-release-assets.sh"
 
-printf 'Release integrity policy passed for %d sidecars and %d skills archive.\n' \
+printf 'Release integrity policy passed for %d sidecars and %d skills archives.\n' \
   "${#SIDECAR_ASSET_MANIFEST[@]}" "${#SKILLS_ARCHIVE_MANIFEST[@]}"

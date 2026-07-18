@@ -2,6 +2,7 @@
 // bundled OpenCode sidecar (isolated config/data + dedicated port; killed on exit).
 mod artifact_file;
 mod compute;
+mod credential;
 mod debug_log;
 mod examples;
 mod git_snapshot;
@@ -12,11 +13,14 @@ mod large_file;
 mod modal;
 mod opencode_config;
 mod preview_server;
+mod project_python;
+mod projects;
 mod provenance;
 mod runs;
 mod runs_index;
 mod runtime;
 mod science_mcp;
+mod task_plans;
 mod tools;
 mod updates;
 mod uv;
@@ -49,6 +53,7 @@ pub fn run() {
         .manage(PreviewState::default())
         .manage(ProvenanceState::default())
         .manage(runs::RunState::default())
+        .manage(task_plans::TaskPlanState::default())
         .invoke_handler(tauri::generate_handler![
             runtime::start_runtime,
             runtime::runtime_password,
@@ -58,14 +63,30 @@ pub fn run() {
             runtime::set_workspace_base,
             runtime::open_workspace_base,
             runtime::set_workspace,
+            runtime::validate_runtime_permissions,
             runtime::mark_session,
             runtime::new_dated_workspace,
             runtime::pick_folder,
+            projects::create_project,
+            projects::open_project,
+            projects::list_recent_projects,
+            projects::remove_recent_project,
+            projects::update_project_last_session,
+            projects::open_demo_project,
             runtime::import_opencode_login,
+            runtime::save_provider_api_key,
+            runtime::remove_provider_api_key,
+            runtime::save_science_connector_api_key,
+            runtime::remove_science_connector,
+            runtime::reconcile_jupyter,
+            runtime::finalize_provider_login,
             runtime::remove_config_entry,
             jupyter::jupyter_status,
             jupyter::setup_jupyter,
             jupyter::start_jupyter,
+            jupyter::open_jupyter_lab,
+            project_python::project_python_status,
+            project_python::setup_project_python,
             runtime::configure_opencode,
             runtime::get_approval_mode,
             runtime::set_approval_mode,
@@ -93,6 +114,12 @@ pub fn run() {
             runs::record_run,
             runs::list_runs,
             runs::read_run_log,
+            task_plans::create_task_plan,
+            task_plans::record_task_session,
+            task_plans::record_task_session_status,
+            task_plans::record_task_start_failure,
+            task_plans::record_task_synthesis,
+            task_plans::list_task_plans,
             runs_index::query_runs_cmd,
             science_mcp::science_mcp_python,
             science_mcp::setup_science_mcp,
@@ -120,6 +147,7 @@ pub fn run() {
             // a runtime if a future unsaved-work prompt prevents the exit.
             if matches!(event, tauri::RunEvent::Exit) {
                 runtime::kill_child(&app.state::<RuntimeState>());
+                science_mcp::shutdown_connector_broker();
                 kernel::kill_kernel(&app.state::<KernelState>());
                 jupyter::kill_jupyter(&app.state::<JupyterState>());
             }

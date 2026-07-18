@@ -34,20 +34,27 @@
       "title": "Interrumpir este turno (Esc)"
     },
     "send": {
-      "aria": "Enviar"
+      "aria": "Enviar",
+      "title": "Ejecutar de forma autónoma"
     },
     "approval": {
       "aria": "Modo de aprobación",
       "title": "Cómo se aprueban las acciones del agente",
       "menuAria": "Modos de aprobación",
-      "menuTitle": "¿Cómo deben aprobarse las acciones del agente?",
-      "approve": {
-        "label": "Aprobar por mí",
-        "description": "Pregunta antes de eliminar, instalar o conectarse de forma remota"
+      "menuTitle": "Elige un ajuste de permisos nativo de OpenCode",
+      "balanced": {
+        "label": "Equilibrado",
+        "description": "Lectura y búsqueda libres; pregunta antes de editar, ejecutar comandos, usar la web o MCP"
       },
       "full": {
-        "label": "Acceso completo",
-        "description": "Ejecuta todos los comandos sin preguntar"
+        "label": "Autónomo",
+      "description": "La investigación normal del proyecto avanza automáticamente; las operaciones destructivas, externas, de credenciales y del sistema siguen protegidas",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "El modo autónomo puede editar archivos del proyecto, ejecutar comandos locales, instalar dependencias del proyecto, usar herramientas de investigación configuradas y acceder a la web. Las operaciones destructivas o externas siguen requiriendo confirmación."
+      },
+      "custom": {
+        "label": "Política personalizada externa",
+        "description": "Spark no la administra; elige Equilibrado o Autónomo para usar un ajuste definido"
       }
     },
     "error": {
@@ -59,6 +66,17 @@
     "newDescription": "Borrar el contexto del chat en esta carpeta",
     "clearDescription": "Igual que /new; los archivos permanecen aquí",
     "cleared": "Contexto del chat borrado. Los archivos permanecen en la misma carpeta."
+  },
+  "researchControls": {
+    "mode": { "aria": "Modo de ejecución", "general": "Investigación general", "verified": "Flujos verificados" },
+    "agent": { "aria": "Agente de investigación", "empty": "No hay agentes disponibles", "primaryGroup": "Agentes principales", "subagentGroup": "Subagentes", "otherGroup": "Otros agentes" },
+    "model": { "aria": "Modelo", "empty": "No hay modelos disponibles", "auto": "Auto · task-aware", "runtimeDefault": "runtime default", "autoRoute": { "quick": "Auto · quick → {{model}}", "standard": "Auto · standard → {{model}}", "deep": "Auto · deep → {{model}}" } },
+    "skills": { "aria": "Abrir habilidades de investigación", "title": "Ver habilidades reportadas por OpenCode", "count": "{{count}} habilidades" }
+  },
+  "parallelTasks": { "aria": "Parallel tasks", "title": "Task center", "subtitle": "Monitor independent research tasks", "new": "New task", "synthesize": "Synthesize", "empty": "No research tasks yet.", "listAria": "Research tasks", "runtimeDefault": "Runtime default", "requestedModel": "Requested", "current": "Current task", "status": { "running": "Running", "waiting": "Waiting", "recovering": "Recovering", "complete": "Complete", "failed": "Failed" } },
+  "taskPlan": { "aria": "Task plan", "title": "Plan parallel tasks", "subtitle": "Break a research goal into independent tasks.", "objective": "Objective", "objectivePlaceholder": "What should this research accomplish?", "taskCount": "{{count}} of 5 tasks", "generate": "Generate", "generating": "Generating…", "generateError": "Could not generate a task plan. Try again.", "taskList": "Planned tasks", "taskNumber": "Task {{number}}", "remove": "Remove task {{number}}", "titleLabel": "Task {{number}} title", "titlePlaceholder": "Task title", "promptLabel": "Task {{number}} prompt", "promptPlaceholder": "Instructions for this task", "add": "Add task", "launch": "Launch tasks", "launching": "Launching…", "launchError": "Could not launch this plan. Try again." },
+  "workspaceArtifacts": {
+    "heading": "Artefactos del espacio", "count": "{{count}} encontrados", "refreshAria": "Actualizar artefactos del espacio"
   },
   "starters": {
     "newSession": "Nueva sesión",
@@ -75,6 +93,10 @@
     "audit": {
       "title": "Auditar un informe para verificar su trazabilidad",
       "description": "Comprueba citas, cifras sin fuente y la coherencia entre figuras y código."
+    },
+    "papers-data": {
+      "title": "Conectar artículos y datos",
+      "description": "Inventaría artículos y conjuntos de datos locales, cubre lagunas útiles y crea una síntesis trazable."
     },
     "example-climate": {
       "title": "Explorar un ejemplo: tendencias climáticas",
@@ -104,6 +126,7 @@
       "label": "Ejecuciones",
       "title": "Las ejecuciones de experimentos de esta sesión — junto al chat"
     },
+    "tasksToggle": { "label": "Tasks", "title": "Plan, launch, and monitor parallel research tasks" },
     "notebook": {
       "openTitle": "Abrir {{path}} — el agente trabaja en este cuaderno dentro de esta sesión"
     },

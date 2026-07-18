@@ -34,20 +34,27 @@
       "title": "このターンを中断（Esc）"
     },
     "send": {
-      "aria": "送信"
+      "aria": "送信",
+      "title": "自律実行"
     },
     "approval": {
       "aria": "承認モード",
       "title": "エージェントの操作をどのように承認するか",
       "menuAria": "承認モード",
-      "menuTitle": "エージェントの操作をどのように承認しますか？",
-      "approve": {
-        "label": "都度確認する",
-        "description": "削除・インストール・リモート接続の前に確認します"
+      "menuTitle": "OpenCode ネイティブ権限プリセットを選択",
+      "balanced": {
+        "label": "バランス",
+        "description": "読み取りと検索は許可し、編集、コマンド、ウェブ、MCP は確認します"
       },
       "full": {
-        "label": "フルアクセス",
-        "description": "確認せずにすべてのコマンドを実行します"
+        "label": "自律",
+      "description": "通常のプロジェクト研究は自動で進み、破壊的・外部・認証情報・システム操作は引き続き保護されます",
+      "preview": "Autonomous Research — Developer Preview.",
+      "notice": "自律モードでは、プロジェクトファイルの編集、ローカルコマンドの実行、プロジェクト依存関係のインストール、設定済み研究ツールの使用、ウェブアクセスが可能です。破壊的または外部の操作には引き続き確認が必要です。"
+      },
+      "custom": {
+        "label": "外部カスタムポリシー",
+        "description": "Spark の管理外です。バランスまたは自律を選択してください"
       }
     },
     "error": {
@@ -59,6 +66,17 @@
     "newDescription": "このフォルダでチャット文脈を消去",
     "clearDescription": "/new と同じ。ファイルはこのフォルダに残ります",
     "cleared": "チャット文脈を消去しました。ファイルは同じフォルダに残ります。"
+  },
+  "researchControls": {
+    "mode": { "aria": "実行モード", "general": "一般研究", "verified": "検証済みワークフロー" },
+    "agent": { "aria": "研究エージェント", "empty": "利用可能なエージェントがありません", "primaryGroup": "主要エージェント", "subagentGroup": "サブエージェント", "otherGroup": "その他のエージェント" },
+    "model": { "aria": "モデル", "empty": "利用可能なモデルがありません", "auto": "Auto · task-aware", "runtimeDefault": "runtime default", "autoRoute": { "quick": "Auto · quick → {{model}}", "standard": "Auto · standard → {{model}}", "deep": "Auto · deep → {{model}}" } },
+    "skills": { "aria": "研究スキルを開く", "title": "OpenCode が報告したスキルを表示", "count": "{{count}} スキル" }
+  },
+  "parallelTasks": { "aria": "Parallel tasks", "title": "Task center", "subtitle": "Monitor independent research tasks", "new": "New task", "synthesize": "Synthesize", "empty": "No research tasks yet.", "listAria": "Research tasks", "runtimeDefault": "Runtime default", "requestedModel": "Requested", "current": "Current task", "status": { "running": "Running", "waiting": "Waiting", "recovering": "Recovering", "complete": "Complete", "failed": "Failed" } },
+  "taskPlan": { "aria": "Task plan", "title": "Plan parallel tasks", "subtitle": "Break a research goal into independent tasks.", "objective": "Objective", "objectivePlaceholder": "What should this research accomplish?", "taskCount": "{{count}} of 5 tasks", "generate": "Generate", "generating": "Generating…", "generateError": "Could not generate a task plan. Try again.", "taskList": "Planned tasks", "taskNumber": "Task {{number}}", "remove": "Remove task {{number}}", "titleLabel": "Task {{number}} title", "titlePlaceholder": "Task title", "promptLabel": "Task {{number}} prompt", "promptPlaceholder": "Instructions for this task", "add": "Add task", "launch": "Launch tasks", "launching": "Launching…", "launchError": "Could not launch this plan. Try again." },
+  "workspaceArtifacts": {
+    "heading": "ワークスペース成果物", "count": "{{count}} 件を検出", "refreshAria": "成果物を更新"
   },
   "starters": {
     "newSession": "新規セッション",
@@ -75,6 +93,10 @@
     "audit": {
       "title": "レポートのトレーサビリティを検証",
       "description": "引用、出典のない数値、図とコードの整合性を確認します。"
+    },
+    "papers-data": {
+      "title": "論文とデータをつなぐ",
+      "description": "ローカルの論文とデータセットを整理し、必要な証拠を補って追跡可能な統合結果を作成します。"
     },
     "example-climate": {
       "title": "例を試す: 気候変動トレンド",
@@ -104,6 +126,7 @@
       "label": "実行",
       "title": "このセッションの実験実行 — チャットの横に表示"
     },
+    "tasksToggle": { "label": "Tasks", "title": "Plan, launch, and monitor parallel research tasks" },
     "notebook": {
       "openTitle": "{{path}} を開く — エージェントはこのセッションでこのノートブックを操作します"
     },

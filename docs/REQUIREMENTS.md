@@ -45,8 +45,10 @@ Spark Agent must win on those four axes — plus two things competitors are
 criticized for lacking: **multi-discipline breadth** and **Windows support**.
 
 Do **not** market as "open-source Claude Science" or "zero hallucination."
-Market as: *"Spark Agent — local-first, evidence-first AI research
-workbench for macOS, Windows & Linux."* Sell **traceable / verifiable**, not **perfect**.
+Market as: *"Spark Agent — the open-source, local-first AI workbench for
+scientific research."* Lead with the whole General Research loop; present
+traceable / verifiable execution as an optional Structured Workflow strength,
+never as a claim of perfect correctness.
 
 ---
 
@@ -86,8 +88,14 @@ competitors.
 - **Acceptance.** A user can complete an analysis with zero data leaving the
   device; the app states plainly what (if anything) is sent to a model provider.
   Persistent kernels keep variables/dataframes/models in memory to avoid reloads.
-- **Status.** ✅ Local Python **and R** kernels + Jupyter sidecar (isolated env,
-  workspace-scoped). One persistent kernel per notebook keyed by kernelspec
+- **Status.** ✅ Local Python **and R** kernels + app-managed JupyterLab (isolated
+  env, workspace-scoped). Spark's persistent token copy is held in the OS
+  credential manager and omitted from renderer IPC and startup arguments; local
+  JupyterLab remains available while agent Jupyter MCP is security-gated and
+  fail-closed. Known token-bearing runtime files are suppressed and scrubbed;
+  child-startup environment/browser URL and same-UID listener-race/execution-time
+  exposure remain open and require packaged E2E evidence.
+  One persistent kernel per notebook keyed by kernelspec
   language; R uses a base-R-only bridge (no IRkernel/jsonlite), so R notebooks
   run cell-by-cell with shared state, last-expression values, stdout/warnings,
   and error reporting — against any installed R, offline. New-notebook menu
@@ -271,16 +279,15 @@ competitors.
 
   **Critical — safety defaults (AGENTS.md non-negotiable):**
   - [x] **Approval mode is not configured anywhere.** ~~The bundled OpenCode
-    1.17.13 binary's embedded default is `{"*":"allow"}`, so bash / file edits /
-    dependency installs run unprompted.~~ **Fixed (2026-07-05):** a Codex-style
-    two-mode switch in the composer — **Approve for me** (default; deletion /
-    installs / remote / privilege commands and webfetch prompt first, via ask
-    rules seeded into the app-private config before sidecar start) and **Full
-    access** (`"permission": {}` = OpenCode builtin defaults, an explicit user
-    choice that survives restarts). Verified against the running bundled
-    binary: rules land in the build agent's resolved ruleset after the builtin
-    `*: allow` (last-match-wins), and a 22-case simulation using OpenCode's
-    verbatim wildcard/evaluate algorithm behaves as designed.
+    1.17.13 binary's embedded default is `{"*":"allow"}`, so bash and edits run
+    unprompted.~~ **Replaced by the Foundation manual-only policy:** the product
+    no longer offers Full Access or persistent grants. The runtime floor defaults
+    unknown concrete tool IDs to ask, allows bounded workspace reads, asks for
+    every write/edit, Shell, web, and MCP action, and denies external file-tool
+    access. Project and custom-agent rules are revalidated before a turn so a
+    later `allow` cannot silently weaken that floor. Exact legacy Spark defaults
+    migrate to Manual; arbitrary user policies are preserved at rest but cannot
+    bypass the effective runtime gate.
   - [x] **Sidecar runs with `--cors "*"` and no server auth.** ~~Any local
     webpage can scan loopback ports, drive agent turns, and `GET /global/config`
     to read stored API keys.~~ **Fixed (2026-07-06):** the sidecar now requires
@@ -297,20 +304,57 @@ competitors.
     HTML previews inherit it; sandboxed iframes need no cookies) and no longer
     sends `Access-Control-Allow-Origin: *` (previews render in iframe/img,
     never cross-origin fetch).
-  - [x] **Workspace confinement doesn't bind bash**: file tools prompt via
-    `external_directory`, but bash (default `allow`, real `$HOME`) escapes
-    freely. Covered by the permission fix above (in "Approve for me" mode;
-    "Full access" is an explicit user opt-out).
-  - [ ] **API keys are plaintext on disk** — provider keys, connector keys
-    (MP/FRED), and the Jupyter token all land in `opencode.json` (not only the
-    mode-600 `auth.json` P2-3 describes). The keychain revert (P2-3) was a
-    deliberate call for signed-release reasons; revisit for signed releases.
-    **Both interim minimums are now met (2026-07-06):** the `/global/config`
-    surface requires auth (see the CORS/auth fix above), and the config is no
-    longer world-readable — the app-private runtime root is chmod 700 and
-    `opencode.jsonc` 600 on every start and after every Rust-side write
-    (verified: the sidecar's own PATCH rewrite preserves the 600 mode).
-    (Verified clean: no keys in provenance/logs/localStorage/git.)
+  - [ ] **Workspace confinement does not bind arbitrary bash or Python**: file
+    tools prompt via `external_directory`, while general code still runs as the
+    signed-in user and can express operations that command-glob rules cannot
+    classify. The managed profile asks before every write/edit, Shell, web, and
+    MCP operation and denies outside-workspace file-tool access; this is a useful
+    approval layer, not an OS sandbox. Use Sandbox or Verified execution when
+    confinement is required.
+  - [ ] **Secret custody is only partially migrated.** Simple provider API keys
+    now move transactionally to the OS credential manager, leave environment
+    references in config, and are supplied to the sidecar at launch; an approved
+    local tool can still inherit them. Spark-managed MP/FRED connector keys use
+    separate credential-manager items. Migration/private-broker infrastructure is
+    implemented, and the legacy DYLD-sensitive Spark launcher is removed. Managed
+    entries are disabled and contain only Apple platform-signed
+    `/usr/bin/nc -U <private-socket>` to a private Unix-domain socket. The staged
+    broker authenticates relay UID/PID/executable/parent against the owned OpenCode
+    PID/start-time/generation and validates strict config/target. It serializes a
+    native allow/deny decision once per broker connection before reading Keychain,
+    then revalidates the complete scope. This is not yet one approval per JSON-RPC
+    `tools/call`, and
+    credential-bearing execution remains disabled by default and fails closed.
+    MP/FRED are security-gated and unavailable to the runtime. This is defense in
+    depth, not a delivered key-delivery or hard-confinement guarantee. The single
+    P0 release
+    gate requires immutable signed/verified targets or same-UID-resistant isolated
+    execution, native approval for every credential-using JSON-RPC tool call rather
+    than only every connection, and closure of the config-dependency approval bypass.
+    Two P1 gates require a fully hashed transitive lock with staged
+    atomic install and packaged macOS E2E. Unsupported structured provider API
+    records fail closed. OAuth records still use an owner-only app-private file.
+    Spark transactionally rotates any token exposed in legacy plaintext
+    `server.json` v1, stores the fresh replacement in the OS credential manager,
+    and writes `server.json` v2 containing only
+    version and port, renderer IPC omits token/URL/command fields, startup `argv`
+    omits the token, token-bearing server-info/browser files are suppressed and
+    scrubbed, readiness sends no credential, and macOS opens the native-built URL
+    through NSWorkspace.
+    Legacy Spark-owned plaintext Jupyter MCP config is scrubbed before OpenCode
+    starts, and agent Jupyter MCP registration remains security-gated and
+    fail-closed. These changes are not complete custody: the child startup
+    environment, tokenized browser URL/history, same-UID listener races/introspection,
+    and execution-time isolation remain open. Custom/BYO MCP custody remains outside
+    this boundary. The runtime root/config/auth modes and authenticated loopback
+    API remain defense in depth, not substitutes for broader execution-time isolation.
+  - [ ] **OpenCode config dependency installation bypasses product approval.**
+    The pinned loader may install config-directory packages (with lifecycle
+    scripts disabled) before the tool-permission layer, including for project
+    `.opencode` configuration. Spark now uses an app-private `HOME` and forces
+    `OPENCODE_PURE=1`, so user-global config is not discovered and external plugins
+    do not execute, but the background install/write still occurs. Spark must gate
+    or disable that network/write path until the user explicitly approves it.
 
   **Critical — Rust defects:**
   - [x] **Windows command injection** in `open_url`/`os_open`. ~~`cmd /C
@@ -416,30 +460,37 @@ competitors.
   | Literature (all) | arXiv, PubMed, Crossref, Semantic Scholar; OpenAlex | ✅ shipped (paper-search-mcp) |
   | Biology | PubMed, trials, variants (biomcp); PDB/UniProt/ChEMBL/ClinVar | 🟡 partial |
   | Physics/astro | Space weather (`spaceweather-mcp` — NOAA SWPC/NASA DONKI/USGS) ✅ shipped; NASA ADS, SIMBAD, VizieR, MAST/IRSA, Gaia, SDSS/DESI, GWOSC/LIGO next | 🟡 partial |
-  | Chemistry/materials | Materials Project (`mcp-materials-project`) ✅ shipped; PubChem, ChEMBL, ICSD, COD, NIST next | 🟡 partial |
+  | Chemistry/materials | Materials Project (`mcp-materials-project`) migration/broker substrate shipped, credential execution security-gated; PubChem, ChEMBL, ICSD, COD, NIST next | 🟡 partial |
   | Earth/climate | Open-Meteo weather/climate (`mcp-weather-server`) ✅ + USGS water (`usgs-mcp`) ✅ shipped; NASA Earthdata, Copernicus/Sentinel, CDS/ERA5, NOAA CDO, GEE, ESGF/CMIP6 next | 🟡 partial |
-  | Social science | FRED (`fred-mcp`) ✅ shipped; IPUMS API, ICPSR, OSF, GSS, World Bank next | 🟡 partial |
+  | Social science | FRED (`fred-mcp`) migration/broker substrate shipped, credential execution security-gated; IPUMS API, ICPSR, OSF, GSS, World Bank next | 🟡 partial |
 
 - **Acceptance.** From chat, query literature (PubMed/arXiv/Crossref) auditable by
   the reviewer, plus **at least one non-bio domain database per targeted
   discipline**; the BYO-MCP path is documented and works.
-- **Status.** 🟡 Literature + bio + **five non-bio** connectors ship with
-  one-click Enable (isolated env via bundled uv) + `docs/CONNECT_YOUR_TOOLS.md`,
-  now spanning **all five targeted disciplines** — the acceptance's "≥1 non-bio
-  domain database per targeted discipline" is met: **Materials Project**
-  (`mcp-materials-project`, materials), **FRED** (`fred-mcp`, economics),
-  **Space weather** (`spaceweather-mcp` — NOAA SWPC/NASA DONKI/USGS, physics),
-  **Open-Meteo weather/climate** (`mcp-weather-server`, earth), and **USGS water**
-  (`usgs-mcp`, earth). The catalog carries a discipline chip, a per-connector
-  free-API-key field (passed via the MCP `environment`, never into
-  provenance/logs), and console-script *or* `-m module` launch (resolved next to
-  the managed interpreter, cross-platform). **Every connector is verified by a
-  real MCP `initialize`/`tools/list` stdio handshake in the bundled-uv env
-  before shipping** (spaceweather → 15 tools, open-meteo → 8, usgs → 10; the
-  three no-key ones need no credentials at all) — the discipline that caught two
-  false friends earlier (`astro-mcp` is Airflow, not astronomy; earlier
-  usgs/open-meteo doubts were an inadequate check, now disproven by the real
-  handshake). We integrate existing open-source servers, not reimplement them.
+- **Status.** 🟡 Literature, bio, and the three credential-free non-bio connectors
+  ship with one-click Enable (managed env via bundled uv) plus
+  `docs/CONNECT_YOUR_TOOLS.md`: **Space weather** (`spaceweather-mcp` — NOAA
+  SWPC/NASA DONKI/USGS, physics), **Open-Meteo weather/climate**
+  (`mcp-weather-server`, earth), and **USGS water** (`usgs-mcp`, earth).
+  Materials Project and FRED remain visible in the catalog, and their credential
+  migration/private-broker substrate is implemented, but credential-bearing
+  execution is disabled by default and fails closed. The chemistry/materials and
+  social-science runtime portions of the “≥1 non-bio domain database per targeted
+  discipline” acceptance are therefore not yet met. Package-level development
+  probes have completed real MCP `initialize`/`tools/list` stdio handshakes, but
+  they are not packaged credential-path E2E evidence. The disabled MP/FRED config
+  contains only Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain
+  socket; the PID/generation broker checks are staged defenses after removal of
+  the legacy DYLD-sensitive Spark launcher. A native prompt is staged once per
+  connection before any Keychain read, not once per JSON-RPC tool call; these are
+  not a delivered key-path guarantee.
+  One P0 release gate requires immutable signed/verified downloaded targets or
+  same-UID-resistant isolated execution, native per-tool-call approval, and closure
+  of the config-dependency approval bypass. Two P1 gates require a fully hashed
+  transitive lock with staged atomic install and packaged macOS E2E. The current
+  top-level exact pins, cleared caller environment, disabled uv configuration,
+  and official PyPI do not satisfy those gates. We integrate existing open-source
+  servers, not reimplement them.
   Gap: the classic astronomy catalogs (NASA ADS, SIMBAD, Gaia, MAST) have no
   pip-installable stdio MCP yet — GitHub-only, would need vendoring; and more
   chem/social DBs (see the table).
@@ -625,7 +676,7 @@ competitors.
   run needs the user's own account (detection verified; the app never handles
   Modal tokens).
 
-### P2-3 · Privacy posture, stated plainly — ✅ Done
+### P2-3 · Privacy posture, stated plainly — 🟡 Partial
 
 - **Evidence.** Users ask whether handing whole-genome/clinical data to a
   commercial company is safe; the strong requirement is that unpublished/PHI data
@@ -635,13 +686,33 @@ competitors.
   in provenance/logs/exports (a non-negotiable safety default).
 - **Acceptance.** A user can read, in the app, exactly what leaves the machine for
   their provider; audit confirms keys/data never enter provenance, logs, exports.
-- **Status.** ✅ Workspace sandbox + approval mode + plain-language data-flow card;
-  credentials never enter provenance/logs/exports and live in an app-private
-  `auth.json` (mode 600, owned by OpenCode). An OS-keychain-at-rest variant was
-  built and verified but reverted: on unsigned/self-built copies a signature
-  change makes macOS prompt for the login-keychain password every launch — worse
-  first-run UX for a marginal at-rest gain. Kept simple per "如无必要,勿增实体".
-  (Revisit for signed releases.)
+- **Status.** 🟡 The plain-language data-flow card, workspace file boundary, and
+  manual approval policy ship. Verified-workflow model keys use macOS Keychain;
+  simple General provider API keys and Spark-managed Materials Project/FRED
+  connector keys now migrate transactionally to separate OS credential-manager
+  services. The MP/FRED migration/private-broker substrate is implemented and the
+  legacy DYLD-sensitive Spark launcher is removed. Disabled config contains only
+  Apple platform-signed `/usr/bin/nc -U` to a private Unix-domain socket, and the
+  staged broker binds the relay to the owned OpenCode PID/start-time/generation
+  before validating strict config/target. It stages a serialized native approval
+  once per connection before Keychain access and revalidates afterward; per-tool-call
+  approval remains open. Credential-bearing execution remains
+  disabled by default and fails closed, so MP/FRED are security-gated and not
+  available to the runtime. Those staged controls are not a delivered claim that
+  a key cannot cross the path or that the target is hard-confined. The item remains
+  partial because the P0 target-integrity/native-approval/config-dependency gate
+  and the P1 hashed-atomic-install and packaged-macOS-E2E gates remain open. The
+  app-managed Jupyter path now rotates any token exposed in plaintext metadata and
+  stores a fresh replacement in the OS credential manager; secretless v2 metadata,
+  renderer/argv exclusion, native URL opening, credential-free readiness,
+  runtime-file suppression/scrub, and unconditional pre-OpenCode reconciliation
+  ship. Agent Jupyter MCP remains fail-closed
+  because a secretless broker and the same release gates are not complete. OAuth
+  records remain in an owner-only file; custom/BYO MCP custody is outside the
+  verified boundary; approved local tools can still inherit provider or other
+  runtime secrets; and the child startup environment, browser URL/history, and
+  same-UID listener races/introspection remain exposed surfaces. Broader
+  execution-time redaction and hard confinement are not yet proven.
 
 ### P2-4 · Beta stability & guardrails — 🟡 Partial
 
@@ -678,16 +749,16 @@ competitors.
 | P0-4 | Reviewer: traceable claims (3 checks) | P0 | 🟡 Partial — 3 checks + PDF-manuscript extractor shipped; weak-model robustness pending |
 | **P0-5** | **Domain-correctness gates ("runs" ≠ "right")** | **P0** | 🟡 **Partial — 5 gates ship (physics/earth/biology/chemistry/social science), deterministic + pluggable; chemistry now uses real RDKit round-trip when installed; only POSCAR→pymatgen round-trip pending** |
 | P0-6 | Large files: reference, don't load | P0 | ✅ Done — memory-pointer probe (table/parquet/hdf5/fits/netcdf/log + genomics FASTQ/FASTA/VCF/BAM, GRIB, ROOT) + one-click "Inspect without loading" in the too-large-preview card |
-| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — ALL critical items addressed (approval modes, sidecar/preview auth, kernel deadlock, Windows injection, owner-only key files); keychain-at-rest deferred to signed releases (P2-3); moderate/cleanup backlog remains** |
+| **P0-7** | **Safety-defaults compliance + audit debt** | **P0** | 🟡 **Partial — manual-only permission floor, sidecar/preview auth, provider plus MP/FRED at-rest custody, Jupyter plaintext-metadata/renderer/argv removal, kernel deadlock, and Windows injection are addressed; MP/FRED and agent Jupyter MCP execution are fail-closed pending target integrity/native approval, while hard confinement, OAuth, Jupyter child/browser/same-UID exposure, execution-time isolation, and config dependency-install approval remain open** |
 | P1-1 | Multi-discipline from day one | P1 | 🟡 Partial — pluggable + climate example; non-bio depth pending |
-| P1-2 | Domain + literature connectors | P1 | 🟡 Partial — literature/bio + non-bio across ALL 5 disciplines (materials, economics, physics space-weather, earth Open-Meteo + USGS) shipped, each MCP-handshake verified; astronomy catalogs (no PyPI MCP) + more chem/social DBs pending |
+| P1-2 | Domain + literature connectors | P1 | 🟡 Partial — literature/bio plus credential-free physics/earth connectors ship; Materials/FRED migration/broker infrastructure exists but execution is security-gated, so runnable coverage does not yet span all 5 disciplines |
 | P1-3 | Scientific renderers | P1 | 🟡 Partial — base + 3D structure + genome + FITS + DOS + band + phase + qualitative-coding + anomaly map (all 4 disciplines; materials trio complete); ternary/coastlines next |
 | P1-4 | Windows + macOS installers | P1 | 🟡 Partial — macOS done; Windows CI ready (signing/verify host-bound) |
 | P1-5 | Interaction & visualization craft | P1 | 🟡 Partial — chart system + palette + command palette + native table→chart surface shipped |
 | **P1-6** | **Social-science analysis integrity** | **P1** | 🟡 **Partial — stats-integrity skill: interpretation/prereg/seed checks + verified .dta→R round-trip** |
 | P2-1 | Notebook + larger-project handling | P2 | ✅ Done — notebook + workspace Files explorer |
 | P2-2 | HPC / SSH / Slurm / Modal | P2 | 🟡 Partial — SSH+Slurm + Modal (detection + skill) shipped; multi-env mgmt pending |
-| P2-3 | Plain-language privacy posture | P2 | ✅ Done — disclosure + creds in mode-600 file |
+| P2-3 | Plain-language privacy posture | P2 | 🟡 Partial — disclosure, provider/MP/FRED at-rest custody, and Jupyter legacy-token rotation plus renderer/argv exclusion ship; MP/FRED and agent Jupyter MCP execution fail closed pending P0/P1 release gates, while OAuth, Jupyter child/browser/same-UID exposure, custom MCP custody, and execution-time isolation remain open |
 | P2-4 | Beta stability & guardrails | P2 | 🟡 Partial — prompts + exit-cleanup + large-file-preview OOM guard fixed; broader first-run pass pending |
 
 **What's done vs. what's next.** The shared 80% (the moat) is largely ✅: workflow

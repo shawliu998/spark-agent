@@ -22,6 +22,12 @@ export interface ResearchWorkflowListProps {
 function statusTone(snapshot: ResearchWorkflowSnapshot): string {
   if (snapshot.workflow.cancelRequestedAt) return "text-warn";
   if (snapshot.workflow.status === "completed") return "text-ok";
+  if (
+    snapshot.workflow.status === "waiting-clarification" ||
+    snapshot.workflow.status === "unsupported"
+  ) {
+    return "text-warn";
+  }
   if (snapshot.workflow.status === "failed" || snapshot.workflow.status === "blocked") {
     return "text-error";
   }
@@ -75,7 +81,7 @@ export function ResearchWorkflowList({
               action === "accept-review-warnings" ||
               action === "retry" ||
               action === "resume",
-          );
+          ) || item.workflow.status === "waiting-clarification";
           const status = item.workflow.cancelRequestedAt
             ? t("research.workflowStatus.cancelling", { defaultValue: "cancelling" })
             : t(`research.workflowStatus.${item.workflow.status}`, {
@@ -110,7 +116,11 @@ export function ResearchWorkflowList({
                 <span className={cn("mt-1 block text-[10px]", statusTone(item))}>
                   {status}
                   <span className="text-muted">
-                    {item.workflow.workflowType === "dataset-analysis"
+                    {item.workflow.workflowType === null
+                      ? t("research.workflow.listAutoType", {
+                          defaultValue: " · auto research",
+                        })
+                      : item.workflow.workflowType === "dataset-analysis"
                       ? t("research.workflow.listDatasetType", {
                           defaultValue: " · dataset analysis · local isolated runtime",
                         })

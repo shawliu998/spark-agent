@@ -394,7 +394,7 @@ def unlink_if_same_inode(
         current = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
     except OSError:
         return
-    if (current.st_dev, current.st_ino) != (expected[0], expected[1]):
+    if stat_identity(current) != expected:
         return
     try:
         os.unlink(name, dir_fd=directory_descriptor)

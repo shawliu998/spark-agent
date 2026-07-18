@@ -55,7 +55,11 @@ export function WorkflowHeader({
           <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-muted">
             <WorkflowStatusBadge snapshot={snapshot} />
             <span className="rounded-full bg-surface-2 px-2 py-0.5 font-medium text-muted ring-1 ring-border">
-              {workflow.workflowType === "dataset-analysis"
+              {workflow.workflowType === null
+                ? t("research.workflow.typeAuto", {
+                    defaultValue: "Auto routing",
+                  })
+                : workflow.workflowType === "dataset-analysis"
                 ? t("research.workflow.typeDataset", {
                     defaultValue: "Dataset Analysis",
                   })
@@ -63,7 +67,9 @@ export function WorkflowHeader({
                     defaultValue: "Literature Synthesis",
                   })}
             </span>
-            <GenerationModeBadge mode={generationModeForSnapshot(snapshot)} />
+            {workflow.workflowType !== null && (
+              <GenerationModeBadge mode={generationModeForSnapshot(snapshot)} />
+            )}
             <ConnectionBadge connection={connection} />
             <button
               type="button"
@@ -97,6 +103,7 @@ export function WorkflowHeader({
             </button>
           )}
           {(workflow.status === "completed" ||
+            workflow.status === "unsupported" ||
             workflow.status === "cancelled") && (
             <button
               type="button"
@@ -125,6 +132,9 @@ function WorkflowStatusBadge({
       ? "bg-ok/10 text-ok ring-ok/20"
       : workflow.status === "blocked" || workflow.status === "failed"
         ? "bg-error/10 text-error ring-error/20"
+        : workflow.status === "waiting-clarification" ||
+            workflow.status === "unsupported"
+          ? "bg-warn/10 text-warn ring-warn/20"
         : "bg-accent/10 text-accent ring-accent/20";
 
   return (

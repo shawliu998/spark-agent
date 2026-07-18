@@ -37,6 +37,7 @@
       "addCellLabel": "添加单元格"
     }
   },
+  "labNotebook": {"title":"Living research notebook","description":"A recoverable, workspace-local record of explicit scientific findings, decisions, and limitations.","path":"Stored at","refresh":"Refresh","refreshAria":"Refresh living research notebook","exportMarkdown":"Markdown","exportJson":"JSON","type":"Type","session":"Session","all":"All","empty":"No notebook entries match these filters."},
   "files": {
     "loading": "正在加载…",
     "folderEmpty": "此文件夹为空。",
@@ -56,8 +57,8 @@
   "skills": {
     "title": "技能与代理",
     "description": {
-      "prefix": "从 OpenCode 运行时实时加载——内置的 ai4s-skills 包，以及您工作区中位于 ",
-      "suffix": " 下的所有内容。"
+      "prefix": "从 OpenCode 实时加载——内置 Spark 科研技能，以及项目和用户 OpenCode 技能，例如 ",
+      "suffix": "。"
     },
     "install": {
       "sectionTitle": "安装技能",
@@ -89,10 +90,36 @@
       "source": {
         "builtin": "内置",
         "project": "项目",
-        "user": "用户"
+        "global": "全局 / 随应用提供",
+        "unknown": "来源未知"
       }
     },
     "disconnected": "连接运行时以列出其已加载的技能和代理。"
+  },
+  "research": {
+    "title": "结构化 / 验证工作流",
+    "refreshAria": "刷新验证工作流工作区",
+    "libraryTitle": "验证工作流库",
+    "newProjectAria": "创建验证工作流项目",
+    "workflows": {
+      "heading": "验证工作流",
+      "newAria": "开始新的验证工作流",
+      "empty": "尚无已保存的验证工作流。"
+    },
+    "workflow": {
+      "composerLabel": "向 Spark Agent 提交结构化研究目标",
+      "modeLabel": "工作流保障模式",
+      "typeLabel": "验证工作流类型",
+      "typeLiterature": "验证文献综述",
+      "typeDataset": "验证数据集分析",
+      "listAutoType": " · 验证自动路由",
+      "listDatasetType": " · 验证数据集分析 · 本地隔离运行时",
+      "listLiteratureRemoteType": " · 验证文献综述 · 模型辅助",
+      "listLiteratureLocalType": " · 验证文献综述 · 本地",
+      "goal": "验证研究目标",
+      "startAuto": "开始验证工作流",
+      "start": "创建验证计划"
+    }
   },
   "notFound": {
     "title": "404 — 未找到",

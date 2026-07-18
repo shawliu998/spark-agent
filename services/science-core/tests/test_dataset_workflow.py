@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.engine.interfaces import DBAPIConnection
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -971,6 +971,52 @@ def test_dataset_workflow_api_reject_is_blocked_idempotent_and_resumable(
                 )
             )
         ) == 1
+
+
+@pytest.mark.parametrize(
+    "blocking_code",
+    ["analysis-compiled-execution-failed", "analysis-review-required"],
+)
+def test_compiled_analysis_blockers_offer_replan_resume(
+    dataset_workflow_environment: tuple[sessionmaker[Session], WorkflowWorker, str],
+    dataset_workflow_client: TypedTestClient,
+    blocking_code: str,
+) -> None:
+    session_factory, worker, _dataset_hash = dataset_workflow_environment
+    assert _run_once(worker)
+    _approve_dataset_plan(session_factory)
+    with session_factory.begin() as session:
+        workflow = session.get(WorkflowRecord, "workflow-1")
+        assert workflow is not None
+        workflow.status = "blocked"
+        workflow.blocking_code = blocking_code
+        workflow.blocking_message = "Revise the compiled analysis plan."
+        session.execute(
+            update(JobRecord)
+            .where(
+                JobRecord.workflow_id == workflow.id,
+                JobRecord.status == "queued",
+            )
+            .values(status="cancelled", finished_at=utc_now(), updated_at=utc_now())
+        )
+
+    blocked = dataset_workflow_client.get("/v1/workflows/workflow-1")
+    assert blocked.status_code == 200, blocked.text
+    snapshot = blocked.json()
+    assert snapshot["workflow"]["blockingReason"] == {
+        "code": blocking_code,
+        "userMessage": "Revise the compiled analysis plan.",
+        "retryable": True,
+    }
+    assert snapshot["allowedActions"] == ["cancel", "resume"]
+
+    resumed = dataset_workflow_client.post(
+        "/v1/workflows/workflow-1/resume",
+        headers={"Idempotency-Key": f"resume-{blocking_code}"},
+        json={"expectedWorkflowRevision": snapshot["workflow"]["revision"]},
+    )
+    assert resumed.status_code == 202, resumed.text
+    assert resumed.json()["workflow"]["status"] == "planning"
 
 
 def test_dataset_workflow_api_accepts_exact_review_warnings_once(

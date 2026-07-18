@@ -7,6 +7,7 @@ import type {
   OAuthAuthorization,
   OpenCodeClientOptions,
   OpenCodeEvent,
+  OpenCodePromptOptions,
   OpenCodePart,
   OpenCodeRawEvent,
   PermissionReply,
@@ -36,6 +37,21 @@ function mapToolStatus(status: string): ToolCallStatus {
     default:
       return "pending";
   }
+}
+
+/** Parse OpenCode's public `provider/model` id into the prompt wire shape.
+ * Model ids may themselves contain slashes (for example an OpenRouter model),
+ * so only the first slash separates the provider. */
+function parseModelRef(model: string): { providerID: string; modelID: string } {
+  const value = model.trim();
+  const separator = value.indexOf("/");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error(`Invalid OpenCode model "${model}": expected "provider/model"`);
+  }
+  return {
+    providerID: value.slice(0, separator),
+    modelID: value.slice(separator + 1),
+  };
 }
 
 /**
@@ -451,15 +467,25 @@ export class OpenCodeClient {
 
   /** Real skills loaded by OpenCode (built-in + bundled + user). */
   async listSkills(): Promise<SkillInfo[]> {
-    // Scope to the workspace: skill instances are created lazily per directory,
-    // and the unscoped endpoint answers from an instance that may have none.
+    // OpenCode 1.17.13's legacy route is the runtime's authoritative Skill
+    // service. Its V2 `/api/skill` route can return an empty `data` array for
+    // skills loaded from an app-private XDG profile even when `/skill` has
+    // discovered them correctly.
     const query = this.directory ? `?directory=${encodeURIComponent(this.directory)}` : "";
-    const res = await this.fetchImpl(`${this.baseUrl}/api/skill${query}`, {
+    const res = await this.fetchImpl(`${this.baseUrl}/skill${query}`, {
       headers: this.headers(),
     });
     if (!res.ok) throw await this.apiError(res, "Failed to list skills");
-    const body = (await res.json()) as { data?: SkillInfo[] };
-    return body.data ?? [];
+    const body = (await res.json()) as Array<{
+      name: string;
+      description?: string;
+      location?: string;
+    }>;
+    return body.map((skill) => ({
+      name: skill.name,
+      description: skill.description ?? "",
+      location: skill.location,
+    }));
   }
 
   /** The configured default model ("provider/model"), or null when unset. */
@@ -527,12 +553,36 @@ export class OpenCodeClient {
     if (!res.ok) throw await this.apiError(res, "Failed to add the provider");
   }
 
-  /** Ids of custom providers defined in the global config (removable via the app). */
+  /**
+   * Ids of full custom endpoints defined in global config (removable via the
+   * app). Built-in providers also gain a config entry when Spark stores an
+   * env-only API-key reference, so presence alone is not a custom marker.
+   */
   async listCustomProviderIds(): Promise<string[]> {
     const res = await this.fetchImpl(`${this.baseUrl}/global/config`, { headers: this.headers() });
     if (!res.ok) return [];
     const cfg = (await res.json()) as { provider?: Record<string, unknown> };
-    return Object.keys(cfg.provider ?? {});
+    return Object.entries(cfg.provider ?? {})
+      .filter(([, value]) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+        const provider = value as Record<string, unknown>;
+        const options = provider.options;
+        const models = provider.models;
+        return (
+          typeof provider.npm === "string" &&
+          provider.npm.trim().length > 0 &&
+          !!options &&
+          typeof options === "object" &&
+          !Array.isArray(options) &&
+          typeof (options as Record<string, unknown>).baseURL === "string" &&
+          ((options as Record<string, unknown>).baseURL as string).trim().length > 0 &&
+          !!models &&
+          typeof models === "object" &&
+          !Array.isArray(models) &&
+          Object.keys(models).length > 0
+        );
+      })
+      .map(([id]) => id);
   }
 
   /** Configured MCP servers with live status, joined with their config. */
@@ -673,9 +723,20 @@ export class OpenCodeClient {
 
   /** Real agents configured in OpenCode. */
   async listAgents(): Promise<AgentInfo[]> {
-    const res = await this.fetchImpl(`${this.baseUrl}/agent`, { headers: this.headers() });
+    const res = await this.fetchImpl(`${this.baseUrl}/agent${this.dirQuery()}`, {
+      headers: this.headers(),
+    });
     if (!res.ok) throw await this.apiError(res, "Failed to list agents");
-    return (await res.json()) as AgentInfo[];
+    const agents = (await res.json()) as Array<{
+      name: string;
+      description?: string;
+      mode?: string;
+    }>;
+    return agents.map((agent) => ({
+      name: agent.name,
+      description: agent.description ?? "",
+      mode: agent.mode,
+    }));
   }
 
   /** Slash commands the runtime can run — config commands, skills and MCP
@@ -721,26 +782,56 @@ export class OpenCodeClient {
   /** Run a slash command (config command / skill / MCP prompt) in a session.
    *  This is a full agent turn; the POST resolves when the turn completes,
    *  while output streams via onEvent along the way. */
-  async runCommand(sessionId: string, command: string, args?: string): Promise<void> {
+  async runCommand(
+    sessionId: string,
+    command: string,
+    args?: string,
+    options?: OpenCodePromptOptions,
+  ): Promise<void> {
+    const agent = options?.agent?.trim();
+    if (options?.agent !== undefined && !agent) {
+      throw new Error("Invalid OpenCode agent: expected a non-empty name");
+    }
+    const model = options?.model === undefined ? undefined : parseModelRef(options.model);
     const res = await this.fetchImpl(
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/command`,
       {
         method: "POST",
         headers: this.headers(true),
-        body: JSON.stringify({ command, ...(args ? { arguments: args } : {}) }),
+        body: JSON.stringify({
+          command,
+          ...(args ? { arguments: args } : {}),
+          ...(agent ? { agent } : {}),
+          ...(model ? { model } : {}),
+        }),
       },
     );
     if (!res.ok) throw await this.apiError(res, `Failed to run /${command}`);
   }
 
-  /** Send a prompt into a session; output streams back via onEvent (SSE). */
-  async sendPrompt(sessionId: string, text: string): Promise<void> {
+  /** Send a prompt into a session; output streams back via onEvent (SSE).
+   * Agent and model are explicit per-turn selections. Omitting them preserves
+   * OpenCode's native default-agent and current/default-model resolution. */
+  async sendPrompt(
+    sessionId: string,
+    text: string,
+    options?: OpenCodePromptOptions,
+  ): Promise<void> {
+    const agent = options?.agent?.trim();
+    if (options?.agent !== undefined && !agent) {
+      throw new Error("Invalid OpenCode agent: expected a non-empty name");
+    }
+    const model = options?.model === undefined ? undefined : parseModelRef(options.model);
     const res = await this.fetchWithTimeout(
       `${this.baseUrl}/session/${encodeURIComponent(sessionId)}/prompt_async`,
       {
         method: "POST",
         headers: this.headers(true),
-        body: JSON.stringify({ parts: [{ type: "text", text }] }),
+        body: JSON.stringify({
+          parts: [{ type: "text", text }],
+          ...(agent ? { agent } : {}),
+          ...(model ? { model } : {}),
+        }),
       },
     );
     if (!res.ok) throw await this.apiError(res, "Failed to send prompt");
@@ -928,6 +1019,7 @@ export class OpenCodeClient {
               title?: string;
               input?: Record<string, unknown>;
               output?: string;
+              error?: string;
               time?: { start?: number; end?: number };
               metadata?: { sessionId?: unknown; output?: unknown; diff?: unknown };
             };
@@ -944,6 +1036,7 @@ export class OpenCodeClient {
             title: tp.state?.title,
             input: tp.state?.input,
             output: typeof tp.state?.output === "string" ? tp.state.output : undefined,
+            error: typeof tp.state?.error === "string" ? tp.state.error : undefined,
             // While running, bash accumulates its stdout tail here — the live
             // output the UI shows so a long command never looks hung.
             partialOutput: typeof meta?.output === "string" ? meta.output : undefined,

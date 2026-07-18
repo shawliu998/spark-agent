@@ -29,15 +29,21 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "externalBin": ["binaries/opencode", "binaries/uv"],
+    "externalBin": ["binaries/opencode", "binaries/uv", "binaries/rg"],
     "macOS": {
       "minimumSystemVersion": "13.0"
     },
     "resources": {
       "../../../runtime/skills/external/ai4s-skills": "skills/",
+      "../../../runtime/skills/external/kdense-scientific-agent-skills": "skills-kdense/",
       "../../../runtime/skills/core": "skills-core/",
+      "../../../runtime/opencode-profile/agents": "opencode-profile/agents/",
+      "../../../runtime/opencode-profile/opencode.json": "opencode-profile/opencode.json",
+      "../../../runtime/opencode-profile/OPENSCIENCE_LICENSE.txt": "licenses/OPENSCIENCE_LICENSE.txt",
+      "../../../runtime/opencode-profile/OPENSCIENCE_NOTICE.txt": "licenses/OPENSCIENCE_NOTICE.txt",
       "../../../runtime/harness": "harness/",
       "../../../examples/climate-trends": "examples/climate-trends/",
+      "../../../examples/research-demo": "examples/research-demo/",
       "../../../LICENSE": "LICENSE",
       "../../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
     },

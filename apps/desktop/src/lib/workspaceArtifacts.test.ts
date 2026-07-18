@@ -1,0 +1,141 @@
+import { describe, expect, it, vi } from "vitest";
+import type { DirEntry } from "./artifactFile";
+import { createdWorkspaceArtifacts, discoverWorkspaceArtifacts } from "./workspaceArtifacts";
+
+function entry(
+  path: string,
+  options: Partial<DirEntry> & Pick<DirEntry, "isDir">,
+): DirEntry {
+  return {
+    path,
+    name: path.split("/").pop() ?? path,
+    size: 10,
+    modified: 1,
+    ...options,
+  };
+}
+
+describe("discoverWorkspaceArtifacts", () => {
+  it("finds research outputs recursively and orders them newest first", async () => {
+    const trees: Record<string, DirEntry[]> = {
+      "": [
+        entry("analysis", { isDir: true }),
+        entry("paper.pdf", { isDir: false, modified: 2 }),
+        entry("notes.txt", { isDir: false, modified: 9 }),
+      ],
+      analysis: [
+        entry("analysis/summary.csv", { isDir: false, modified: 5 }),
+        entry("analysis/figure.png", { isDir: false, modified: 8 }),
+        entry("analysis/run.ipynb", { isDir: false, modified: 4 }),
+      ],
+    };
+    const list = vi.fn(async (dir: string) => trees[dir] ?? []);
+
+    const found = await discoverWorkspaceArtifacts({ list });
+
+    expect(found.map((item) => item.block.path)).toEqual([
+      "analysis/figure.png",
+      "analysis/summary.csv",
+      "analysis/run.ipynb",
+      "paper.pdf",
+    ]);
+    expect(found.map((item) => item.block.artifact)).toEqual([
+      "figure",
+      "table",
+      "notebook",
+      "report",
+    ]);
+  });
+
+  it("skips dependency and app-state directories and tolerates transient read errors", async () => {
+    const list = vi.fn(async (dir: string) => {
+      if (!dir) {
+        return [
+          entry("node_modules", { isDir: true }),
+          entry(".spark", { isDir: true }),
+          entry(".spark/python", { isDir: true }),
+          entry("results", { isDir: true }),
+          entry("report.md", { isDir: false }),
+        ];
+      }
+      throw new Error("directory changed");
+    });
+
+    await expect(discoverWorkspaceArtifacts({ list })).resolves.toMatchObject([
+      { block: { path: "report.md", artifact: "report", tool: "workspace" } },
+    ]);
+    expect(list).not.toHaveBeenCalledWith("node_modules", "workspace");
+    expect(list).not.toHaveBeenCalledWith(".spark", "workspace");
+    expect(list).not.toHaveBeenCalledWith(".spark/python", "workspace");
+  });
+
+  it("bounds traversal for large workspaces", async () => {
+    const list = vi.fn(async () => [
+      entry("a.csv", { isDir: false }),
+      entry("b.csv", { isDir: false }),
+      entry("c.csv", { isDir: false }),
+    ]);
+
+    const found = await discoverWorkspaceArtifacts({ list, maxEntries: 2 });
+
+    expect(found).toHaveLength(2);
+  });
+
+  it("reconstructs existing scientific viewer formats after restart", async () => {
+    const list = vi.fn(async () => [
+      entry("protein.pdb", { isDir: false }),
+      entry("variants.vcf", { isDir: false }),
+      entry("volume.fits", { isDir: false }),
+      entry("surface.glb", { isDir: false }),
+      entry("DOSCAR", { isDir: false }),
+      entry("notes.txt", { isDir: false }),
+    ]);
+
+    const found = await discoverWorkspaceArtifacts({ list });
+
+    expect(found.map((item) => item.block.path).sort()).toEqual([
+      "DOSCAR",
+      "protein.pdb",
+      "surface.glb",
+      "variants.vcf",
+      "volume.fits",
+    ]);
+  });
+
+  it("discovers BibTeX bibliography files as data artifacts", async () => {
+    const trees: Record<string, DirEntry[]> = {
+      "": [entry("references", { isDir: true }), entry("paper.md", { isDir: false })],
+      references: [entry("references/references.bib", { isDir: false, modified: 7 })],
+    };
+    const list = vi.fn(async (dir: string) => trees[dir] ?? []);
+
+    const found = await discoverWorkspaceArtifacts({ list });
+
+    expect(found.map((item) => item.block.path)).toEqual(["references/references.bib", "paper.md"]);
+    expect(found[0].block.artifact).toBe("data");
+    expect(found[0].block.language).toBe("bibtex");
+  });
+});
+
+describe("createdWorkspaceArtifacts", () => {
+  it("reports only paths created after a research turn starts", () => {
+    const artifact = (path: string, modified: number) => ({
+      block: {
+        kind: "artifact" as const,
+        artifact: "report" as const,
+        path,
+        filename: path,
+        mime: "text/markdown",
+        tool: "workspace",
+      },
+      modified,
+      size: 1,
+    });
+    expect(
+      createdWorkspaceArtifacts(
+        ["reports/existing.md"],
+        [artifact("reports/new.md", 2), artifact("reports/existing.md", 3)],
+      ).map((item) => item.block.path),
+    ).toEqual(["reports/new.md"]);
+  });
+});

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { FlaskConical, FolderOpen, Loader2, NotebookPen, PanelLeft, PlugZap } from "lucide-react";
+import { CheckCircle2, FlaskConical, FolderOpen, ListTodo, Loader2, NotebookPen, PanelLeft, PlugZap } from "lucide-react";
 import type { RuntimeStatus } from "@ai4s/shared";
 import { DRAFT_KEY, rootSessionOf, subagentActivity, useRuntimeStore } from "@/lib/runtime";
 import { queryRuns } from "@/lib/runs";
@@ -14,11 +14,25 @@ import { Composer } from "@/components/thread/Composer";
 import { baseName } from "@/components/thread/WorkspaceChip";
 import { WorkflowStarters } from "@/components/thread/WorkflowStarters";
 import { InteractionPrompt } from "@/components/thread/InteractionPrompt";
+import {
+  ResearchSessionControls,
+  type ResearchExecutionMode,
+} from "@/components/thread/ResearchSessionControls";
+import { WorkspaceArtifactShelf } from "@/components/thread/WorkspaceArtifactShelf";
+import { ParallelTaskCenter } from "@/components/thread/ParallelTaskCenter";
+import { TaskPlanComposer } from "@/components/thread/TaskPlanComposer";
 import { InspectorShell } from "@/components/inspector/InspectorShell";
 import { MaximizePaneButton, RightPane } from "@/components/inspector/RightPane";
 import { SessionFilesPane } from "./FilesPage";
 import { RunsPane } from "./RunsPage";
 import { cn } from "@/lib/cn";
+import { createdWorkspaceArtifacts, discoverWorkspaceArtifacts } from "@/lib/workspaceArtifacts";
+import { generateTaskPlan } from "@/lib/taskPlanning";
+import {
+  isTauri,
+  projectPythonStatus,
+  setupProjectPython,
+} from "@/lib/tauri";
 
 /** Live agent session backed by the OpenCode runtime. `/live` (no id) is a blank draft;
  *  the session is created lazily on the first message, then the URL updates to /live/:id. */
@@ -42,6 +56,16 @@ export function LiveSessionPage() {
     workspace,
     panes,
     commands,
+    skills,
+    agents,
+    providers,
+    selectedAgent,
+    defaultModel,
+    sessionExecutions,
+    taskPlans,
+    launchTaskBatch,
+    synthesizeTaskPlan,
+    taskBatchLaunching,
     connect,
     openSession,
     startDraft,
@@ -59,7 +83,25 @@ export function LiveSessionPage() {
     reconcileRunning,
     approvalMode,
     setApprovalMode,
+    setSelectedAgent,
+    setDefaultModel,
   } = useRuntimeStore();
+  const [executionMode, setExecutionMode] = useState<ResearchExecutionMode>("general");
+  const [discoveredArtifacts, setDiscoveredArtifacts] = useState<
+    Awaited<ReturnType<typeof discoverWorkspaceArtifacts>>
+  >([]);
+  const [artifactRefresh, setArtifactRefresh] = useState(0);
+  const [turnCreatedArtifacts, setTurnCreatedArtifacts] = useState<
+    Awaited<ReturnType<typeof discoverWorkspaceArtifacts>> | null
+  >(null);
+  const artifactsAtTurnStart = useRef<Set<string> | null>(null);
+  const [showTaskCenter, setShowTaskCenter] = useState(false);
+  const [showTaskPlanner, setShowTaskPlanner] = useState(false);
+  const [projectPythonInstalled, setProjectPythonInstalled] = useState<boolean | null>(null);
+  const [projectPythonBusy, setProjectPythonBusy] = useState(false);
+  const [projectPythonError, setProjectPythonError] = useState<string | null>(null);
+  const [preparingTurn, setPreparingTurn] = useState(false);
+  const preparingTurnRef = useRef(false);
   const clearingLocalCommand = useRef(false);
   const mounted = useRef(false);
   useEffect(() => {
@@ -75,6 +117,37 @@ export function LiveSessionPage() {
   const connected = status === "ready" || switching;
   const connecting = status === "connecting" && !switching;
   const displayStatus = switching ? "ready" : status;
+
+  useEffect(() => {
+    if (!isTauri || !workspace) {
+      setProjectPythonInstalled(null);
+      return;
+    }
+    let cancelled = false;
+    void projectPythonStatus().then((result) => {
+      if (!cancelled) setProjectPythonInstalled(result?.installed ?? false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace]);
+
+  const prepareProjectPython = async () => {
+    setProjectPythonBusy(true);
+    setProjectPythonError(null);
+    try {
+      const result = await setupProjectPython();
+      if (mounted.current) setProjectPythonInstalled(result.installed);
+    } catch (setupError) {
+      if (mounted.current) {
+        setProjectPythonError(
+          setupError instanceof Error ? setupError.message : String(setupError),
+        );
+      }
+    } finally {
+      if (mounted.current) setProjectPythonBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (sessionId) {
@@ -93,7 +166,22 @@ export function LiveSessionPage() {
   const afterTurn = (id: string | null) => {
     if (mounted.current && id && !sessionId) navigate(`/live/${id}`);
   };
-  const onSend = async (text: string) => afterTurn(await sendPrompt(text));
+  const onSend = async (text: string) => {
+    if (executionMode !== "general" || preparingTurnRef.current) return;
+    preparingTurnRef.current = true;
+    setPreparingTurn(true);
+    artifactsAtTurnStart.current = new Set(
+      discoveredArtifacts.map((artifact) => artifact.block.path),
+    );
+    setTurnCreatedArtifacts(null);
+    const turn = sendPrompt(text);
+    try {
+      afterTurn(await turn);
+    } finally {
+      preparingTurnRef.current = false;
+      if (mounted.current) setPreparingTurn(false);
+    }
+  };
   const onRunShell = async (command: string) => afterTurn(await runShell(command));
   const onRunCommand = async (name: string, args: string) => {
     const localClear = name === "new" || name === "clear";
@@ -139,7 +227,35 @@ export function LiveSessionPage() {
   // working until session.idle. Together they lock the composer and show the
   // working indicator, so a sent message is never silently "nowhere".
   const running = !!(currentId && runningSessions[currentId]);
-  const working = sending || running;
+  const working = preparingTurn || sending || running;
+  const runningTaskCount = sessions.filter(
+    (session) => session.id !== currentId && runningSessions[session.id],
+  ).length;
+
+  // General sessions own ordinary workspace files directly. Re-scan on open,
+  // workspace switch, explicit refresh, and after every completed turn so
+  // outputs created indirectly by Python/shell survive reload and still show.
+  useEffect(() => {
+    if (!workspace) {
+      setDiscoveredArtifacts([]);
+      return;
+    }
+    if (working) return;
+    let cancelled = false;
+    void discoverWorkspaceArtifacts().then((artifacts) => {
+      if (cancelled) return;
+      setDiscoveredArtifacts(artifacts);
+      if (artifactsAtTurnStart.current) {
+        setTurnCreatedArtifacts(
+          createdWorkspaceArtifacts(artifactsAtTurnStart.current, artifacts),
+        );
+        artifactsAtTurnStart.current = null;
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactRefresh, currentId, working, workspace]);
   // What the agent is doing right now — the newest still-running tool call.
   const currentTool = working
     ? [...(thread?.blocks ?? [])]
@@ -184,6 +300,95 @@ export function LiveSessionPage() {
     activeRequest && activeRequest.sessionId !== currentId
       ? (sessions.find((s) => s.id === activeRequest.sessionId)?.title ?? t("live.subagentFallback"))
       : undefined;
+  const waitingSessions = useMemo(() => {
+    const waiting: Record<string, true> = {};
+    for (const request of [...questions, ...permissions]) {
+      waiting[request.sessionId] = true;
+      waiting[rootSessionOf(sessionParents, request.sessionId)] = true;
+    }
+    return waiting;
+  }, [permissions, questions, sessionParents]);
+  const sessionModels = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(sessionExecutions).map(([id, execution]) => [id, execution.model ?? undefined]),
+      ),
+    [sessionExecutions],
+  );
+  const failedSessions = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(sessionExecutions)
+          .filter(([, execution]) => execution.startError)
+          .map(([id, execution]) => [id, execution.startError!]),
+      ),
+    [sessionExecutions],
+  );
+  const recoveringSessions = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(sessionExecutions)
+          .filter(([, execution]) => execution.recoveryUnknown)
+          .map(([id]) => [id, true as const]),
+      ),
+    [sessionExecutions],
+  );
+  const taskSessionIds = useMemo(
+    () =>
+      new Set(
+        Object.entries(sessionExecutions)
+          .filter(([, execution]) => !!execution.kind)
+          .map(([id]) => id),
+      ),
+    [sessionExecutions],
+  );
+  // Native OpenCode `task` calls create child sessions. Show that real lineage
+  // next to the optional desktop-created manual plans; no TaskPlan is needed.
+  const visibleTaskSessions = useMemo(() => {
+    const rootId = currentId ? rootSessionOf(sessionParents, currentId) : null;
+    return sessions.filter((session) => {
+      const nativeChild =
+        !!rootId && session.id !== rootId && rootSessionOf(sessionParents, session.id) === rootId;
+      const manualTask = !session.parentId && taskSessionIds.has(session.id);
+      return nativeChild || manualTask;
+    });
+  }, [currentId, sessionParents, sessions, taskSessionIds]);
+  const completedChildCount = visibleTaskSessions.filter(
+    (session) =>
+      !runningSessions[session.id] &&
+      !waitingSessions[session.id] &&
+      !failedSessions[session.id] &&
+      !recoveringSessions[session.id],
+  ).length;
+  const currentTerminalStatus = currentId
+    ? sessionExecutions[currentId]?.terminalStatus
+    : undefined;
+  const latestPlanId = useMemo(() => {
+    const latest = Object.values(sessionExecutions)
+      .filter((execution) => execution.planId && execution.kind === "task")
+      .sort((a, b) => b.startedAt - a.startedAt)[0];
+    return latest?.planId ?? null;
+  }, [sessionExecutions]);
+  const canSynthesizeLatestPlan = useMemo(() => {
+    if (!latestPlanId) return false;
+    const entries = Object.entries(sessionExecutions).filter(
+      ([, execution]) => execution.planId === latestPlanId,
+    );
+    const tasks = entries.filter(([, execution]) => execution.kind === "task");
+    const hasSynthesis = entries.some(
+      ([, execution]) => execution.kind === "synthesis" && !execution.startError,
+    );
+    const durablePlan = taskPlans.find((plan) => plan.planId === latestPlanId);
+    return (
+      tasks.length >= 2 &&
+      (!durablePlan || tasks.length === durablePlan.tasks.length) &&
+      !hasSynthesis &&
+      tasks.every(
+        ([id, execution]) =>
+          !execution.startError && !runningSessions[id] && !waitingSessions[id],
+      )
+    );
+  }, [latestPlanId, runningSessions, sessionExecutions, taskPlans, waitingSessions]);
 
   // Notebooks the agent touched in THIS session — the conversation ↔ notebook map.
   const sessionNotebooks = (thread?.blocks ?? []).filter(
@@ -191,6 +396,16 @@ export function LiveSessionPage() {
       b.kind === "artifact" && b.filename.endsWith(".ipynb"),
   );
   const uniqueNotebooks = [...new Map(sessionNotebooks.map((b) => [b.path, b])).values()];
+  const surfacedArtifactPaths = new Set(
+    (thread?.blocks ?? [])
+      .filter((block): block is Extract<typeof block, { kind: "artifact" }> =>
+        block.kind === "artifact",
+      )
+      .map((block) => block.path),
+  );
+  const reconstructedArtifacts = discoveredArtifacts
+    .map((item) => item.block)
+    .filter((artifact) => !surfacedArtifactPaths.has(artifact.path));
 
   // The right pane belongs to the session: each one remembers its own open
   // artifact or Files browser (mutually exclusive, enforced by the store) and
@@ -236,6 +451,10 @@ export function LiveSessionPage() {
   const { sidebarCollapsed, setSidebarCollapsed } = useUiStore();
   const isMac = navigator.userAgent.includes("Mac");
   const overlayTitlebar = useOverlayTitlebar();
+  const closeTaskCenter = () => {
+    setShowTaskCenter(false);
+    setShowTaskPlanner(false);
+  };
 
   return (
     <div className="flex h-full min-w-0">
@@ -302,6 +521,23 @@ export function LiveSessionPage() {
               <span>{t("live.runsToggle.label")}</span>
             </button>
           )}
+          <button
+            onClick={() => (showTaskCenter ? closeTaskCenter() : setShowTaskCenter(true))}
+            className={cn(
+              "flex items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-surface-2",
+              showTaskCenter ? "bg-surface-2 text-text" : "text-muted",
+            )}
+            title={t("live.tasksToggle.title", { defaultValue: "Monitor parallel research tasks" })}
+            aria-pressed={showTaskCenter}
+          >
+            <ListTodo size={13} />
+            <span>{t("live.tasksToggle.label", { defaultValue: "Tasks" })}</span>
+            {runningTaskCount > 0 && (
+              <span className="rounded-full bg-accent px-1.5 text-[10px] text-accent-fg">
+                {runningTaskCount}
+              </span>
+            )}
+          </button>
           <ConnBadge status={displayStatus} />
           {uniqueNotebooks.map((nb) => (
             <button
@@ -355,11 +591,67 @@ export function LiveSessionPage() {
                 {error}
               </div>
             )}
-            {connected && isEmpty && !sessionId && (
+            {connected && executionMode === "general" && isEmpty && !sessionId && (
               <WorkflowStarters onPick={(p) => void onSend(p)} />
             )}
             {historyLoading && <ThreadSkeleton />}
             {!historyLoading && thread && <BlockList blocks={thread.blocks} handlers={handlers} />}
+            {!historyLoading && !working && turnCreatedArtifacts && (
+              <div className="rounded-card border border-ok/25 bg-ok/5 px-4 py-3">
+                <div className="flex items-center gap-2 text-sm font-medium text-text">
+                  <CheckCircle2 size={15} className="text-ok" />
+                  {currentTerminalStatus === "failed"
+                    ? t("live.completion.failed", { defaultValue: "Research needs attention" })
+                    : currentTerminalStatus === "canceled"
+                      ? t("live.completion.stopped", { defaultValue: "Research stopped" })
+                      : t("live.completion.title", { defaultValue: "Research completed" })}
+                </div>
+                <div className="mt-2 text-xs text-muted">
+                  {t("live.completion.created", { defaultValue: "Created:" })}
+                </div>
+                {turnCreatedArtifacts.length > 0 ? (
+                  <ul className="mt-1 space-y-1">
+                    {turnCreatedArtifacts.map((artifact) => (
+                      <li key={artifact.block.path}>
+                        <button
+                          type="button"
+                          onClick={() => openArtifact(artifact.block)}
+                          className="font-mono text-xs text-accent hover:underline"
+                        >
+                          {artifact.block.path}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="mt-1 text-xs text-muted">
+                    {t("live.completion.none", { defaultValue: "No new artifact files detected." })}
+                  </div>
+                )}
+                {completedChildCount > 0 && (
+                  <div className="mt-2 text-xs text-muted">
+                    {t("live.completion.children", {
+                      defaultValue: "{{count}} child tasks completed",
+                      count: completedChildCount,
+                    })}
+                  </div>
+                )}
+                <div className="mt-1 text-xs text-muted">
+                  {t("live.completion.limitations", {
+                    defaultValue: "Important limitations are reported in the agent response above.",
+                  })}
+                </div>
+                {(currentTerminalStatus === "failed" || currentTerminalStatus === "canceled") && (
+                  <button
+                    type="button"
+                    onClick={() => void onSend("Continue from the last verified step and resolve the blocker.")}
+                    className="mt-2 rounded-input border border-border px-2.5 py-1 text-xs text-text hover:bg-surface-2"
+                  >
+                    {t("live.completion.continue", { defaultValue: "Resume / Continue" })}
+                  </button>
+                )}
+              </div>
+            )}
             {working && (
               // Typing-indicator at the bottom of the conversation: the message
               // just echoed above it, so the user always sees the send is alive.
@@ -387,6 +679,13 @@ export function LiveSessionPage() {
                 )}
               </div>
             )}
+            {!historyLoading && !working && (
+              <WorkspaceArtifactShelf
+                artifacts={reconstructedArtifacts}
+                onOpen={openArtifact}
+                onRefresh={() => setArtifactRefresh((version) => version + 1)}
+              />
+            )}
           </div>
         </div>
 
@@ -402,12 +701,22 @@ export function LiveSessionPage() {
                 onPermission={(id, reply) => void replyPermission(id, reply)}
               />
             )}
+            {projectPythonError && (
+              <div className="rounded-input border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">
+                {t("live.projectPython.error", {
+                  defaultValue: "Project Python setup failed: {{error}}",
+                  error: projectPythonError,
+                })}
+              </div>
+            )}
             <Composer
               onSend={onSend}
               onRunShell={(c) => void onRunShell(c)}
               onRunCommand={(n, a) => void onRunCommand(n, a)}
               commands={composerCommands}
-              disabled={!connected || switching || working}
+              disabled={
+                !connected || switching || working || taskBatchLaunching || executionMode !== "general"
+              }
               working={running}
               onStop={() => void interrupt()}
               placeholder={
@@ -419,16 +728,90 @@ export function LiveSessionPage() {
               }
               approvalMode={approvalMode}
               onApprovalModeChange={(mode) => void setApprovalMode(mode)}
+              researchControls={
+                <ResearchSessionControls
+                  mode={executionMode}
+                  onModeChange={(mode) => {
+                    if (mode === "verified") {
+                      navigate("/research");
+                      return;
+                    }
+                    setExecutionMode(mode);
+                  }}
+                  agents={agents}
+                  selectedAgent={selectedAgent}
+                  onAgentChange={setSelectedAgent}
+                  providers={providers}
+                  selectedModel={defaultModel}
+                  onModelChange={(model) => void setDefaultModel(model).catch(() => {})}
+                  disabled={!connected || switching || working || taskBatchLaunching}
+                  skillCount={skills.length}
+                  onOpenSkills={() => navigate("/skills")}
+                  projectPythonInstalled={projectPythonInstalled}
+                  projectPythonBusy={projectPythonBusy}
+                  onSetupProjectPython={isTauri ? () => void prepareProjectPython() : undefined}
+                />
+              }
             />
           </div>
         </div>
       </div>
 
-      {(activeArtifact || showFiles || showRuns) && (
+      {(showTaskCenter || activeArtifact || showFiles || showRuns) && (
         <RightPane
-          onClose={activeArtifact ? closeArtifact : showRuns ? () => setShowRuns(false) : () => setShowFiles(false)}
+          onClose={
+            showTaskCenter
+              ? closeTaskCenter
+              : activeArtifact
+                ? closeArtifact
+                : showRuns
+                  ? () => setShowRuns(false)
+                  : () => setShowFiles(false)
+          }
         >
-          {activeArtifact ? (
+          {showTaskCenter ? (
+            <div className="h-full overflow-y-auto border-l border-border bg-bg p-4">
+              {showTaskPlanner ? (
+                <TaskPlanComposer
+                  generate={(objective) =>
+                    generateTaskPlan(objective).tasks.map(({ title, prompt }) => ({ title, prompt }))
+                  }
+                  onLaunch={async (objective, tasks) => {
+                    await launchTaskBatch(objective, tasks);
+                    setShowTaskPlanner(false);
+                  }}
+                />
+              ) : (
+                <ParallelTaskCenter
+                  sessions={visibleTaskSessions}
+                  currentId={currentId}
+                  runningSessions={runningSessions}
+                  waitingSessions={waitingSessions}
+                  failedSessions={failedSessions}
+                  recoveringSessions={recoveringSessions}
+                  sessionModels={sessionModels}
+                  canSynthesize={canSynthesizeLatestPlan}
+                  synthesizing={taskBatchLaunching}
+                  onSynthesize={
+                    latestPlanId
+                      ? async () => {
+                          const id = await synthesizeTaskPlan(latestPlanId);
+                          if (id) {
+                            closeTaskCenter();
+                            navigate(`/live/${id}`);
+                          }
+                        }
+                      : undefined
+                  }
+                  onOpen={(id) => {
+                    closeTaskCenter();
+                    navigate(`/live/${id}`);
+                  }}
+                  onNew={() => setShowTaskPlanner(true)}
+                />
+              )}
+            </div>
+          ) : activeArtifact ? (
             <InspectorShell
               inspector={fileInspectorFromBlock(activeArtifact)}
               onClose={closeArtifact}

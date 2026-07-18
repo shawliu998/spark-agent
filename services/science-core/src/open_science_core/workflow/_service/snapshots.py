@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Literal, Sequence, cast
 
@@ -13,9 +14,15 @@ from ...analysis_service import (
     analysis_run_out,
     validate_workflow_analysis_intent,
 )
+from ...analysis_spec.results import (
+    StructuredAnalysisResult,
+    structured_analysis_result_sha256,
+)
+from ...analysis_spec.schemas import AnalysisSpec, analysis_spec_sha256
 from ...dataset_inspector import dataset_profile_sha256
 from ...models import (
     AnalysisIntentRecord,
+    AnalysisSpecRecord,
     AnswerRecord,
     ApprovalRecord,
     ClaimEvidenceRecord,
@@ -29,6 +36,7 @@ from ...models import (
     RunRecord,
     SourcePageRecord,
     SourceRecord,
+    StructuredAnalysisResultRecord,
     TaskRecord,
     WorkflowRecord,
 )
@@ -38,8 +46,10 @@ from ..schemas import (
     AnalysisApprovalEventData,
     AnalysisErrorSummaryOut,
     AnalysisExecutionPendingApprovalOut,
+    AnalysisSpecSnapshotOut,
     BlockingReasonOut,
     ClaimSupportStatus,
+    DatasetAnalysisPlanSpec,
     DatasetAnalysisReviewResult,
     DatasetPlanPendingApprovalOut,
     DatasetProfile,
@@ -58,6 +68,7 @@ from ..schemas import (
     ReviewSnapshotOut,
     ReviewType,
     ReviewVerdict,
+    StructuredAnalysisResultSnapshotOut,
     TaskStatus,
     TaskStepType,
     WorkflowAnalysisArtifactOut,
@@ -146,6 +157,8 @@ def allowed_actions(
         "analysis-execution-rejected",
         "analysis-repair-not-safe",
         "analysis-repair-limit-exceeded",
+        "analysis-compiled-execution-failed",
+        "analysis-review-required",
     }:
         actions.append("resume")
     return actions
@@ -859,6 +872,12 @@ def _dataset_analysis_intent_snapshot(
                 else None
             ),
             code_diff=intent.code_diff,
+            analysis_spec_id=intent.analysis_spec_id,
+            spec_sha256=intent.spec_sha256,
+            dataset_profile_sha256=intent.dataset_profile_sha256,
+            compiler_version=intent.compiler_version,
+            code_sha256=intent.code_sha256,
+            runtime_policy_id=intent.runtime_policy_id,
             created_at=intent.created_at,
             updated_at=intent.updated_at,
         )
@@ -868,6 +887,122 @@ def _dataset_analysis_intent_snapshot(
             "The current analysis intent does not satisfy its public contract.",
         ) from None
     return output, intent, approval, request.expected_workflow_revision
+
+
+def _analysis_spec_snapshot(
+    session: Session,
+    workflow: WorkflowRecord,
+    plan: PlanRecord | None,
+) -> tuple[AnalysisSpecSnapshotOut | None, AnalysisSpecRecord | None]:
+    if plan is None:
+        return None, None
+    try:
+        plan_spec = DatasetAnalysisPlanSpec.model_validate(plan.spec_json)
+    except ValidationError:
+        raise WorkflowConflict(
+            "analysis-spec-integrity-failed",
+            "The current dataset plan does not satisfy its AnalysisSpec binding.",
+        ) from None
+    if plan_spec.analysis_spec_id is None:
+        return None, None
+    record = session.get(AnalysisSpecRecord, plan_spec.analysis_spec_id)
+    try:
+        spec = (
+            AnalysisSpec.model_validate_json(
+                json.dumps(record.spec_json, allow_nan=False, ensure_ascii=False)
+            )
+            if record is not None
+            else None
+        )
+    except (ValidationError, ValueError):
+        spec = None
+    if (
+        record is None
+        or spec is None
+        or record.workflow_id != workflow.id
+        or record.dataset_source_id != workflow.dataset_source_id
+        or record.dataset_content_hash != workflow.dataset_content_hash
+        or record.spec_sha256 != plan_spec.analysis_spec_sha256
+        or analysis_spec_sha256(spec) != record.spec_sha256
+        or spec.dataset_profile_hash != record.dataset_profile_sha256
+    ):
+        raise WorkflowConflict(
+            "analysis-spec-integrity-failed",
+            "The current AnalysisSpec has invalid workflow, dataset, or hash provenance.",
+        )
+    return (
+        AnalysisSpecSnapshotOut(
+            id=record.id,
+            revision=record.revision,
+            status=cast(Any, record.status),
+            selector_kind=cast(Any, record.selector_kind),
+            selector_reason=record.selector_reason,
+            prompt_version=record.prompt_version,
+            dataset_profile_sha256=record.dataset_profile_sha256,
+            spec_sha256=record.spec_sha256,
+            spec=spec.model_dump(mode="json", by_alias=True),
+            created_at=record.created_at,
+        ),
+        record,
+    )
+
+
+def _structured_result_snapshot(
+    session: Session,
+    intent: AnalysisIntentRecord | None,
+    analysis_spec: AnalysisSpecRecord | None,
+) -> StructuredAnalysisResultSnapshotOut | None:
+    if intent is None or analysis_spec is None:
+        return None
+    records = list(
+        session.scalars(
+            select(StructuredAnalysisResultRecord).where(
+                StructuredAnalysisResultRecord.analysis_intent_id == intent.id
+            )
+        )
+    )
+    if not records:
+        return None
+    if len(records) != 1:
+        raise WorkflowConflict(
+            "analysis-structured-result-integrity-failed",
+            "The analysis intent has ambiguous structured results.",
+        )
+    record = records[0]
+    try:
+        result = StructuredAnalysisResult.model_validate_json(
+            json.dumps(record.result_json, allow_nan=False, ensure_ascii=False)
+        )
+    except (ValidationError, ValueError):
+        raise WorkflowConflict(
+            "analysis-structured-result-integrity-failed",
+            "The structured analysis result does not satisfy schema version 1.",
+        ) from None
+    run = session.get(RunRecord, record.run_id)
+    if (
+        record.analysis_spec_id != analysis_spec.id
+        or record.analysis_intent_id != intent.id
+        or intent.analysis_spec_id != analysis_spec.id
+        or run is None
+        or run.analysis_intent_id != intent.id
+        or structured_analysis_result_sha256(result) != record.result_sha256
+        or result.dataset_source_id != intent.dataset_source_id
+        or result.dataset_content_hash != intent.dataset_content_hash
+        or result.dataset_profile_hash != intent.dataset_profile_sha256
+    ):
+        raise WorkflowConflict(
+            "analysis-structured-result-integrity-failed",
+            "The structured result has invalid Spec, Intent, Run, or dataset provenance.",
+        )
+    return StructuredAnalysisResultSnapshotOut(
+        id=record.id,
+        analysis_spec_id=record.analysis_spec_id,
+        analysis_intent_id=record.analysis_intent_id,
+        run_id=record.run_id,
+        result_sha256=record.result_sha256,
+        result=result.model_dump(mode="json", by_alias=True),
+        created_at=record.created_at,
+    )
 
 
 def _dataset_analysis_run_snapshot(
@@ -1198,7 +1333,11 @@ def _dataset_workflow_snapshot(
                 reason=intent_approval.reason,
                 affected_resources=intent_approval.affected_resources,
                 approval_schema_version=cast(
-                    Literal["analysis-intent-v2", "analysis-intent-v3"],
+                    Literal[
+                        "analysis-intent-v2",
+                        "analysis-intent-v3",
+                        "analysis-intent-v4",
+                    ],
                     intent_approval.payload_schema_version,
                 ),
                 expected_workflow_revision=intent_revision,
@@ -1210,6 +1349,12 @@ def _dataset_workflow_snapshot(
                 timeout_seconds=intent.timeout_seconds or 0,
                 code=intent.code,
                 code_diff=intent.code_diff,
+                analysis_spec_id=intent.analysis_spec_id,
+                spec_sha256=intent.spec_sha256,
+                dataset_profile_sha256=intent.dataset_profile_sha256,
+                compiler_version=intent.compiler_version,
+                code_sha256=intent.code_sha256,
+                runtime_policy_id=intent.runtime_policy_id,
                 created_at=intent_approval.created_at,
                 decided_at=intent_approval.decided_at,
             )
@@ -1226,6 +1371,12 @@ def _dataset_workflow_snapshot(
         jobs,
         review=review,
         review_warnings_accepted=warning_acceptance is not None,
+    )
+    analysis_spec_out, analysis_spec_record = _analysis_spec_snapshot(
+        session, workflow, plan
+    )
+    structured_result_out = _structured_result_snapshot(
+        session, intent, analysis_spec_record
     )
     return ResearchWorkflowSnapshot(
         workflow=WorkflowStateOut(
@@ -1254,6 +1405,8 @@ def _dataset_workflow_snapshot(
         dataset_profile=profile,
         analysis_intent=intent_out,
         analysis_run=run_out,
+        analysis_spec=analysis_spec_out,
+        structured_result=structured_result_out,
         review_warning_acceptance=warning_acceptance,
         allowed_actions=actions,
         event_cursor=workflow.event_sequence,
@@ -1318,6 +1471,8 @@ def workflow_snapshot(session: Session, workflow: WorkflowRecord) -> ResearchWor
                 "analysis-execution-rejected",
                 "analysis-repair-not-safe",
                 "analysis-repair-limit-exceeded",
+                "analysis-compiled-execution-failed",
+                "analysis-review-required",
             },
         )
         if workflow.status == "blocked"
@@ -1454,7 +1609,8 @@ def list_workflows(
     limit: int,
 ) -> list[WorkflowRecord]:
     query: Select[tuple[WorkflowRecord]] = select(WorkflowRecord).where(
-        WorkflowRecord.project_id == project_id
+        WorkflowRecord.project_id == project_id,
+        WorkflowRecord.creation_mode == "fixed-workflow",
     )
     if active_only:
         query = query.where(WorkflowRecord.status.not_in(["completed", "cancelled"]))

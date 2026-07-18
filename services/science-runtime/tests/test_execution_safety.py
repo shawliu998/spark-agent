@@ -175,6 +175,61 @@ def test_fixed_policy_is_recorded_in_environment_notebook_and_log(
     assert "policyTemplate: baseline" in log
 
 
+def test_compiled_policy_provenance_is_recorded_in_every_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _data_root, run_dir, dataset_path = _data_layout(tmp_path, monkeypatch)
+    code = "print('ok')"
+    provenance = {
+        "analysisSpecId": "spec-1",
+        "analysisSpecSha256": "b" * 64,
+        "datasetProfileSha256": "c" * 64,
+        "compilerVersion": "analysis-spec-compiler-v1",
+        "approvedCodeSha256": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+    }
+    payload = ExecuteIn.model_validate(
+        {
+            "runId": "run-01",
+            "runDir": str(run_dir),
+            "datasetPath": str(dataset_path),
+            "objective": "Analyze a local CSV",
+            "code": code,
+            "timeoutSeconds": 30,
+            "payloadSha256": "a" * 64,
+            "policyProfileId": "dataset-analysis-spec-v1",
+            "policyTemplate": "analysis-spec-compiler-v1",
+            **provenance,
+        }
+    )
+
+    with patch.object(execution, "NotebookClient") as notebook_client:
+        result = execution.execute_notebook(payload)
+
+    notebook_client.return_value.execute.assert_called_once()
+    assert result.status == "completed"
+    manifest = json.loads((run_dir / "environment.json").read_text(encoding="utf-8"))
+    assert manifest["executionPolicy"] == {
+        "profileId": "dataset-analysis-spec-v1",
+        "template": "analysis-spec-compiler-v1",
+        **provenance,
+    }
+    notebook = json.loads((run_dir / "input.ipynb").read_text(encoding="utf-8"))
+    assert notebook["metadata"]["openScienceRuntime"] == {
+        "schemaVersion": 1,
+        "runId": "run-01",
+        "datasetPath": "input.csv",
+        "payloadSha256": "a" * 64,
+        "environmentHash": result.environment_hash,
+        "policyProfileId": "dataset-analysis-spec-v1",
+        "policyTemplate": "analysis-spec-compiler-v1",
+        **provenance,
+    }
+    log = (run_dir / "execution.log").read_text(encoding="utf-8")
+    for key, value in provenance.items():
+        assert f"{key}: {value}" in log
+
+
 def test_small_output_preview_is_unchanged() -> None:
     output = 'small output with 界, a newline\n, and a control byte \x01'
 

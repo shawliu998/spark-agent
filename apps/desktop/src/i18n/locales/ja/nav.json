@@ -8,10 +8,12 @@
     "settings": "設定"
   },
   "items": {
+    "home": "ホーム",
     "new": "新規",
-    "research": "リサーチ",
+    "research": "検証済みワークフロー",
     "analysis": "データ分析",
     "notebooks": "ノートブック",
+    "labNotebook": "研究ノート",
     "files": "ファイル",
     "runs": "実行",
     "skills": "スキル"
@@ -34,6 +36,7 @@
     "runtime": "ランタイム",
     "model": "モデル",
     "modelNotSet": "未設定",
+    "modelStarting": "起動中…",
     "values": {
       "ready": "準備完了",
       "connecting": "接続中",
@@ -47,7 +50,7 @@
     "noResults": "結果がありません。",
     "actions": {
       "newSession": "新規セッション",
-      "analyzeData": "データを分析する（新しいワークフロー）",
+      "analyzeData": "検証済みデータセット分析を開始",
       "auditReport": "レポートを検証する（トレーサビリティレビュー）",
       "openNotebooks": "ノートブックを開く",
       "manageSkills": "スキルを管理",
