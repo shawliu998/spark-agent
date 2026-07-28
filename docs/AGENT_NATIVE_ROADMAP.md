@@ -93,8 +93,8 @@ Apple signing, and notarization remain separate release work.
 The roadmap must preserve all of the following:
 
 - The Research Workspace remains the product center.
-- The existing Elicit-led Home, Papers, Screening, Extraction, Reader, and Report
-  surfaces remain the visual and interaction baseline.
+- The existing Home, Papers, Screening, Extraction, Reader, and Report surfaces
+  remain the visual and interaction baseline.
 - Agent progress appears inside the existing workspace as plans, observations,
   decisions, tool results, evidence, artifacts, and review states.
 - No separate Agent destination, multi-agent interface, chat-first shell, or

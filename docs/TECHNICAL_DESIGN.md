@@ -552,6 +552,6 @@ GitHub Releases (self-contained; sidecar fetched at build time)
 
 One line:
 
-**Use Tauri for a high-performance modern desktop shell, a bundled+isolated OpenCode as
-the Claude Code alternative layer, scientific skills and MCP as the research capability
-layer, and provenance/reviewer as the real moat of an open-source Claude Science alternative.**
+**Use Tauri for a high-performance modern desktop shell, bundled and isolated OpenCode
+for agent execution, scientific skills and MCP for research capabilities, and
+provenance plus review for verifiable results.**

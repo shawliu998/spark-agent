@@ -18,7 +18,7 @@ describe("low-height desktop accessibility", () => {
 
   it("keeps the global reduced-motion boundary intact", () => {
     const start = desktopCss.indexOf("@media (prefers-reduced-motion: reduce)");
-    const end = desktopCss.indexOf("/* Competitor-reproduction literature workspace", start);
+    const end = desktopCss.indexOf("/* Literature workspace", start);
     const reducedMotionRules = desktopCss.slice(start, end);
 
     expect(start).toBeGreaterThanOrEqual(0);
