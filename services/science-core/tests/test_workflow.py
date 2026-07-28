@@ -20,6 +20,8 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from open_science_core.api.report_drafts import get_report_draft_session
+from open_science_core.api.report_drafts import router as report_draft_router
 from open_science_core.api.workflows import get_workflow_session, router
 from open_science_core.db import Base
 from open_science_core.models import (
@@ -31,6 +33,7 @@ from open_science_core.models import (
     JobRecord,
     PlanRecord,
     ProjectRecord,
+    ReportDraftRecord,
     ReviewRecord,
     SourcePageRecord,
     SourceRecord,
@@ -39,10 +42,17 @@ from open_science_core.models import (
     utc_now,
 )
 from open_science_core.workflow import handlers as workflow_handlers
+from open_science_core.workflow import report_drafts as report_draft_service
 from open_science_core.workflow import service as workflow_service
 from open_science_core.workflow._service import lifecycle as workflow_lifecycle
+from open_science_core.workflow.schemas import (
+    EvidenceRelationshipOut,
+    WorkflowClaimOut,
+    WorkflowResultOut,
+)
 from open_science_core.workflow.service import (
     WorkflowConflict,
+    content_sha256,
     current_job_input_hash,
     job_input_hash_for_handler_version,
     resume_workflow,
@@ -83,8 +93,29 @@ class TypedTestClient(TestClient):
     def post(self, url: str, **kwargs: Any) -> Response:
         return cast(_RequestClient, self).request("POST", url, **kwargs)
 
+    def put(self, url: str, **kwargs: Any) -> Response:
+        return cast(_RequestClient, self).request("PUT", url, **kwargs)
+
     def close(self) -> None:
         _close_test_client(self)
+
+
+_markdown_citation_input = cast(
+    Callable[[str], report_draft_service.MarkdownCitationInput],
+    getattr(report_draft_service, "_markdown_citation_input"),
+)
+_visible_citation_numbers = cast(
+    Callable[[str], frozenset[int]],
+    getattr(report_draft_service, "_visible_citation_numbers"),
+)
+_authoritative_base = cast(
+    Callable[[Session, WorkflowRecord], report_draft_service.ReportBase],
+    getattr(report_draft_service, "_authoritative_base"),
+)
+_evidence_snapshot = cast(
+    Callable[[WorkflowResultOut], list[dict[str, object]]],
+    getattr(report_draft_service, "_evidence_snapshot"),
+)
 
 
 class FakeModelGateway:
@@ -239,6 +270,7 @@ class WorkflowApiTest(unittest.TestCase):
     ) -> TypedTestClient:
         app = FastAPI()
         app.include_router(router)
+        app.include_router(report_draft_router)
 
         def synchronized_session_dependency() -> Generator[Session, None, None]:
             if request_barrier is not None:
@@ -246,6 +278,9 @@ class WorkflowApiTest(unittest.TestCase):
             yield from self._session_dependency()
 
         app.dependency_overrides[get_workflow_session] = synchronized_session_dependency
+        app.dependency_overrides[get_report_draft_session] = (
+            synchronized_session_dependency
+        )
         return TypedTestClient(app)
 
     def _create_project(self) -> None:
@@ -1753,6 +1788,511 @@ class WorkflowApiTest(unittest.TestCase):
         ).json()
         sequences = [event["sequence"] for event in first_page["events"] + remainder["events"]]
         self.assertEqual(sequences, list(range(1, final["eventCursor"] + 1)))
+
+    def test_report_draft_inline_boundaries_cannot_form_citations(self) -> None:
+        for content in (
+            r"[1\_2]",
+            "[1`code`, 2]",
+            "[1<!-- hidden -->, 2]",
+            "[1![plot](plot.png), 2]",
+        ):
+            with self.subTest(content=content):
+                markdown = _markdown_citation_input(content)
+                with self.assertRaises(WorkflowFailure):
+                    for visible_block in markdown.visible_blocks:
+                        _visible_citation_numbers(visible_block)
+
+        for content in (r"\[999\]", "`values[999]`"):
+            with self.subTest(exempt_content=content):
+                markdown = _markdown_citation_input(content)
+                numbers = {
+                    number
+                    for visible_block in markdown.visible_blocks
+                    for number in _visible_citation_numbers(visible_block)
+                }
+                self.assertEqual(numbers, set())
+
+        link_label = _markdown_citation_input(
+            "[See citation [1]](https://example.test)"
+        )
+        self.assertEqual(
+            {
+                number
+                for visible_block in link_label.visible_blocks
+                for number in _visible_citation_numbers(visible_block)
+            },
+            {1},
+        )
+
+    def test_persistent_report_draft_cas_restart_and_stale_export_gate(self) -> None:
+        self._add_ready_source()
+        self._add_ready_source(
+            passage=(
+                "Brain computer interfaces improve communication using reproducible "
+                "neural decoding for people with severe motor impairments."
+            ),
+            source_id="source-2",
+        )
+        started = self._start(key="report-draft-workflow-0001")
+        workflow_id = started["workflow"]["id"]
+        planned = self._plan(workflow_id)
+        self._approve(planned)
+        for _ in range(4):
+            self.assertTrue(self._run_once())
+        final = self.client.get(f"/v1/workflows/{workflow_id}").json()
+        self.assertEqual(final["workflow"]["status"], "completed")
+        self.assertEqual(final["result"]["integrityStatus"], "verified-frozen-v2")
+
+        draft_url = f"/v1/projects/project-1/workflows/{workflow_id}/report-draft"
+        created_response = self.client.post(
+            draft_url,
+            headers={"Idempotency-Key": "report-draft-create-0001"},
+            json={"schemaVersion": "1"},
+        )
+        self.assertEqual(created_response.status_code, 201, created_response.text)
+        created = created_response.json()
+        self.assertEqual(created["revision"], 1)
+        self.assertEqual(created["status"], "draft")
+        self.assertIn("[@evidence:", created["contentMarkdown"])
+        self.assertIn("[1]", created["contentMarkdown"])
+        self.assertIn("[2]", created["contentMarkdown"])
+        for key in (
+            "contentSha256",
+            "baseWorkflowSha256",
+            "baseResultSha256",
+            "baseEvidenceSha256",
+        ):
+            self.assertRegex(created[key], r"^[0-9a-f]{64}$")
+
+        replay = self.client.post(
+            draft_url,
+            headers={"Idempotency-Key": "report-draft-create-0001"},
+            json={"schemaVersion": "1"},
+        )
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(replay.json(), created)
+
+        saved_content = (
+            created["contentMarkdown"]
+            + "\nResearcher note.\n"
+            + "\nSupported together [1, 2].\n"
+            + "\n```python\nvalues[999]\n"
+            + "999. Hidden <!-- "
+            + "[@evidence:fake-fenced:"
+            + ("0" * 64)
+            + "] -->\n```\n"
+            + "\nInline code `arr[999]` is not a citation.\n"
+            + "\n    values[999]\n"
+            + "    998. Hidden <!-- "
+            + "[@evidence:fake-indented:"
+            + ("1" * 64)
+            + "] -->\n"
+            + "\n- Nested example:\n\n"
+            + "  ```text\n"
+            + "  997. Hidden <!-- "
+            + "[@evidence:fake-list-fence:"
+            + ("2" * 64)
+            + "] -->\n"
+            + "  ```\n"
+            + "\n[Source link](https://example.test/items/[999])\n"
+            + "\n![Plot [999]](https://example.test/images/[999].png)\n"
+            + "\nEscaped brackets \\[999\\] remain literal text.\n"
+        )
+        save_url = (
+            f"/v1/projects/project-1/workflows/{workflow_id}"
+            f"/report-drafts/{created['id']}"
+        )
+        save_payload = {
+            "expectedRevision": created["revision"],
+            "expectedContentSha256": created["contentSha256"],
+            "contentMarkdown": saved_content,
+        }
+        saved_response = self.client.put(
+            save_url,
+            headers={"Idempotency-Key": "report-draft-save-0001"},
+            json=save_payload,
+        )
+        self.assertEqual(saved_response.status_code, 200, saved_response.text)
+        saved = saved_response.json()
+        self.assertEqual(saved["revision"], 2)
+        self.assertEqual(saved["contentMarkdown"], saved_content)
+        self.assertEqual(saved["status"], "draft")
+
+        save_replay = self.client.put(
+            save_url,
+            headers={"Idempotency-Key": "report-draft-save-0001"},
+            json=save_payload,
+        )
+        self.assertEqual(save_replay.status_code, 200, save_replay.text)
+        self.assertEqual(save_replay.json(), saved)
+        stale_create_replay = self.client.post(
+            draft_url,
+            headers={"Idempotency-Key": "report-draft-create-0001"},
+            json={"schemaVersion": "1"},
+        )
+        self.assertEqual(stale_create_replay.status_code, 409, stale_create_replay.text)
+        self.assertEqual(
+            stale_create_replay.json()["detail"]["code"],
+            "report-draft-idempotency-stale",
+        )
+        reused_save_key = self.client.put(
+            save_url,
+            headers={"Idempotency-Key": "report-draft-save-0001"},
+            json={
+                "expectedRevision": saved["revision"],
+                "expectedContentSha256": saved["contentSha256"],
+                "contentMarkdown": f"{saved_content}\nDifferent request.\n",
+            },
+        )
+        self.assertEqual(reused_save_key.status_code, 409, reused_save_key.text)
+        self.assertEqual(
+            reused_save_key.json()["detail"]["code"],
+            "report-draft-idempotency-conflict",
+        )
+        invalid_citations = (
+            "Unsupported claim [999].",
+            "Unsupported claim [ 999 ].",
+            "Mixed support [1, 999].",
+            "Claim.[999]",
+            "claim[999]",
+            "Bare code index values[999].",
+            "Malformed group [1; 2].",
+            "Indented fake reference is not a binding [998].",
+            "List-fenced fake reference is not a binding [997].",
+            "Unsupported claim\n    [999]",
+        )
+        for index, invalid_citation in enumerate(invalid_citations, start=1):
+            with self.subTest(invalid_citation=invalid_citation):
+                unsupported_visible_citation = self.client.put(
+                    save_url,
+                    headers={
+                        "Idempotency-Key": (
+                            f"report-draft-save-invalid-citation-{index:04d}"
+                        )
+                    },
+                    json={
+                        "expectedRevision": saved["revision"],
+                        "expectedContentSha256": saved["contentSha256"],
+                        "contentMarkdown": (
+                            f"{saved_content}\n{invalid_citation}\n"
+                        ),
+                    },
+                )
+                self.assertEqual(
+                    unsupported_visible_citation.status_code,
+                    409,
+                    unsupported_visible_citation.text,
+                )
+                self.assertEqual(
+                    unsupported_visible_citation.json()["detail"]["code"],
+                    "report-draft-citation-invalid",
+                )
+        stale_save = self.client.put(
+            save_url,
+            headers={"Idempotency-Key": "report-draft-save-stale-0001"},
+            json={**save_payload, "contentMarkdown": f"{saved_content}\nStale edit.\n"},
+        )
+        self.assertEqual(stale_save.status_code, 409, stale_save.text)
+        self.assertEqual(stale_save.json()["detail"]["code"], "report-draft-conflict")
+
+        with self.session_factory() as session:
+            session.add(
+                ProjectRecord(
+                    id="project-2",
+                    title="Other project",
+                    description="",
+                    project_path=str(self.root / "project-2"),
+                    execution_mode="safe",
+                )
+            )
+            session.commit()
+        foreign = self.client.get(
+            f"/v1/projects/project-2/workflows/{workflow_id}/report-draft"
+        )
+        self.assertEqual(foreign.status_code, 404, foreign.text)
+
+        self.client.close()
+        self.client = self._new_client()
+        restarted = self.client.get(draft_url)
+        self.assertEqual(restarted.status_code, 200, restarted.text)
+        self.assertEqual(restarted.json()["contentMarkdown"], saved_content)
+        self.assertEqual(restarted.json()["contentSha256"], saved["contentSha256"])
+
+        source_path = self.root / "source-1.pdf"
+        original_source_bytes = source_path.read_bytes()
+        source_path.write_bytes(original_source_bytes + b"-tampered")
+        export_url = f"{save_url}/export"
+        stale_export = self.client.post(
+            export_url,
+            json={
+                "expectedRevision": saved["revision"],
+                "expectedContentSha256": saved["contentSha256"],
+            },
+        )
+        self.assertEqual(stale_export.status_code, 409, stale_export.text)
+        self.assertEqual(stale_export.json()["detail"]["code"], "report-draft-base-stale")
+        blocked = self.client.get(draft_url).json()
+        self.assertEqual(blocked["status"], "needs-review")
+        self.assertEqual(blocked["contentMarkdown"], saved_content)
+        self.assertEqual(blocked["contentSha256"], saved["contentSha256"])
+
+        source_path.write_bytes(original_source_bytes)
+        reviewed_response = self.client.post(
+            f"{save_url}/review",
+            headers={"Idempotency-Key": "report-draft-review-0001"},
+            json={
+                "expectedRevision": blocked["revision"],
+                "expectedContentSha256": blocked["contentSha256"],
+            },
+        )
+        self.assertEqual(reviewed_response.status_code, 200, reviewed_response.text)
+        reviewed = reviewed_response.json()
+        self.assertEqual(reviewed["status"], "reviewed")
+        review_replay = self.client.post(
+            f"{save_url}/review",
+            headers={"Idempotency-Key": "report-draft-review-0001"},
+            json={
+                "expectedRevision": blocked["revision"],
+                "expectedContentSha256": blocked["contentSha256"],
+            },
+        )
+        self.assertEqual(review_replay.status_code, 200, review_replay.text)
+        self.assertEqual(review_replay.json(), reviewed)
+        stale_save_replay = self.client.put(
+            save_url,
+            headers={"Idempotency-Key": "report-draft-save-0001"},
+            json=save_payload,
+        )
+        self.assertEqual(stale_save_replay.status_code, 409, stale_save_replay.text)
+        self.assertEqual(
+            stale_save_replay.json()["detail"]["code"],
+            "report-draft-idempotency-stale",
+        )
+        exported_response = self.client.post(
+            export_url,
+            json={
+                "expectedRevision": reviewed["revision"],
+                "expectedContentSha256": reviewed["contentSha256"],
+            },
+        )
+        self.assertEqual(exported_response.status_code, 200, exported_response.text)
+        self.assertEqual(exported_response.json()["contentMarkdown"], saved_content)
+
+        with self.session_factory() as session:
+            evidence = session.scalar(
+                select(EvidenceSpanRecord).where(EvidenceSpanRecord.source_id == "source-1")
+            )
+            assert evidence is not None
+            original_evidence_text = evidence.text
+            evidence.text = f"{original_evidence_text} tampered"
+            session.commit()
+        evidence_stale = self.client.post(
+            export_url,
+            json={
+                "expectedRevision": reviewed["revision"],
+                "expectedContentSha256": reviewed["contentSha256"],
+            },
+        )
+        self.assertEqual(evidence_stale.status_code, 409, evidence_stale.text)
+        self.assertEqual(evidence_stale.json()["detail"]["code"], "report-draft-base-stale")
+        evidence_blocked = self.client.get(draft_url).json()
+        self.assertEqual(evidence_blocked["status"], "needs-review")
+        stale_review_replay = self.client.post(
+            f"{save_url}/review",
+            headers={"Idempotency-Key": "report-draft-review-0001"},
+            json={
+                "expectedRevision": blocked["revision"],
+                "expectedContentSha256": blocked["contentSha256"],
+            },
+        )
+        self.assertEqual(stale_review_replay.status_code, 409, stale_review_replay.text)
+        self.assertEqual(
+            stale_review_replay.json()["detail"]["code"],
+            "report-draft-idempotency-stale",
+        )
+        with self.session_factory() as session:
+            evidence = session.scalar(
+                select(EvidenceSpanRecord).where(EvidenceSpanRecord.source_id == "source-1")
+            )
+            assert evidence is not None
+            evidence.text = original_evidence_text
+            session.commit()
+        evidence_rebased = self.client.post(
+            f"{save_url}/review",
+            headers={"Idempotency-Key": "report-draft-review-0002"},
+            json={
+                "expectedRevision": evidence_blocked["revision"],
+                "expectedContentSha256": evidence_blocked["contentSha256"],
+            },
+        )
+        self.assertEqual(evidence_rebased.status_code, 200, evidence_rebased.text)
+        current = evidence_rebased.json()
+        self.assertEqual(current["status"], "reviewed")
+
+        source_path.write_bytes(original_source_bytes + b"-review-stale")
+        stale_review = self.client.post(
+            f"{save_url}/review",
+            headers={"Idempotency-Key": "report-draft-review-stale-0001"},
+            json={
+                "expectedRevision": current["revision"],
+                "expectedContentSha256": current["contentSha256"],
+            },
+        )
+        self.assertEqual(stale_review.status_code, 409, stale_review.text)
+        self.assertEqual(
+            stale_review.json()["detail"]["code"],
+            "report-draft-base-stale",
+        )
+        review_blocked = self.client.get(draft_url).json()
+        self.assertEqual(review_blocked["status"], "needs-review")
+        self.assertEqual(review_blocked["revision"], current["revision"] + 1)
+        source_path.write_bytes(original_source_bytes)
+        recovered_review = self.client.post(
+            f"{save_url}/review",
+            headers={"Idempotency-Key": "report-draft-review-recover-0001"},
+            json={
+                "expectedRevision": review_blocked["revision"],
+                "expectedContentSha256": review_blocked["contentSha256"],
+            },
+        )
+        self.assertEqual(recovered_review.status_code, 200, recovered_review.text)
+        current = recovered_review.json()
+        self.assertEqual(current["status"], "reviewed")
+
+        with self.session_factory() as session:
+            workflow = session.get(WorkflowRecord, workflow_id)
+            assert workflow is not None
+            old_base = _authoritative_base(session, workflow)
+        replacements: dict[str, Any] = {}
+        citation_rebases: list[dict[str, str]] = []
+        new_claims: list[WorkflowClaimOut] = []
+        for claim in old_base.result.claims:
+            new_evidence: list[EvidenceRelationshipOut] = []
+            for evidence in claim.evidence:
+                old_token = f"{evidence.evidence_id}:{evidence.quote_hash}"
+                replacement = replacements.get(old_token)
+                if replacement is None:
+                    replacement_text = f"{evidence.text} Authoritative replacement."
+                    replacement = evidence.model_copy(
+                        update={
+                            "evidence_id": f"rebased-evidence-{len(replacements) + 1}",
+                            "text": replacement_text,
+                            "quote_hash": hashlib.sha256(
+                                replacement_text.encode("utf-8")
+                            ).hexdigest(),
+                        }
+                    )
+                    replacements[old_token] = replacement
+                    citation_rebases.append(
+                        {
+                            "previousEvidenceId": evidence.evidence_id,
+                            "previousQuoteHash": evidence.quote_hash,
+                            "currentEvidenceId": replacement.evidence_id,
+                            "currentQuoteHash": replacement.quote_hash,
+                        }
+                    )
+                new_evidence.append(replacement)
+            new_claims.append(claim.model_copy(update={"evidence": new_evidence}))
+        new_result = old_base.result.model_copy(update={"claims": new_claims})
+        new_result_sha256 = content_sha256(
+            new_result.model_dump(mode="json", by_alias=True, exclude_none=False)
+        )
+        new_base = report_draft_service.ReportBase(
+            workflow_sha256=content_sha256(
+                {
+                    "previousWorkflowSha256": old_base.workflow_sha256,
+                    "resultSha256": new_result_sha256,
+                }
+            ),
+            result_sha256=new_result_sha256,
+            evidence_sha256=content_sha256(
+                _evidence_snapshot(new_result)
+            ),
+            result=new_result,
+        )
+        with patch.object(
+            report_draft_service,
+            "_authoritative_base",
+            return_value=new_base,
+        ):
+            authoritative_changed = self.client.get(draft_url).json()
+            self.assertEqual(authoritative_changed["status"], "needs-review")
+            gated_export = self.client.post(
+                export_url,
+                json={
+                    "expectedRevision": authoritative_changed["revision"],
+                    "expectedContentSha256": authoritative_changed["contentSha256"],
+                },
+            )
+            self.assertEqual(gated_export.status_code, 409, gated_export.text)
+            self.assertEqual(
+                gated_export.json()["detail"]["code"],
+                "report-draft-needs-review",
+            )
+            missing_rebase = self.client.post(
+                f"{save_url}/review",
+                headers={"Idempotency-Key": "report-draft-review-new-base-missing-0001"},
+                json={
+                    "expectedRevision": authoritative_changed["revision"],
+                    "expectedContentSha256": authoritative_changed["contentSha256"],
+                },
+            )
+            self.assertEqual(missing_rebase.status_code, 409, missing_rebase.text)
+            self.assertEqual(
+                missing_rebase.json()["detail"]["code"],
+                "report-draft-rebase-required",
+            )
+            persisted_block = self.client.get(draft_url).json()
+            self.assertEqual(persisted_block["status"], "needs-review")
+            new_evidence_review = self.client.post(
+                f"{save_url}/review",
+                headers={"Idempotency-Key": "report-draft-review-new-base-0001"},
+                json={
+                    "expectedRevision": persisted_block["revision"],
+                    "expectedContentSha256": persisted_block["contentSha256"],
+                    "citationRebases": citation_rebases,
+                },
+            )
+            self.assertEqual(
+                new_evidence_review.status_code,
+                200,
+                new_evidence_review.text,
+            )
+            rebased = new_evidence_review.json()
+            self.assertEqual(rebased["status"], "reviewed")
+            self.assertIn("Researcher note.", rebased["contentMarkdown"])
+            for item in citation_rebases:
+                self.assertNotIn(
+                    f"[@evidence:{item['previousEvidenceId']}:"
+                    f"{item['previousQuoteHash']}]",
+                    rebased["contentMarkdown"],
+                )
+                self.assertIn(
+                    f"[@evidence:{item['currentEvidenceId']}:"
+                    f"{item['currentQuoteHash']}]",
+                    rebased["contentMarkdown"],
+                )
+            rebased_export = self.client.post(
+                export_url,
+                json={
+                    "expectedRevision": rebased["revision"],
+                    "expectedContentSha256": rebased["contentSha256"],
+                },
+            )
+            self.assertEqual(rebased_export.status_code, 200, rebased_export.text)
+            self.assertEqual(
+                rebased_export.json()["contentMarkdown"],
+                rebased["contentMarkdown"],
+            )
+
+        with self.session_factory() as session:
+            stored = session.scalar(
+                select(ReportDraftRecord).where(
+                    ReportDraftRecord.workflow_id == workflow_id
+                )
+            )
+            assert stored is not None
+            self.assertIn("Researcher note.", stored.content_markdown)
 
     def test_local_claim_preserves_complete_sentence_above_800_characters(self) -> None:
         long_passage = (

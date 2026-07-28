@@ -13,10 +13,12 @@ from pydantic import (
 
 from .config import MAX_TIMEOUT_SECONDS
 from .fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
     GENERAL_ANALYSIS_POLICY_ID,
     AnalysisPolicyId,
-    FixedAnalysisTemplate,
+    AnalysisPolicyTemplate,
 )
 
 
@@ -57,7 +59,15 @@ class ExecuteIn(ApiModel):
     timeout_seconds: int = Field(default=120, ge=1, le=MAX_TIMEOUT_SECONDS)
     payload_sha256: Sha256
     policy_profile_id: AnalysisPolicyId
-    policy_template: FixedAnalysisTemplate | None = None
+    policy_template: AnalysisPolicyTemplate | None = None
+    analysis_spec_id: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=36),
+    ] | None = None
+    analysis_spec_sha256: Sha256 | None = None
+    dataset_profile_sha256: Sha256 | None = None
+    compiler_version: Literal["analysis-spec-compiler-v1"] | None = None
+    approved_code_sha256: Sha256 | None = None
 
     @field_validator("run_dir", "dataset_path", "code")
     @classmethod
@@ -75,14 +85,30 @@ class ExecuteIn(ApiModel):
 
     @model_validator(mode="after")
     def validate_policy_contract(self) -> Self:
+        compiled_provenance = (
+            self.analysis_spec_id,
+            self.analysis_spec_sha256,
+            self.dataset_profile_sha256,
+            self.compiler_version,
+            self.approved_code_sha256,
+        )
         if self.policy_profile_id == FIXED_ANALYSIS_POLICY_ID:
-            if self.policy_template is None:
+            if self.policy_template not in {"baseline", "repair-1", "repair-2"}:
                 raise ValueError("fixed analysis policy requires policyTemplate")
-        elif (
-            self.policy_profile_id != GENERAL_ANALYSIS_POLICY_ID
-            or self.policy_template is not None
-        ):
-            raise ValueError("general analysis policy does not accept policyTemplate")
+            if any(value is not None for value in compiled_provenance):
+                raise ValueError("fixed analysis policy does not accept compiled provenance")
+        elif self.policy_profile_id == COMPILED_ANALYSIS_POLICY_ID:
+            if (
+                self.policy_template != COMPILED_ANALYSIS_TEMPLATE
+                or any(value is None for value in compiled_provenance)
+                or self.compiler_version != COMPILED_ANALYSIS_TEMPLATE
+            ):
+                raise ValueError("compiled analysis policy requires exact provenance")
+        elif self.policy_profile_id == GENERAL_ANALYSIS_POLICY_ID:
+            if self.policy_template is not None or any(
+                value is not None for value in compiled_provenance
+            ):
+                raise ValueError("general analysis policy does not accept policy provenance")
         return self
 
 

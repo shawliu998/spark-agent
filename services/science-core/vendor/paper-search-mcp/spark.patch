@@ -1,0 +1,496 @@
+diff --git a/paper_search_mcp/academic_platforms/crossref.py b/paper_search_mcp/academic_platforms/crossref.py
+index 6b10dec..3e6f234 100644
+--- a/paper_search_mcp/academic_platforms/crossref.py
++++ b/paper_search_mcp/academic_platforms/crossref.py
+@@ -1,10 +1,10 @@
+ # paper_search_mcp/academic_platforms/crossref.py
+ from typing import List, Optional, Dict, Any
+ from datetime import datetime
++import json
+ import requests
+-import time
+-import random
+ from ..paper import Paper
++from ..provider_errors import ProviderError
+ from .base import PaperSource
+ import logging
+ 
+@@ -14,12 +14,13 @@ class CrossRefSearcher(PaperSource):
+     """Searcher for CrossRef database papers"""
+     
+     BASE_URL = "https://api.crossref.org"
++    MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+     
+-    # User agent for polite API usage as per CrossRef etiquette
+-    USER_AGENT = "paper-search-mcp/0.1.3 (https://github.com/Dragonatorul/paper-search-mcp; mailto:paper-search@example.org)"
++    # Product and fork identity for transparent API usage.
++    USER_AGENT = "Spark-Agent/0.1.4+spark.3 (https://github.com/shawliu998/spark-agent)"
+     
+-    def __init__(self):
+-        self.session = requests.Session()
++    def __init__(self, session=None):
++        self.session = session or requests.Session()
+         self.session.headers.update({
+             'User-Agent': self.USER_AGENT,
+             'Accept': 'application/json'
+@@ -37,57 +38,86 @@ class CrossRefSearcher(PaperSource):
+         Returns:
+             List of Paper objects
+         """
+-        try:
+-            params = {
+-                'query': query,
+-                'rows': min(max_results, 1000),  # CrossRef API max is 1000
+-                'sort': 'relevance',
+-                'order': 'desc'
+-            }
++        params = {
++            'query': query,
++            'rows': min(max_results, 1000),  # CrossRef API max is 1000
++            'sort': 'relevance',
++            'order': 'desc'
++        }
+             
+-            # Add any additional filters from kwargs
+-            if 'filter' in kwargs:
+-                params['filter'] = kwargs['filter']
+-            if 'sort' in kwargs:
+-                params['sort'] = kwargs['sort']
+-            if 'order' in kwargs:
+-                params['order'] = kwargs['order']
++        # Add any additional filters from kwargs
++        if 'filter' in kwargs:
++            params['filter'] = kwargs['filter']
++        if 'sort' in kwargs:
++            params['sort'] = kwargs['sort']
++        if 'order' in kwargs:
++            params['order'] = kwargs['order']
+                 
+-            # Add polite pool parameter
+-            params['mailto'] = 'paper-search@example.org'
+-            
+-            url = f"{self.BASE_URL}/works"
+-            response = self.session.get(url, params=params, timeout=30)
+-            
++        url = f"{self.BASE_URL}/works"
++        try:
++            response = self.session.get(
++                url,
++                params=params,
++                timeout=(10, 30),
++                stream=True,
++            )
++        except requests.RequestException as error:
++            raise ProviderError("connector-unavailable") from error
++
++        try:
+             if response.status_code == 429:
+-                # Rate limited - wait and retry once
+-                logger.warning("Rate limited by CrossRef API, waiting 2 seconds...")
+-                time.sleep(2)
+-                response = self.session.get(url, params=params, timeout=30)
+-            
+-            response.raise_for_status()
+-            data = response.json()
+-            
+-            papers = []
+-            items = data.get('message', {}).get('items', [])
+-            
+-            for item in items:
++                raise ProviderError("rate-limited")
++            if response.status_code >= 500:
++                raise ProviderError("connector-unavailable")
++            if response.status_code >= 400:
++                raise ProviderError("provider-rejected")
++
++            content_length = response.headers.get("Content-Length")
++            if content_length is not None:
+                 try:
+-                    paper = self._parse_crossref_item(item)
+-                    if paper:
+-                        papers.append(paper)
+-                except Exception as e:
+-                    logger.warning(f"Error parsing CrossRef item: {e}")
+-                    continue
+-                    
+-            return papers
+-            
+-        except requests.RequestException as e:
+-            logger.error(f"Error searching CrossRef: {e}")
+-            return []
+-        except Exception as e:
+-            logger.error(f"Unexpected error in CrossRef search: {e}")
+-            return []
++                    if int(content_length) > self.MAX_RESPONSE_BYTES:
++                        raise ProviderError("provider-response-invalid")
++                except ValueError as error:
++                    raise ProviderError("provider-response-invalid") from error
++
++            payload = bytearray()
++            try:
++                for chunk in response.iter_content(chunk_size=64 * 1024):
++                    payload.extend(chunk)
++                    if len(payload) > self.MAX_RESPONSE_BYTES:
++                        raise ProviderError("provider-response-invalid")
++            except requests.RequestException as error:
++                raise ProviderError("connector-unavailable") from error
++        finally:
++            response.close()
++
++        try:
++            data = json.loads(payload)
++        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
++            raise ProviderError("provider-response-invalid") from error
++        if (
++            not isinstance(data, dict)
++            or data.get("status") != "ok"
++            or not isinstance(data.get("message"), dict)
++            or not isinstance(data["message"].get("items"), list)
++        ):
++            raise ProviderError("provider-response-invalid")
++
++        papers = []
++        items = data["message"]["items"]
++        malformed = 0
++        for item in items:
++            if not isinstance(item, dict):
++                malformed += 1
++                continue
++            paper = self._parse_crossref_item(item)
++            if paper is None or not paper.paper_id or not paper.title:
++                malformed += 1
++                continue
++            papers.append(paper)
++        if items and not papers and malformed:
++            raise ProviderError("provider-response-invalid")
++        return papers
+     
+     def _parse_crossref_item(self, item: Dict[str, Any]) -> Optional[Paper]:
+         """Parse a CrossRef API item into a Paper object."""
+@@ -275,7 +305,7 @@ class CrossRefSearcher(PaperSource):
+         """
+         try:
+             url = f"{self.BASE_URL}/works/{doi}"
+-            params = {'mailto': 'paper-search@example.org'}
++            params = {}
+             
+             response = self.session.get(url, params=params, timeout=30)
+             
+@@ -351,4 +381,4 @@ if __name__ == "__main__":
+         print("\nTesting paper reading functionality...")
+         paper_id = papers[0].doi
+         message = searcher.read_paper(paper_id)
+-        print(f"Message: {message}")
+\ No newline at end of file
++        print(f"Message: {message}")
+diff --git a/paper_search_mcp/academic_platforms/openalex.py b/paper_search_mcp/academic_platforms/openalex.py
+index faa9203..e2fc9a2 100644
+--- a/paper_search_mcp/academic_platforms/openalex.py
++++ b/paper_search_mcp/academic_platforms/openalex.py
+@@ -1,5 +1,6 @@
+-from typing import List, Optional
++from typing import Any, List, Optional
+ from datetime import datetime
++import json
+ import requests
+ import logging
+ from ..paper import Paper
+@@ -13,13 +14,12 @@ class OpenAlexSearcher(PaperSource):
+     """OpenAlex paper search implementation"""
+ 
+     BASE_URL = "https://api.openalex.org/works"
++    MAX_RESPONSE_BYTES = 4 * 1024 * 1024
++    USER_AGENT = "Spark-Agent/0.1.4+spark.3 (https://github.com/shawliu998/spark-agent)"
+ 
+-    def __init__(self):
+-        self.session = requests.Session()
+-        # OpenAlex encourages providing an email in User-Agent for the "polite pool"
+-        self.session.headers.update(
+-            {"User-Agent": "paper-search-mcp/1.0 (mailto:openags@example.com)"}
+-        )
++    def __init__(self, session=None):
++        self.session = session or requests.Session()
++        self.session.headers.update({"User-Agent": self.USER_AGENT, "Accept": "application/json"})
+ 
+     def _reconstruct_abstract(self, inverted_index: dict) -> str:
+         """
+@@ -51,108 +51,135 @@ class OpenAlexSearcher(PaperSource):
+         Returns:
+             List[Paper]: List of found papers with metadata.
+         """
+-        papers = []
+-
++        from ..provider_errors import ProviderError
++
++        # OpenAlex interprets ``?`` and ``*`` as wildcard operators and rejects
++        # them in its default stemmed search. Research questions commonly end
++        # in ``?``, so remove those unsupported operators before dispatch while
++        # preserving all searchable terms.
++        search_query = " ".join(query.replace("?", " ").replace("*", " ").split())
++        params = {
++            "search": search_query,
++            "per_page": min(max_results, 200),
++        }
+         try:
+-            params = {
+-                "search": query,
+-                "per_page": min(max_results, 200),
+-            }
+-
+-            response = self.session.get(self.BASE_URL, params=params, timeout=30)
+-            
+-            if response.status_code != 200:
+-                logger.error(f"OpenAlex search failed with status {response.status_code}")
+-                return papers
+-
+-            data = response.json()
+-            results = data.get("results", [])
+-
+-            for item in results:
+-                if len(papers) >= max_results:
+-                    break
+-
+-                # ID usually looks like 'https://openalex.org/W2741809807'
+-                paper_id = item.get("id", "").replace("https://openalex.org/", "")
+-                title = item.get("title")
+-                if not title:
+-                    continue  # Skip items without a title
+-
+-                # Process Authors
+-                authors = [
+-                    author.get("author", {}).get("display_name", "")
+-                    for author in item.get("authorships", [])
+-                    if author.get("author", {}).get("display_name")
+-                ]
+-
+-                # Abstract
+-                abstract = self._reconstruct_abstract(
+-                    item.get("abstract_inverted_index")
+-                )
+-
+-                # Process DOI
+-                doi = item.get("doi", "")
+-                if doi:
+-                    # OpenAlex DOI is returned as a full url e.g. https://doi.org/10...
+-                    doi = doi.replace("https://doi.org/", "")
+-
+-                if not doi and abstract:
+-                    doi = extract_doi(abstract)
+-
+-                # Process URLs (Landing page vs direct PDF)
+-                url = ""
+-                pdf_url = ""
+-
+-                primary_location = item.get("primary_location")
+-                if primary_location:
+-                    url = primary_location.get("landing_page_url", "")
+-                    pdf_url = primary_location.get("pdf_url", "")
+-
+-                if not url:
+-                    url = item.get("id", "")
+-
+-                # Check general open access availability for PDF fallback
+-                open_access = item.get("open_access", {})
+-                if not pdf_url and open_access.get("is_oa"):
+-                    pdf_url = open_access.get("oa_url", "")
+-
+-                # Dates
+-                pub_date_str = item.get("publication_date")
+-                published_date = None
+-                if pub_date_str:
+-                    try:
+-                        published_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
+-                    except ValueError:
+-                        pass
+-
+-                # Categories / Concepts
+-                concepts = [
+-                    concept.get("display_name")
+-                    for concept in item.get("concepts", [])
+-                    if concept.get("display_name")
+-                ]
+-
+-                papers.append(
+-                    Paper(
+-                        paper_id=paper_id,
+-                        title=title,
+-                        authors=authors,
+-                        abstract=abstract,
+-                        url=url,
+-                        pdf_url=pdf_url or "",
+-                        published_date=published_date,
+-                        source="openalex",
+-                        categories=concepts[:5],  # Keep top 5 concepts to reduce size
+-                        doi=doi,
+-                        citations=item.get("cited_by_count", 0),
+-                    )
+-                )
++            response = self.session.get(
++                self.BASE_URL, params=params, timeout=(10, 30), stream=True
++            )
++        except requests.RequestException as error:
++            raise ProviderError("connector-unavailable") from error
+ 
+-        except Exception as e:
+-            logger.error(f"OpenAlex search error: {e}")
++        try:
++            if response.status_code == 429:
++                raise ProviderError("rate-limited")
++            if response.status_code >= 500:
++                raise ProviderError("connector-unavailable")
++            if response.status_code >= 400:
++                raise ProviderError("provider-rejected")
++
++            content_length = response.headers.get("Content-Length")
++            if content_length is not None:
++                try:
++                    if int(content_length) > self.MAX_RESPONSE_BYTES:
++                        raise ProviderError("provider-response-invalid")
++                except ValueError as error:
++                    raise ProviderError("provider-response-invalid") from error
++
++            payload = bytearray()
++            try:
++                for chunk in response.iter_content(chunk_size=64 * 1024):
++                    payload.extend(chunk)
++                    if len(payload) > self.MAX_RESPONSE_BYTES:
++                        raise ProviderError("provider-response-invalid")
++            except requests.RequestException as error:
++                raise ProviderError("connector-unavailable") from error
++            except TypeError as error:
++                raise ProviderError("provider-response-invalid") from error
++        finally:
++            response.close()
+ 
++        try:
++            data = json.loads(payload)
++        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
++            raise ProviderError("provider-response-invalid") from error
++        if not isinstance(data, dict) or not isinstance(data.get("results"), list):
++            raise ProviderError("provider-response-invalid")
++
++        papers: List[Paper] = []
++        results = data["results"]
++        malformed = 0
++        for item in results:
++            paper = self._parse_openalex_item(item)
++            if paper is None:
++                malformed += 1
++                continue
++            papers.append(paper)
++            if len(papers) >= max_results:
++                break
++        if results and not papers and malformed:
++            raise ProviderError("provider-response-invalid")
+         return papers
+ 
++    def _parse_openalex_item(self, item: Any) -> Optional[Paper]:
++        if not isinstance(item, dict):
++            return None
++        work_id = item.get("id")
++        title = item.get("title")
++        if not isinstance(work_id, str) or not work_id or not isinstance(title, str) or not title:
++            return None
++
++        paper_id = work_id.replace("https://openalex.org/", "")
++        authors = []
++        authorships = item.get("authorships", [])
++        if isinstance(authorships, list):
++            for authorship in authorships:
++                if not isinstance(authorship, dict):
++                    continue
++                author = authorship.get("author")
++                name = author.get("display_name") if isinstance(author, dict) else None
++                if isinstance(name, str) and name:
++                    authors.append(name)
++
++        abstract = self._reconstruct_abstract(item.get("abstract_inverted_index"))
++        doi = item.get("doi")
++        doi = doi.replace("https://doi.org/", "") if isinstance(doi, str) else ""
++        if not doi and abstract:
++            doi = extract_doi(abstract) or ""
++
++        primary_location = item.get("primary_location")
++        primary_location = primary_location if isinstance(primary_location, dict) else {}
++        url = primary_location.get("landing_page_url")
++        pdf_url = primary_location.get("pdf_url")
++        url = url if isinstance(url, str) else work_id
++        pdf_url = pdf_url if isinstance(pdf_url, str) else ""
++        open_access = item.get("open_access")
++        if not pdf_url and isinstance(open_access, dict) and open_access.get("is_oa"):
++            oa_url = open_access.get("oa_url")
++            pdf_url = oa_url if isinstance(oa_url, str) else ""
++
++        published_date = None
++        pub_date_str = item.get("publication_date")
++        if isinstance(pub_date_str, str):
++            try:
++                published_date = datetime.strptime(pub_date_str, "%Y-%m-%d")
++            except ValueError:
++                pass
++
++        concepts = []
++        raw_concepts = item.get("concepts", [])
++        if isinstance(raw_concepts, list):
++            for concept in raw_concepts:
++                name = concept.get("display_name") if isinstance(concept, dict) else None
++                if isinstance(name, str) and name:
++                    concepts.append(name)
++        citations = item.get("cited_by_count", 0)
++        citations = citations if isinstance(citations, int) else 0
++        return Paper(
++            paper_id=paper_id, title=title, authors=authors, abstract=abstract, url=url,
++            pdf_url=pdf_url, published_date=published_date, source="openalex",
++            categories=concepts[:5], doi=doi, citations=citations,
++        )
++
+     def download_pdf(self, paper_id: str, save_path: str) -> str:
+         """
+         OpenAlex does not host PDFs natively, it only links to open access versions.
+diff --git a/paper_search_mcp/server.py b/paper_search_mcp/server.py
+index 194470e..ec2a73c 100644
+--- a/paper_search_mcp/server.py
++++ b/paper_search_mcp/server.py
+@@ -30,6 +30,7 @@ from .academic_platforms.zenodo import ZenodoSearcher
+ from .academic_platforms.hal import HALSearcher
+ from .academic_platforms.ssrn import SSRNSearcher
+ from .utils import extract_doi
++from .provider_errors import ProviderError
+ 
+ # from .academic_platforms.hub import SciHubSearcher
+ from .paper import Paper
+@@ -67,12 +68,15 @@ ssrn_searcher = SSRNSearcher()
+ # Asynchronous helper to adapt synchronous searchers
+ # Runs blocking requests-based calls in a thread pool to avoid blocking the event loop.
+ async def async_search(searcher, query: str, max_results: int, **kwargs) -> List[Dict]:
+-    if 'year' in kwargs:
+-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, year=kwargs['year'])
+-    elif kwargs:
+-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, **kwargs)
+-    else:
+-        papers = await asyncio.to_thread(searcher.search, query, max_results=max_results)
++    try:
++        if 'year' in kwargs:
++            papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, year=kwargs['year'])
++        elif kwargs:
++            papers = await asyncio.to_thread(searcher.search, query, max_results=max_results, **kwargs)
++        else:
++            papers = await asyncio.to_thread(searcher.search, query, max_results=max_results)
++    except ProviderError as error:
++        raise RuntimeError(str(error)) from None
+     return [paper.to_dict() for paper in papers]
+ 
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index fd4553d..4bc6c8f 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
+ 
+ [project]
+ name = "paper-search-mcp"
+-version = "0.1.4"
++version = "0.1.4+spark.3"
+ authors = [{ name = "P.S Zhang", email = "pengsongzhang96@gmail.com" }]
+ description = "A MCP server for searching and downloading academic papers from multiple sources."
+ readme = "README.md"

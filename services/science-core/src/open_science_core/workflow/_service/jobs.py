@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...models import (
+    AgentDecisionRecord,
     AnalysisIntentRecord,
     AnswerRecord,
     ApprovalRecord,
@@ -16,10 +17,15 @@ from ...models import (
     ClaimEvidenceRecord,
     ClaimRecord,
     EvidenceSpanRecord,
+    IntentDecisionRecord,
+    InteractionRequestRecord,
     JobRecord,
     PlanRecord,
     RunRecord,
+    SourceRecord,
+    StepObservationRecord,
     TaskRecord,
+    UserResponseRecord,
     WorkflowRecord,
     utc_now,
 )
@@ -27,6 +33,7 @@ from .integrity import (
     LEGACY_HANDLER_VERSIONS,
     PLAN_HANDLER_VERSION,
     REVIEW_HANDLER_VERSION,
+    ROUTER_HANDLER_VERSION,
     TASK_HANDLER_VERSION,
     WorkflowConflict,
     content_sha256,
@@ -71,6 +78,59 @@ def job_input_payload(
     handler_version: str | None = None,
 ) -> dict[str, Any]:
     selected_handler_version = handler_version or handler_version_for(kind)
+    if kind == "route-intent":
+        source_records = {
+            source.id: source
+            for source in session.scalars(
+                select(SourceRecord).where(SourceRecord.id.in_(workflow.selected_source_ids))
+            )
+        }
+        interactions = list(
+            session.scalars(
+                select(InteractionRequestRecord)
+                .where(InteractionRequestRecord.workflow_id == workflow.id)
+                .order_by(
+                    InteractionRequestRecord.created_at,
+                    InteractionRequestRecord.id,
+                )
+            )
+        )
+        response_envelopes: list[dict[str, Any]] = []
+        for interaction in interactions:
+            latest_response = session.scalar(
+                select(UserResponseRecord)
+                .where(UserResponseRecord.interaction_id == interaction.id)
+                .order_by(UserResponseRecord.revision.desc())
+            )
+            if latest_response is None:
+                continue
+            response_envelopes.append(
+                {
+                    "interactionId": interaction.id,
+                    "requestType": interaction.request_type,
+                    "responseRevision": latest_response.revision,
+                    "responseSha256": latest_response.response_sha256,
+                }
+            )
+        return {
+            "answers": response_envelopes,
+            "generationMode": workflow.generation_mode,
+            "goalSha256": hashlib.sha256(workflow.goal.encode("utf-8")).hexdigest(),
+            "handlerVersion": selected_handler_version,
+            "kind": kind,
+            "sources": [
+                {
+                    "contentHash": source_records[source_id].content_hash,
+                    "id": source_id,
+                    "ingestionStatus": source_records[source_id].ingestion_status,
+                    "sourceKind": source_records[source_id].source_kind,
+                }
+                if source_id in source_records
+                else {"id": source_id, "missing": True}
+                for source_id in workflow.selected_source_ids
+            ],
+            "workflowId": workflow.id,
+        }
     if kind == "generate-plan":
         payload: dict[str, Any] = {
             "goalSha256": hashlib.sha256(workflow.goal.encode("utf-8")).hexdigest(),
@@ -80,6 +140,37 @@ def job_input_payload(
         }
         if selected_handler_version != LEGACY_HANDLER_VERSIONS["generate-plan"]:
             payload["generationMode"] = workflow.generation_mode
+        if workflow.creation_mode == "autonomous":
+            decision = (
+                session.get(IntentDecisionRecord, workflow.current_intent_decision_id)
+                if workflow.current_intent_decision_id is not None
+                else None
+            )
+            if decision is None or decision.workflow_id != workflow.id:
+                raise WorkflowConflict(
+                    "intent-decision-binding-invalid",
+                    "An autonomous plan job requires its current validated intent decision.",
+                )
+            sources = {
+                source.id: source
+                for source in session.scalars(
+                    select(SourceRecord).where(SourceRecord.id.in_(decision.selected_source_ids))
+                )
+            }
+            payload["intentDecision"] = {
+                "id": decision.id,
+                "outputSha256": decision.output_sha256,
+                "selectedSources": [
+                    {
+                        "contentHash": sources[source_id].content_hash,
+                        "id": source_id,
+                        "sourceKind": sources[source_id].source_kind,
+                    }
+                    if source_id in sources
+                    else {"id": source_id, "missing": True}
+                    for source_id in decision.selected_source_ids
+                ],
+            }
         if workflow.workflow_type == "dataset-analysis":
             payload.update(
                 {
@@ -102,9 +193,8 @@ def job_input_payload(
                     select(TaskRecord)
                     .where(
                         TaskRecord.workflow_id == workflow.id,
-                        TaskRecord.plan_id == (
-                            approved_plan.id if approved_plan is not None else None
-                        ),
+                        TaskRecord.plan_id
+                        == (approved_plan.id if approved_plan is not None else None),
                     )
                     .order_by(TaskRecord.order_index)
                 )
@@ -112,9 +202,7 @@ def job_input_payload(
             intent_id = tasks[-1].outputs.get("analysisIntentId") if tasks else None
             run_id = tasks[-1].outputs.get("runId") if tasks else None
             intent = (
-                session.get(AnalysisIntentRecord, intent_id)
-                if isinstance(intent_id, str)
-                else None
+                session.get(AnalysisIntentRecord, intent_id) if isinstance(intent_id, str) else None
             )
             run = session.get(RunRecord, run_id) if isinstance(run_id, str) else None
             approval = (
@@ -311,6 +399,11 @@ def job_input_payload(
         return payload
     if task is None:
         raise ValueError("execute-task jobs require a task")
+    # Discovery operations deliberately bind the job identity to the exact
+    # approved query/provider envelope.  Adding generic plan history here
+    # would weaken the adapter's persist-before-send authority check.
+    if task.task_type == "paper-discovery":
+        return task.inputs
     previous = list(
         session.scalars(
             select(TaskRecord)
@@ -386,11 +479,96 @@ def current_job_input_hash(
     return content_sha256(job_input_payload(session, workflow, kind=kind, task=task))
 
 
+def agent_control_job_input_payload(
+    session: Session,
+    workflow: WorkflowRecord,
+    *,
+    kind: str,
+    operation_key: str,
+    handler_version: str,
+) -> dict[str, Any]:
+    if kind == "observe-step":
+        source_job_id = _agent_operation_subject(workflow.id, operation_key, "observe")
+        source = session.get(JobRecord, source_job_id)
+        if source is None or source.workflow_id != workflow.id:
+            raise WorkflowConflict(
+                "agent-observation-source-missing",
+                "The observation job has no workflow-owned source job.",
+            )
+        return {
+            "attempt": source.attempt,
+            "errorCode": source.error_code,
+            "handlerVersion": handler_version,
+            "kind": kind,
+            "sourceInputSha256": source.input_sha256,
+            "sourceJobId": source.id,
+            "sourceJobKind": source.kind,
+            "sourceStatus": source.status,
+            "taskId": source.task_id,
+            "workflowId": workflow.id,
+        }
+    if kind == "decide-next-action":
+        observation_id = _agent_operation_subject(workflow.id, operation_key, "decide")
+        observation = session.get(StepObservationRecord, observation_id)
+        if observation is None or observation.workflow_id != workflow.id:
+            raise WorkflowConflict(
+                "agent-observation-missing",
+                "The decision job has no workflow-owned observation.",
+            )
+        return {
+            "handlerVersion": handler_version,
+            "kind": kind,
+            "observationId": observation.id,
+            "observationSha256": observation.output_sha256,
+            "workflowId": workflow.id,
+        }
+    if kind == "apply-agent-decision":
+        decision_id = _agent_operation_subject(workflow.id, operation_key, "apply-decision")
+        decision = session.get(AgentDecisionRecord, decision_id)
+        if decision is None or decision.workflow_id != workflow.id:
+            raise WorkflowConflict(
+                "agent-decision-missing",
+                "The apply job has no workflow-owned decision.",
+            )
+        return {
+            "decisionId": decision.id,
+            "decisionSha256": decision.output_sha256,
+            "handlerVersion": handler_version,
+            "kind": kind,
+            "workflowId": workflow.id,
+        }
+    raise ValueError("unsupported agent control job kind")
+
+
+def _agent_operation_subject(
+    workflow_id: str,
+    operation_key: str,
+    operation: str,
+) -> str:
+    prefix = f"workflow:{workflow_id}:{operation}:"
+    if not operation_key.startswith(prefix):
+        raise WorkflowConflict(
+            "agent-operation-key-invalid",
+            "The agent control job identity is invalid.",
+        )
+    subject = operation_key.removeprefix(prefix)
+    if not subject or ":" in subject or len(subject) > 36:
+        raise WorkflowConflict(
+            "agent-operation-key-invalid",
+            "The agent control job subject is invalid.",
+        )
+    return subject
+
+
 def handler_version_for(kind: str) -> str:
     return {
+        "route-intent": ROUTER_HANDLER_VERSION,
         "generate-plan": PLAN_HANDLER_VERSION,
         "execute-task": TASK_HANDLER_VERSION,
         "review-workflow": REVIEW_HANDLER_VERSION,
+        "observe-step": "agent-observer-v1",
+        "decide-next-action": "agent-next-action-v1",
+        "apply-agent-decision": "agent-decision-apply-v1",
     }[kind]
 
 
@@ -405,7 +583,20 @@ def job_input_hash_for_handler_version(
     kind: str,
     task: TaskRecord | None,
     handler_version: str,
+    operation_key: str | None = None,
 ) -> str:
+    if kind in {"observe-step", "decide-next-action", "apply-agent-decision"}:
+        if operation_key is None:
+            raise ValueError("agent control jobs require an operation key")
+        return content_sha256(
+            agent_control_job_input_payload(
+                session,
+                workflow,
+                kind=kind,
+                operation_key=operation_key,
+                handler_version=handler_version,
+            )
+        )
     return content_sha256(
         job_input_payload(
             session,
@@ -425,7 +616,19 @@ def job_input_compatibility(
 ) -> str | None:
     current_version = handler_version_for(job.kind)
     if job.handler_version == current_version:
-        expected_hash = current_job_input_hash(session, workflow, kind=job.kind, task=task)
+        expected_hash = (
+            content_sha256(
+                agent_control_job_input_payload(
+                    session,
+                    workflow,
+                    kind=job.kind,
+                    operation_key=job.operation_key,
+                    handler_version=job.handler_version,
+                )
+            )
+            if job.kind in {"observe-step", "decide-next-action", "apply-agent-decision"}
+            else current_job_input_hash(session, workflow, kind=job.kind, task=task)
+        )
         return "current" if job.input_sha256 == expected_hash else None
     legacy_version = LEGACY_HANDLER_VERSIONS.get(job.kind)
     if (
@@ -464,17 +667,19 @@ def enqueue_job(
             "A workflow job request key and its canonical payload hash must be stored together.",
         )
     selected_handler_version = handler_version or handler_version_for(kind)
-    allowed_versions = {
-        handler_version_for(kind),
-        LEGACY_HANDLER_VERSIONS[kind],
-    }
+    current_handler_version = handler_version_for(kind)
+    legacy_handler_version = LEGACY_HANDLER_VERSIONS.get(kind)
+    allowed_versions = {current_handler_version}
+    if legacy_handler_version is not None:
+        allowed_versions.add(legacy_handler_version)
     if selected_handler_version not in allowed_versions:
         raise WorkflowConflict(
             "unsupported-handler-version",
             "The workflow job handler version is not supported.",
         )
     if (
-        selected_handler_version == LEGACY_HANDLER_VERSIONS[kind]
+        legacy_handler_version is not None
+        and selected_handler_version == legacy_handler_version
         and workflow.generation_mode != "local-deterministic"
     ):
         raise WorkflowConflict(
@@ -487,6 +692,7 @@ def enqueue_job(
         kind=kind,
         task=task,
         handler_version=selected_handler_version,
+        operation_key=operation_key,
     )
     existing = session.scalar(
         select(JobRecord).where(

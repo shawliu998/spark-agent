@@ -1,9 +1,35 @@
 {
   "title": "Runs",
+  "analysis": {
+    "heading": "Dataset analysis",
+    "loading": "Loading dataset analysis runs…",
+    "unavailable": "Dataset analysis runs are temporarily unavailable.",
+    "failed": "Dataset analysis failed",
+    "fallbackTitle": "Dataset analysis",
+    "artifactCount_one": "{{count}} artifact",
+    "artifactCount_other": "{{count}} artifacts",
+    "isolatedRuntime": "isolated runtime",
+    "open": "Open analysis",
+    "openTitle": "Open this run in Data analysis"
+  },
   "description": {
+    "product": "Review research executions, open their outputs, and reproduce a result when needed.",
     "prefix": "Every experiment execution across all sessions — command, code version, environment, hardware, and outputs. ",
     "suffix": " re-runs it and compares results."
   },
+  "summary": {
+    "total_one": "{{count}} run",
+    "total_other": "{{count}} runs",
+    "succeeded": "{{count}} succeeded",
+    "failed": "{{count}} failed"
+  },
+  "run": {
+    "generated": "Generated {{name}}",
+    "completed": "Completed {{name}}",
+    "failed": "Execution failed",
+    "additionalOutputs": "{{count}} additional outputs"
+  },
+  "technicalDetails": "Technical details",
   "pane": {
     "subtitle": "this session",
     "closeAria": "Close runs"

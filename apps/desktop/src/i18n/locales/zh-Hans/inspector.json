@@ -2,7 +2,8 @@
   "shell": {
     "maximizePanel": "最大化面板",
     "restorePanel": "恢复面板",
-    "closeInspector": "关闭检查器"
+    "closeInspector": "关闭检查器",
+    "resizePanel": "调整检查器窗格大小"
   },
   "artifact": {
     "previousVersionAria": "上一个版本",
@@ -255,6 +256,8 @@
       "show": "显示序列"
     },
     "selectSeriesHint": "选择一个序列进行绘图",
-    "noNumericColumns": "没有可绘制的数值列。"
+    "noNumericColumns": "没有可绘制的数值列。",
+    "chartTitle": "数据集图表",
+    "chartDescription": "{{type}}图，共 {{rows}} 行，已选择 {{series}} 个数值序列；缺失值显示为空隙。"
   }
 }

@@ -14,13 +14,24 @@ from pydantic import (
 )
 
 from ..schemas import ApiModel, BoundingBoxOut
+from .discovery_schemas import (
+    DiscoveryProvider,
+    DiscoverySort,
+    DiscoveryStopPolicy,
+    QueryId,
+    QueryText,
+    Sha256,
+)
 
 WorkflowStatus = Literal[
+    "routing",
+    "waiting-clarification",
     "planning",
     "waiting-plan-approval",
     "running",
     "reviewing",
     "completed",
+    "unsupported",
     "blocked",
     "failed",
     "cancelled",
@@ -35,6 +46,7 @@ TaskStepType = Literal[
     "prepare-analysis",
     "python-data-analysis",
     "collect-artifacts",
+    "paper-discovery",
 ]
 TaskStatus = Literal[
     "pending",
@@ -84,6 +96,18 @@ ClaimSupportStatus = Literal[
     "not-applicable",
 ]
 GenerationMode = Literal["local-deterministic", "remote-model-assisted"]
+RemoteDataCategory = Literal[
+    "user-goal",
+    "dataset-profile",
+    "source-metadata",
+    "user-answer",
+]
+AUTONOMOUS_REMOTE_DATA_CATEGORIES: tuple[RemoteDataCategory, ...] = (
+    "user-goal",
+    "dataset-profile",
+    "source-metadata",
+    "user-answer",
+)
 WorkflowRiskLevel = Literal["low", "medium", "high"]
 
 DatasetAnalysisStepKey = Literal[
@@ -528,6 +552,11 @@ class DatasetAnalysisPlanSpec(StrictApiModel):
     goal: str = Field(min_length=2, max_length=8_000)
     dataset_source_id: str = Field(min_length=1, max_length=36)
     dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    analysis_spec_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     assumptions: list[NonEmptyPlanText]
     questions_for_user: list[NonEmptyPlanText]
     steps: tuple[
@@ -546,6 +575,8 @@ class DatasetAnalysisPlanSpec(StrictApiModel):
 
     @model_validator(mode="after")
     def validate_dataset_bindings(self) -> DatasetAnalysisPlanSpec:
+        if (self.analysis_spec_id is None) != (self.analysis_spec_sha256 is None):
+            raise ValueError("dataset plans must bind both analysis spec identity fields")
         dataset_inputs = (self.steps[0].inputs, self.steps[1].inputs, self.steps[2].inputs)
         if any(
             step_input.dataset_source_id != self.dataset_source_id
@@ -585,7 +616,84 @@ class DatasetAnalysisPlanSpec(StrictApiModel):
         return self
 
 
-ResearchPlanSpec = PlanSpec | DatasetAnalysisPlanSpec
+class PaperDiscoveryStepInput(StrictApiModel):
+    schema_version: Literal["1"]
+    discovery_spec_id: str = Field(min_length=1, max_length=36)
+    discovery_spec_revision: int = Field(ge=1)
+    discovery_spec_sha256: Sha256
+    query_id: QueryId
+    query: QueryText
+    provider: DiscoveryProvider
+    year_from: int | None = Field(default=None, ge=1800, le=2100)
+    year_to: int | None = Field(default=None, ge=1800, le=2100)
+    sort: DiscoverySort
+    max_results_per_provider: int = Field(ge=1, le=50)
+    derived_maximum_results: int = Field(ge=1, le=200)
+    stop_policy: DiscoveryStopPolicy
+    download_open_access_pdfs: Literal[False]
+    max_pdf_downloads: Literal[0]
+
+    @model_validator(mode="after")
+    def validate_exact_operation_scope(self) -> PaperDiscoveryStepInput:
+        if self.year_from is not None and self.year_to is not None:
+            if self.year_from > self.year_to:
+                raise ValueError("yearFrom must not exceed yearTo")
+        if self.derived_maximum_results != self.max_results_per_provider:
+            raise ValueError(
+                "a provider-specific discovery step must bind its exact single-provider budget"
+            )
+        return self
+
+
+class PaperDiscoveryPlanStep(StrictApiModel):
+    key: StepKey
+    order_index: int = Field(ge=1, le=32)
+    objective: str = Field(min_length=1, max_length=2_000)
+    task_type: Literal["paper-discovery"]
+    inputs: PaperDiscoveryStepInput
+    expected_outputs: tuple[Literal["discovery-observation"]]
+    acceptance_criteria: tuple[Literal["persist-structured-discovery-observation"]]
+    permissions: tuple[Literal["remote-paper-search"]]
+    risk_level: Literal["medium"]
+    timeout_seconds: Literal[120]
+
+    @property
+    def type(self) -> Literal["paper-discovery"]:
+        """Expose the canonical task type used by shared plan integrity code."""
+        return self.task_type
+
+
+class PaperDiscoveryPlanSpec(StrictApiModel):
+    schema_version: Literal["1"]
+    plan_type: Literal["paper-discovery"]
+    goal: str = Field(min_length=3, max_length=2_000)
+    discovery_spec_id: str = Field(min_length=1, max_length=36)
+    discovery_spec_revision: int = Field(ge=1)
+    discovery_spec_sha256: Sha256
+    steps: list[PaperDiscoveryPlanStep] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_exact_material_scope(self) -> PaperDiscoveryPlanSpec:
+        if [step.order_index for step in self.steps] != list(
+            range(1, len(self.steps) + 1)
+        ):
+            raise ValueError("paper discovery plan order indexes must be contiguous")
+        if len({step.key for step in self.steps}) != len(self.steps):
+            raise ValueError("paper discovery plan step keys must be unique")
+        for step in self.steps:
+            inputs = step.inputs
+            if (
+                inputs.discovery_spec_id != self.discovery_spec_id
+                or inputs.discovery_spec_revision != self.discovery_spec_revision
+                or inputs.discovery_spec_sha256 != self.discovery_spec_sha256
+            ):
+                raise ValueError(
+                    "every paper discovery step must bind the plan discovery specification"
+                )
+        return self
+
+
+ResearchPlanSpec = PlanSpec | DatasetAnalysisPlanSpec | PaperDiscoveryPlanSpec
 
 
 class ModelInspectStepProposal(StrictApiModel):
@@ -713,18 +821,12 @@ class DatasetWorkflowCreateIn(StrictApiModel):
         if self.generation_mode != "local-deterministic":
             raise ValueError("dataset-analysis currently supports local-deterministic only")
         if self.remote_data_approved:
-            raise ValueError(
-                "remote_data_approved is not valid for local dataset analysis"
-            )
+            raise ValueError("remote_data_approved is not valid for local dataset analysis")
         return self
 
 
 def _default_literature_workflow_type(value: object) -> object:
-    if (
-        isinstance(value, dict)
-        and "workflow_type" not in value
-        and "workflowType" not in value
-    ):
+    if isinstance(value, dict) and "workflow_type" not in value and "workflowType" not in value:
         return {
             **cast(dict[str, object], value),
             "workflowType": "literature-synthesis",
@@ -836,6 +938,31 @@ class PlanSnapshotOut(StrictApiModel):
 
     @model_validator(mode="after")
     def validate_materialized_steps(self) -> PlanSnapshotOut:
+        if isinstance(self.spec, PaperDiscoveryPlanSpec):
+            if self.status == "pending-approval":
+                if self.steps:
+                    raise ValueError(
+                        "pending paper discovery plans cannot materialize executable steps"
+                    )
+                return self
+            if len(self.steps) != len(self.spec.steps):
+                raise ValueError(
+                    "approved paper discovery plans require every declared operation"
+                )
+            for declared_index, (materialized, declared) in enumerate(
+                zip(self.steps, self.spec.steps, strict=True),
+                start=1,
+            ):
+                if (
+                    materialized.order_index != declared_index
+                    or materialized.key != declared.key
+                    or materialized.type != declared.task_type
+                    or materialized.objective != declared.objective
+                ):
+                    raise ValueError(
+                        "materialized discovery steps must exactly match the approved plan spec"
+                    )
+            return self
         if not isinstance(self.spec, DatasetAnalysisPlanSpec):
             return self
         if len(self.steps) != len(self.spec.steps):
@@ -920,7 +1047,9 @@ class AnalysisExecutionPendingApprovalOut(StrictApiModel):
     risk_level: Literal["high"]
     reason: str
     affected_resources: list[str]
-    approval_schema_version: Literal["analysis-intent-v2", "analysis-intent-v3"]
+    approval_schema_version: Literal[
+        "analysis-intent-v2", "analysis-intent-v3", "analysis-intent-v4"
+    ]
     expected_workflow_revision: int = Field(ge=1)
     analysis_intent_id: str = Field(min_length=1, max_length=36)
     plan_step_id: Literal["execute-analysis"]
@@ -928,8 +1057,14 @@ class AnalysisExecutionPendingApprovalOut(StrictApiModel):
     dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_outputs: tuple[DatasetAnalysisExpectedOutput, ...] = Field(min_length=1)
     timeout_seconds: int = Field(ge=1, le=3_600)
-    code: str = Field(min_length=1, max_length=100_000)
+    code: str = Field(min_length=1, max_length=200_000)
     code_diff: str | None = Field(default=None, max_length=200_000)
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    spec_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    compiler_version: str | None = Field(default=None, min_length=1, max_length=100)
+    code_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime_policy_id: str | None = Field(default=None, min_length=1, max_length=100)
     created_at: datetime
     decided_at: datetime | None
 
@@ -941,6 +1076,19 @@ class AnalysisExecutionPendingApprovalOut(StrictApiModel):
             raise ValueError(
                 "analysis approval must bind the canonical mandatory execution outputs"
             )
+        provenance = (
+            self.analysis_spec_id,
+            self.spec_sha256,
+            self.dataset_profile_sha256,
+            self.compiler_version,
+            self.code_sha256,
+            self.runtime_policy_id,
+        )
+        if self.approval_schema_version == "analysis-intent-v4":
+            if any(value is None for value in provenance):
+                raise ValueError("v4 analysis approval requires compiled provenance")
+        elif any(value is not None for value in provenance):
+            raise ValueError("legacy analysis approval cannot expose compiled provenance")
         return self
 
 
@@ -1052,9 +1200,26 @@ class DatasetAnalysisReviewResult(StrictApiModel):
     run_id: str = Field(min_length=1, max_length=36)
     analysis_intent_id: str = Field(min_length=1, max_length=36)
     input_dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    conclusion: str | None = Field(default=None, min_length=1, max_length=8_000)
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    structured_result_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="after")
     def validate_verdict_evidence(self) -> DatasetAnalysisReviewResult:
+        compiled_review_fields = (
+            self.conclusion,
+            self.analysis_spec_id,
+            self.structured_result_sha256,
+        )
+        if any(value is None for value in compiled_review_fields) and any(
+            value is not None for value in compiled_review_fields
+        ):
+            raise ValueError(
+                "compiled review conclusion and result identity must be stored together"
+            )
         has_warning = any(check.status == "warning" for check in self.checks) or bool(
             self.method_warnings
         )
@@ -1121,7 +1286,7 @@ class WorkflowAnalysisIntentOut(StrictApiModel):
     dataset_source_id: str = Field(min_length=1, max_length=36)
     dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     objective: str = Field(min_length=1, max_length=8_000)
-    code: str = Field(min_length=1, max_length=100_000)
+    code: str = Field(min_length=1, max_length=200_000)
     payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     risk_level: Literal["high"]
     affected_resources: list[str]
@@ -1142,11 +1307,31 @@ class WorkflowAnalysisIntentOut(StrictApiModel):
     repair_attempt: Literal[0, 1, 2]
     error_summary: AnalysisErrorSummaryOut | None
     code_diff: str | None = Field(default=None, max_length=200_000)
+    analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    spec_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    compiler_version: str | None = Field(default=None, min_length=1, max_length=100)
+    code_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime_policy_id: str | None = Field(default=None, min_length=1, max_length=100)
     created_at: datetime
     updated_at: datetime
 
     @model_validator(mode="after")
     def validate_workflow_intent(self) -> WorkflowAnalysisIntentOut:
+        provenance = (
+            self.analysis_spec_id,
+            self.spec_sha256,
+            self.dataset_profile_sha256,
+            self.compiler_version,
+            self.code_sha256,
+            self.runtime_policy_id,
+        )
+        if any(value is None for value in provenance) and any(
+            value is not None for value in provenance
+        ):
+            raise ValueError("compiled intent provenance must be all present or all absent")
+        if self.analysis_spec_id is not None and self.repair_attempt != 0:
+            raise ValueError("compiled AnalysisSpec intents cannot use repair lineage")
         if self.expected_outputs not in _DATASET_ANALYSIS_EXECUTION_OUTPUT_SEQUENCES:
             raise ValueError("workflow intents require the canonical execution outputs")
         if self.repair_attempt == 0 and (
@@ -1173,6 +1358,29 @@ class WorkflowAnalysisIntentOut(StrictApiModel):
         if self.status == "waiting-approval" and self.decision is not None:
             raise ValueError("a waiting intent cannot already have a decision")
         return self
+
+
+class AnalysisSpecSnapshotOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    revision: int = Field(ge=1)
+    status: Literal["pending-approval", "approved", "superseded", "rejected"]
+    selector_kind: Literal["local-deterministic", "remote-model-assisted"]
+    selector_reason: str = Field(min_length=1, max_length=2_000)
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=100)
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    spec: dict[str, object]
+    created_at: datetime
+
+
+class StructuredAnalysisResultSnapshotOut(StrictApiModel):
+    id: str = Field(min_length=1, max_length=36)
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    run_id: str = Field(min_length=1, max_length=36)
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    result: dict[str, object]
+    created_at: datetime
 
 
 class WorkflowAnalysisArtifactOut(StrictApiModel):
@@ -1235,13 +1443,12 @@ class WorkflowAnalysisRunOut(StrictApiModel):
                 len(environment_artifacts) != 1
                 or environment_artifacts[0].content_hash != self.environment_hash
             ):
-                raise ValueError(
-                    "the environment artifact must bind the run environment hash"
-                )
+                raise ValueError("the environment artifact must bind the run environment hash")
             artifact_paths = {artifact.path for artifact in self.artifacts}
-            if len(self.output_artifacts) != len(set(self.output_artifacts)) or set(
-                self.output_artifacts
-            ) != artifact_paths:
+            if (
+                len(self.output_artifacts) != len(set(self.output_artifacts))
+                or set(self.output_artifacts) != artifact_paths
+            ):
                 raise ValueError("run output_artifacts must exactly list its artifact records")
         if self.status == "failed" and (self.finished_at is None or not self.error):
             raise ValueError("a failed analysis run requires a safe terminal error")
@@ -1268,6 +1475,8 @@ class ResearchWorkflowSnapshot(StrictApiModel):
     dataset_profile: DatasetProfile | None = None
     analysis_intent: WorkflowAnalysisIntentOut | None = None
     analysis_run: WorkflowAnalysisRunOut | None = None
+    analysis_spec: AnalysisSpecSnapshotOut | None = None
+    structured_result: StructuredAnalysisResultSnapshotOut | None = None
     review_warning_acceptance: DatasetReviewWarningAcceptanceOut | None = None
     allowed_actions: list[AllowedAction]
     event_cursor: int = Field(ge=0)
@@ -1330,10 +1539,8 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                     != self.workflow.dataset_content_hash
                     or self.analysis_intent.task_id != execute_task.id
                     or self.analysis_intent.objective != execute_spec.objective
-                    or self.analysis_intent.expected_outputs
-                    != execute_spec.inputs.expected_outputs
-                    or self.analysis_intent.timeout_seconds
-                    != execute_spec.inputs.timeout_seconds
+                    or self.analysis_intent.expected_outputs != execute_spec.inputs.expected_outputs
+                    or self.analysis_intent.timeout_seconds != execute_spec.inputs.timeout_seconds
                 ):
                     raise ValueError(
                         "the analysis intent must bind the workflow dataset and execute task"
@@ -1377,6 +1584,9 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                 if "figures" in self.analysis_intent.expected_outputs:
                     required_artifact_types.add("figure")
                     allowed_artifact_types.add("figure")
+                if self.analysis_intent.analysis_spec_id is not None:
+                    required_artifact_types.add("structured-data")
+                    allowed_artifact_types.add("structured-data")
                 if self.analysis_run.status == "completed" and (
                     not required_artifact_types.issubset(actual_artifact_types)
                     or not actual_artifact_types.issubset(allowed_artifact_types)
@@ -1390,6 +1600,47 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                 "rejected",
             }:
                 raise ValueError("an executing or terminal workflow intent requires its run")
+            if self.analysis_spec is not None:
+                if (
+                    self.plan is None
+                    or not isinstance(self.plan.spec, DatasetAnalysisPlanSpec)
+                    or self.plan.spec.analysis_spec_id != self.analysis_spec.id
+                    or self.plan.spec.analysis_spec_sha256 != self.analysis_spec.spec_sha256
+                    or self.analysis_spec.spec.get("datasetSourceId")
+                    != self.workflow.dataset_source_id
+                    or self.analysis_spec.spec.get("datasetContentHash")
+                    != self.workflow.dataset_content_hash
+                    or self.analysis_spec.spec.get("datasetProfileHash")
+                    != self.analysis_spec.dataset_profile_sha256
+                ):
+                    raise ValueError("the AnalysisSpec snapshot must bind the plan and dataset")
+                if self.analysis_intent is not None and (
+                    self.analysis_intent.analysis_spec_id != self.analysis_spec.id
+                    or self.analysis_intent.spec_sha256 != self.analysis_spec.spec_sha256
+                    or self.analysis_intent.dataset_profile_sha256
+                    != self.analysis_spec.dataset_profile_sha256
+                ):
+                    raise ValueError(
+                        "the compiled intent must bind the exact AnalysisSpec snapshot"
+                    )
+            elif (
+                self.analysis_intent is not None
+                and self.analysis_intent.analysis_spec_id is not None
+            ):
+                raise ValueError("a compiled intent requires its AnalysisSpec snapshot")
+            if self.structured_result is not None:
+                if (
+                    self.analysis_spec is None
+                    or self.analysis_intent is None
+                    or self.analysis_run is None
+                    or self.structured_result.analysis_spec_id != self.analysis_spec.id
+                    or self.structured_result.analysis_intent_id != self.analysis_intent.id
+                    or self.structured_result.run_id != self.analysis_run.id
+                    or self.analysis_run.status != "completed"
+                ):
+                    raise ValueError(
+                        "the structured result must bind the completed Spec, Intent, and Run"
+                    )
             if self.latest_review is not None:
                 if not isinstance(self.latest_review.result, DatasetAnalysisReviewResult):
                     raise ValueError("dataset workflows require deterministic analysis reviews")
@@ -1402,6 +1653,18 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                     != self.workflow.dataset_content_hash
                 ):
                     raise ValueError("the analysis review must bind the exact reviewed run")
+                review_spec_id = self.latest_review.result.analysis_spec_id
+                if review_spec_id is not None:
+                    if (
+                        self.analysis_spec is None
+                        or self.structured_result is None
+                        or review_spec_id != self.analysis_spec.id
+                        or self.latest_review.result.structured_result_sha256
+                        != self.structured_result.result_sha256
+                    ):
+                        raise ValueError(
+                            "the compiled review must bind the exact Spec and structured result"
+                        )
             if self.review_warning_acceptance is not None:
                 if (
                     self.latest_review is None
@@ -1483,8 +1746,7 @@ class ResearchWorkflowSnapshot(StrictApiModel):
                     or self.analysis_run is None
                     or self.analysis_run.status != "completed"
                     or self.latest_review is None
-                    or self.latest_review.verdict
-                    not in {"passed", "passed-with-warnings"}
+                    or self.latest_review.verdict not in {"passed", "passed-with-warnings"}
                     or self.workflow.completed_at is None
                     or self.workflow.current_step_id is not None
                     or self.workflow.blocking_reason is not None
@@ -1503,10 +1765,26 @@ class ResearchWorkflowSnapshot(StrictApiModel):
 
         if any(type(approval) is not PendingApprovalOut for approval in self.pending_approvals):
             raise ValueError("literature workflows cannot contain dataset approvals")
-        if self.plan is not None and not isinstance(self.plan.spec, PlanSpec):
+        if self.plan is not None and not isinstance(
+            self.plan.spec,
+            (PlanSpec, PaperDiscoveryPlanSpec),
+        ):
             raise ValueError("literature workflows require a literature synthesis plan")
         if self.plan is not None and self.plan.spec.goal != self.workflow.goal:
             raise ValueError("the literature plan goal must match its workflow")
+        if isinstance(
+            self.plan.spec if self.plan is not None else None,
+            PaperDiscoveryPlanSpec,
+        ):
+            plan_waiting = self.plan is not None and self.plan.status == "pending-approval"
+            if plan_waiting != (len(self.pending_approvals) == 1):
+                raise ValueError(
+                    "a pending paper discovery plan requires its one exact approval"
+                )
+            if self.result is not None or self.latest_review is not None:
+                raise ValueError(
+                    "discovery candidate metadata cannot become a literature result or review"
+                )
         if self.latest_review is not None and not isinstance(
             self.latest_review.result, DeterministicReviewResult
         ):
@@ -1540,19 +1818,20 @@ class RemoteDataApprovalEventData(StrictApiModel):
     endpoint_host: str = Field(min_length=1, max_length=253)
     endpoint_identity: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     model: str | None = Field(default=None, max_length=200)
-    data_categories: list[Literal["user-goal", "dataset-profile"]]
+    data_categories: list[RemoteDataCategory]
 
     @field_validator("data_categories")
     @classmethod
     def validate_disclosure_categories(
         cls,
-        value: list[Literal["user-goal", "dataset-profile"]],
-    ) -> list[Literal["user-goal", "dataset-profile"]]:
-        if value not in (["user-goal"], ["user-goal", "dataset-profile"]):
-            raise ValueError(
-                "data_categories must be exactly user-goal, with dataset-profile "
-                "added only for dataset-assisted planning"
-            )
+        value: list[RemoteDataCategory],
+    ) -> list[RemoteDataCategory]:
+        if value not in (
+            ["user-goal"],
+            ["user-goal", "dataset-profile"],
+            list(AUTONOMOUS_REMOTE_DATA_CATEGORIES),
+        ):
+            raise ValueError("data_categories must match a registered remote disclosure profile")
         return value
 
 
@@ -1623,7 +1902,9 @@ class AnalysisApprovalEventData(StrictApiModel):
     task_id: str = Field(min_length=1, max_length=36)
     job_id: str | None = Field(default=None, max_length=36)
     payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    approval_schema_version: Literal["analysis-intent-v2", "analysis-intent-v3"]
+    approval_schema_version: Literal[
+        "analysis-intent-v2", "analysis-intent-v3", "analysis-intent-v4"
+    ]
     expected_workflow_revision: int = Field(ge=1)
 
 
@@ -1665,6 +1946,271 @@ class DatasetReviewWarningsAcceptedEventData(StrictApiModel):
     decision: Literal["accepted"]
 
 
+class AgentRunCreatedEventData(StrictApiModel):
+    goal_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_ids: list[str] = Field(max_length=100)
+    mode: Literal["autonomous"]
+    generation_mode: GenerationMode
+
+
+class IntentDecisionEventData(StrictApiModel):
+    intent_decision_id: str = Field(min_length=1, max_length=36)
+    intent: Literal[
+        "literature-synthesis",
+        "dataset-analysis",
+        "mixed-research",
+        "clarification-required",
+        "unsupported",
+    ]
+    confidence: float = Field(ge=0, le=1)
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AnalysisClarificationRequestedEventData(StrictApiModel):
+    interaction_id: str = Field(min_length=1, max_length=36)
+    clarification_type: str = Field(min_length=1, max_length=100)
+    selector_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selector_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AnalysisMethodSelectionStartedEventData(StrictApiModel):
+    dataset_source_id: str = Field(min_length=1, max_length=36)
+    dataset_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AnalysisSpecEventData(StrictApiModel):
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    revision: int = Field(ge=1)
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selector_kind: Literal["local-deterministic", "remote-model-assisted"]
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class AnalysisCompiledEventData(StrictApiModel):
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    spec_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    dataset_profile_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    compiler_version: str = Field(min_length=1, max_length=100)
+    approved_code_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    runtime_policy_id: str = Field(min_length=1, max_length=100)
+
+
+class AnalysisStructuredResultEventData(StrictApiModel):
+    structured_result_id: str = Field(min_length=1, max_length=36)
+    analysis_spec_id: str = Field(min_length=1, max_length=36)
+    analysis_intent_id: str = Field(min_length=1, max_length=36)
+    run_id: str = Field(min_length=1, max_length=36)
+    result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AnalysisUnsupportedEventData(StrictApiModel):
+    capability: str = Field(min_length=1, max_length=100)
+    explanation: str = Field(min_length=1, max_length=2_000)
+    supported_alternatives: list[Literal["descriptive", "two-group-comparison", "correlation"]] = (
+        Field(max_length=3)
+    )
+    selector_input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selector_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AgentObservationCreatedEventData(StrictApiModel):
+    observation_id: str = Field(min_length=1, max_length=36)
+    decision_id: None = None
+    action: None = None
+    task_id: str | None = Field(default=None, min_length=1, max_length=36)
+    target_step_key: None = None
+    previous_analysis_spec_id: None = None
+    proposed_analysis_spec_id: None = None
+    expected_workflow_revision: int = Field(ge=1)
+    reason_code: str = Field(min_length=1, max_length=100)
+
+
+class DiscoverySelectionOperationSignal(StrictApiModel):
+    operation_key: str = Field(min_length=1, max_length=300)
+    step_key: str = Field(min_length=1, max_length=100)
+    query_id: QueryId
+    provider: DiscoveryProvider
+    query_attempt_count: int = Field(ge=0, le=8)
+    provider_attempt_count: int = Field(ge=0, le=8)
+    query_no_novelty_count: int = Field(ge=0, le=8)
+    query_novel_candidate_count: int = Field(ge=0)
+    query_duplicate_count: int = Field(ge=0)
+    tie_break_sha256: Sha256
+    rank: int = Field(ge=1, le=32)
+
+
+class DiscoverySelectionProjection(StrictApiModel):
+    schema_version: Literal["1"]
+    policy_version: Literal["discovery-next-operation-v1"]
+    workflow_id: str = Field(min_length=1, max_length=36)
+    plan_id: str = Field(min_length=1, max_length=36)
+    plan_sha256: Sha256
+    discovery_spec_id: str = Field(min_length=1, max_length=36)
+    discovery_spec_revision: int = Field(ge=1)
+    discovery_spec_sha256: Sha256
+    eligible_operations: list[DiscoverySelectionOperationSignal] = Field(
+        min_length=1,
+        max_length=32,
+    )
+    selected_operation_key: str = Field(min_length=1, max_length=300)
+    selected_step_key: str = Field(min_length=1, max_length=100)
+    selection_snapshot_sha256: Sha256
+    reason_code: Literal[
+        "only-eligible-operation",
+        "query-coverage-gap",
+        "provider-coverage-gap",
+        "lower-query-no-novelty",
+        "higher-observed-novelty",
+        "lower-duplicate-burden",
+        "stable-tie-break",
+    ]
+    postcondition: Literal["queue-selected-pending-approved-operation-only"]
+
+    @model_validator(mode="after")
+    def validate_selected_operation(self) -> DiscoverySelectionProjection:
+        if [item.rank for item in self.eligible_operations] != list(
+            range(1, len(self.eligible_operations) + 1)
+        ):
+            raise ValueError("discovery selection ranks must be contiguous")
+        selected = [
+            item
+            for item in self.eligible_operations
+            if item.operation_key == self.selected_operation_key
+        ]
+        if (
+            len(selected) != 1
+            or selected[0].rank != 1
+            or selected[0].step_key != self.selected_step_key
+        ):
+            raise ValueError("selected Discovery operation must be the unique first rank")
+        return self
+
+
+class AgentDecisionEventData(StrictApiModel):
+    observation_id: str = Field(min_length=1, max_length=36)
+    decision_id: str = Field(min_length=1, max_length=36)
+    action: Literal[
+        "continue",
+        "request-clarification",
+        "revise-analysis-spec",
+        "retry-step",
+        "complete",
+        "stop",
+    ]
+    task_id: str | None = Field(default=None, min_length=1, max_length=36)
+    target_step_key: str | None = Field(default=None, min_length=1, max_length=100)
+    previous_analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    proposed_analysis_spec_id: str | None = Field(default=None, min_length=1, max_length=36)
+    expected_workflow_revision: int = Field(ge=1)
+    reason_code: str = Field(min_length=1, max_length=100)
+    research_context_snapshot_id: str | None = Field(
+        default=None, min_length=1, max_length=36
+    )
+    research_context_snapshot_sha256: Sha256 | None = None
+    discovery_selection: DiscoverySelectionProjection | None = None
+    discovery_selection_sha256: Sha256 | None = None
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> AgentDecisionEventData:
+        if (self.research_context_snapshot_id is None) != (
+            self.research_context_snapshot_sha256 is None
+        ):
+            raise ValueError(
+                "Research context snapshot identity and hash must be recorded together"
+            )
+        if (self.discovery_selection is None) != (
+            self.discovery_selection_sha256 is None
+        ):
+            raise ValueError("Discovery selection and hash must be recorded together")
+        if self.discovery_selection is not None and (
+            self.action != "continue"
+            or self.target_step_key != self.discovery_selection.selected_step_key
+        ):
+            raise ValueError("Discovery selection must bind the continued target")
+        return self
+
+
+class AgentStepRetryRequestedEventData(AgentDecisionEventData):
+    @model_validator(mode="after")
+    def validate_retry_event(self) -> AgentStepRetryRequestedEventData:
+        if (
+            self.action != "retry-step"
+            or self.task_id is None
+            or self.target_step_key is None
+            or self.previous_analysis_spec_id is not None
+            or self.proposed_analysis_spec_id is not None
+        ):
+            raise ValueError("retry events require only a task and target step")
+        return self
+
+
+class AgentAnalysisSpecRevisionEventData(AgentDecisionEventData):
+    @model_validator(mode="after")
+    def validate_revision_event(self) -> AgentAnalysisSpecRevisionEventData:
+        if (
+            self.action != "revise-analysis-spec"
+            or self.previous_analysis_spec_id is None
+            or self.proposed_analysis_spec_id is None
+        ):
+            raise ValueError("revision events require both AnalysisSpec identities")
+        return self
+
+
+class AgentLoopLimitReachedEventData(AgentDecisionEventData):
+    limit_name: Literal[
+        "agent-steps",
+        "plan-revisions",
+        "analysis-spec-revisions",
+        "step-retries",
+        "clarification-rounds",
+        "model-decisions",
+        "invalid-model-decisions",
+    ]
+
+    @model_validator(mode="after")
+    def validate_limit_event(self) -> AgentLoopLimitReachedEventData:
+        if self.action != "stop" or self.target_step_key is not None:
+            raise ValueError("loop limit events must stop without a target step")
+        return self
+
+
+class AgentStoppedEventData(AgentDecisionEventData):
+    @model_validator(mode="after")
+    def validate_stopped_event(self) -> AgentStoppedEventData:
+        if self.action != "stop" or self.target_step_key is not None:
+            raise ValueError("stopped events must stop without a target step")
+        return self
+
+
+class _InteractionEventData(StrictApiModel):
+    interaction_id: str = Field(min_length=1, max_length=36)
+    request_type: Literal[
+        "single-choice",
+        "multi-choice",
+        "text",
+        "number",
+        "boolean",
+        "column-selection",
+        "method-confirmation",
+        "assumption-confirmation",
+    ]
+    required: bool
+    expected_workflow_revision: int = Field(ge=1)
+
+
+class InteractionRequestedEventData(_InteractionEventData):
+    response_id: None = None
+    response_revision: None = None
+
+
+class InteractionAnsweredEventData(_InteractionEventData):
+    response_id: str = Field(min_length=1, max_length=36)
+    response_revision: int = Field(ge=1)
+
+
 WorkflowEventData = (
     CreatedEventData
     | RemoteDataApprovalEventData
@@ -1681,9 +2227,50 @@ WorkflowEventData = (
     | AnalysisRunProgressEventData
     | AnalysisArtifactCreatedEventData
     | DatasetReviewWarningsAcceptedEventData
+    | AgentRunCreatedEventData
+    | IntentDecisionEventData
+    | AnalysisClarificationRequestedEventData
+    | AnalysisMethodSelectionStartedEventData
+    | AnalysisSpecEventData
+    | AnalysisCompiledEventData
+    | AnalysisStructuredResultEventData
+    | AnalysisUnsupportedEventData
+    | AgentObservationCreatedEventData
+    | AgentStepRetryRequestedEventData
+    | AgentAnalysisSpecRevisionEventData
+    | AgentLoopLimitReachedEventData
+    | AgentStoppedEventData
+    | AgentDecisionEventData
+    | InteractionRequestedEventData
+    | InteractionAnsweredEventData
 )
 
 WorkflowEventType = Literal[
+    "agent.observation-created",
+    "agent.decision-proposed",
+    "agent.decision-approved",
+    "agent.decision-rejected",
+    "agent.decision-applied",
+    "agent.step-retry-requested",
+    "agent.analysis-spec-revision-proposed",
+    "agent.analysis-spec-revision-approved",
+    "agent.loop-limit-reached",
+    "agent.stopped",
+    "agent-run.created",
+    "intent.decision-recorded",
+    "analysis.method-selection-started",
+    "analysis.clarification-requested",
+    "analysis.spec-created",
+    "analysis.spec-superseded",
+    "analysis.spec-approved",
+    "analysis.compiled",
+    "analysis.execution-approval-requested",
+    "analysis.execution-started",
+    "analysis.structured-result-created",
+    "analysis.review-completed",
+    "analysis.unsupported",
+    "interaction.requested",
+    "interaction.answered",
     "workflow.created",
     "remote-data.approved",
     "workflow.status-changed",
@@ -1711,6 +2298,31 @@ WorkflowEventType = Literal[
 ]
 
 _WORKFLOW_EVENT_DATA_TYPES: dict[str, type[StrictApiModel]] = {
+    "agent.observation-created": AgentObservationCreatedEventData,
+    "agent.decision-proposed": AgentDecisionEventData,
+    "agent.decision-approved": AgentDecisionEventData,
+    "agent.decision-rejected": AgentDecisionEventData,
+    "agent.decision-applied": AgentDecisionEventData,
+    "agent.step-retry-requested": AgentStepRetryRequestedEventData,
+    "agent.analysis-spec-revision-proposed": AgentAnalysisSpecRevisionEventData,
+    "agent.analysis-spec-revision-approved": AgentAnalysisSpecRevisionEventData,
+    "agent.loop-limit-reached": AgentLoopLimitReachedEventData,
+    "agent.stopped": AgentStoppedEventData,
+    "agent-run.created": AgentRunCreatedEventData,
+    "intent.decision-recorded": IntentDecisionEventData,
+    "analysis.method-selection-started": AnalysisMethodSelectionStartedEventData,
+    "analysis.clarification-requested": AnalysisClarificationRequestedEventData,
+    "analysis.spec-created": AnalysisSpecEventData,
+    "analysis.spec-superseded": AnalysisSpecEventData,
+    "analysis.spec-approved": AnalysisSpecEventData,
+    "analysis.compiled": AnalysisCompiledEventData,
+    "analysis.execution-approval-requested": AnalysisApprovalEventData,
+    "analysis.execution-started": AnalysisRunEventData,
+    "analysis.structured-result-created": AnalysisStructuredResultEventData,
+    "analysis.review-completed": ReviewEventData,
+    "analysis.unsupported": AnalysisUnsupportedEventData,
+    "interaction.requested": InteractionRequestedEventData,
+    "interaction.answered": InteractionAnsweredEventData,
     "workflow.created": CreatedEventData,
     "remote-data.approved": RemoteDataApprovalEventData,
     "workflow.status-changed": StatusChangedEventData,
@@ -1783,7 +2395,7 @@ class WorkflowEventOut(ApiModel):
         ):
             raise ValueError("event job_id must match its payload job_id")
         if isinstance(self.data, AnalysisRunEventData):
-            if self.type == "analysis.run-started" and (
+            if self.type in {"analysis.run-started", "analysis.execution-started"} and (
                 self.data.environment_hash is not None
                 or self.data.artifact_count is not None
                 or self.data.error_code is not None

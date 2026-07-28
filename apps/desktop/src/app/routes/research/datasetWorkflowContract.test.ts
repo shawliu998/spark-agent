@@ -18,6 +18,8 @@ const plan = {
   goal: "Compare the primary outcome across experimental groups.",
   datasetSourceId: "dataset-1",
   datasetContentHash: DATASET_HASH,
+  analysisSpecId: null,
+  analysisSpecSha256: null,
   assumptions: [],
   questionsForUser: [],
   steps: [
@@ -143,6 +145,23 @@ const executionApproval = {
   timeoutSeconds: 600,
   code: "print('approved')",
   codeDiff: null,
+  analysisSpecId: null,
+  specSha256: null,
+  datasetProfileSha256: null,
+  compilerVersion: null,
+  codeSha256: null,
+  runtimePolicyId: null,
+} satisfies WorkflowAnalysisExecutionPendingApproval;
+
+const compiledExecutionApproval = {
+  ...executionApproval,
+  approvalSchemaVersion: "analysis-intent-v4",
+  analysisSpecId: "spec-1",
+  specSha256: "c".repeat(64),
+  datasetProfileSha256: "d".repeat(64),
+  compilerVersion: "analysis-spec-compiler-v1",
+  codeSha256: "e".repeat(64),
+  runtimePolicyId: "dataset-analysis-spec-v1",
 } satisfies WorkflowAnalysisExecutionPendingApproval;
 
 const completedInitialIntent = {
@@ -171,6 +190,15 @@ const completedInitialIntent = {
 } satisfies WorkflowAnalysisIntent;
 
 describe("dataset workflow domain contract", () => {
+  it("requires complete compiled provenance for v4 execution approval", () => {
+    expect(compiledExecutionApproval).toMatchObject({
+      approvalSchemaVersion: "analysis-intent-v4",
+      analysisSpecId: "spec-1",
+      compilerVersion: "analysis-spec-compiler-v1",
+      runtimePolicyId: "dataset-analysis-spec-v1",
+    });
+  });
+
   it("freezes the registered four-step sequence", () => {
     expect(
       plan.steps.map(({ key, type, riskLevel }) => ({ key, type, riskLevel })),
@@ -205,4 +233,5 @@ describe("dataset workflow domain contract", () => {
     expect(completedInitialIntent.decision).toBe("approved");
     expect(completedInitialIntent.errorSummary).toBeNull();
   });
+
 });

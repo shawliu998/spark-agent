@@ -8,6 +8,7 @@ ANALYSIS_RISK_LEVEL = "high"
 ANALYSIS_V1_SCHEMA = "analysis-intent-v1"
 ANALYSIS_V2_SCHEMA = "analysis-intent-v2"
 ANALYSIS_V3_SCHEMA = "analysis-intent-v3"
+ANALYSIS_V4_SCHEMA = "analysis-intent-v4"
 ANALYSIS_APPROVAL_REASON = "Execute the displayed Python code against the selected CSV dataset"
 WORKFLOW_ANALYSIS_APPROVAL_REASON = (
     "Execute only the displayed immutable analysis intent in the restricted runtime."

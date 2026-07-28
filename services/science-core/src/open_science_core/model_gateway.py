@@ -13,6 +13,7 @@ from .config import (
     canonical_model_api_endpoint,
     is_valid_model_api_base,
     is_valid_model_identifier,
+    model_api_key_required,
     normalize_model_identifier,
     settings,
 )
@@ -81,7 +82,7 @@ class ModelGatewayResponseTooLargeError(ModelGatewayError):
 
 
 class OpenAICompatibleModelGateway:
-    """Stateless OpenAI-compatible JSON completion adapter."""
+    """Stateless JSON completion adapter for Spark's bounded protocol families."""
 
     _HARD_MAX_RESPONSE_BYTES = 1024 * 1024
 
@@ -103,9 +104,12 @@ class OpenAICompatibleModelGateway:
     @property
     def configured(self) -> bool:
         return bool(
-            self._settings.openai_api_key
-            and is_valid_model_identifier(self._settings.llm_model)
+            is_valid_model_identifier(self._settings.llm_model)
             and is_valid_model_api_base(self._settings.openai_api_base)
+            and (
+                self._settings.openai_api_key
+                or not model_api_key_required(self._settings.openai_api_base)
+            )
         )
 
     @property
@@ -121,7 +125,10 @@ class OpenAICompatibleModelGateway:
 
     @property
     def endpoint_identity(self) -> str:
-        endpoint = canonical_model_api_endpoint(self._settings.openai_api_base)
+        endpoint = canonical_model_api_endpoint(
+            self._settings.openai_api_base,
+            self._settings.model_protocol,
+        )
         if endpoint is None:
             return ""
         return f"sha256:{hashlib.sha256(endpoint.encode('utf-8')).hexdigest()}"
@@ -132,6 +139,19 @@ class OpenAICompatibleModelGateway:
         user_prompt: str,
         model: str | None = None,
     ) -> dict[str, Any]:
+        result, _token_usage = await self.complete_json_with_metadata(
+            system_prompt,
+            user_prompt,
+            model,
+        )
+        return result
+
+    async def complete_json_with_metadata(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         try:
             selected_model = normalize_model_identifier(model or self._settings.llm_model)
         except ValueError:
@@ -142,8 +162,8 @@ class OpenAICompatibleModelGateway:
             not system_prompt.strip()
             or not user_prompt.strip()
             or not selected_model
-            or not api_key
             or not is_valid_model_api_base(api_base)
+            or (not api_key and model_api_key_required(api_base))
         ):
             raise ModelGatewayConfigurationError()
 
@@ -168,12 +188,46 @@ class OpenAICompatibleModelGateway:
         self,
         *,
         api_base: str,
-        api_key: str,
+        api_key: str | None,
         selected_model: str,
         system_prompt: str,
         user_prompt: str,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], dict[str, int]]:
         response_body = bytearray()
+        if self._settings.model_protocol == "anthropic":
+            endpoint = f"{api_base}/messages"
+            headers = {
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+                "Accept-Encoding": "identity",
+            }
+            if api_key:
+                headers["x-api-key"] = api_key
+            payload = {
+                "model": selected_model,
+                "max_tokens": 4096,
+                "system": (
+                    f"{system_prompt}\n\n"
+                    "Return only one valid JSON object without Markdown fences."
+                ),
+                "messages": [{"role": "user", "content": user_prompt}],
+            }
+        else:
+            endpoint = f"{api_base}/chat/completions"
+            headers = {
+                "Content-Type": "application/json",
+                "Accept-Encoding": "identity",
+            }
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            payload = {
+                "model": selected_model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            }
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(self._timeout_seconds),
             transport=self._transport,
@@ -182,20 +236,9 @@ class OpenAICompatibleModelGateway:
         ) as client:
             async with client.stream(
                 "POST",
-                f"{api_base}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "Accept-Encoding": "identity",
-                },
-                json={
-                    "model": selected_model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "response_format": {"type": "json_object"},
-                },
+                endpoint,
+                headers=headers,
+                json=payload,
             ) as response:
                 if not 200 <= response.status_code < 300:
                     raise ModelGatewayHTTPError(response.status_code)
@@ -218,7 +261,12 @@ class OpenAICompatibleModelGateway:
                         raise ModelGatewayResponseTooLargeError()
                     response_body.extend(chunk)
 
-        content = _response_content(bytes(response_body))
+        if self._settings.model_protocol == "anthropic":
+            content, token_usage = _anthropic_response_content_and_token_usage(
+                bytes(response_body)
+            )
+        else:
+            content, token_usage = _response_content_and_token_usage(bytes(response_body))
         if not content.strip():
             raise ModelGatewayEmptyResponseError()
         try:
@@ -227,10 +275,12 @@ class OpenAICompatibleModelGateway:
             raise ModelGatewayInvalidResponseError() from None
         if not isinstance(result_object, dict):
             raise ModelGatewayInvalidResponseError()
-        return cast(dict[str, Any], result_object)
+        return cast(dict[str, Any], result_object), token_usage
 
 
-def _response_content(response_body: bytes) -> str:
+def _response_content_and_token_usage(
+    response_body: bytes,
+) -> tuple[str, dict[str, int]]:
     try:
         payload_object: object = json.loads(response_body)
         if not isinstance(payload_object, dict):
@@ -251,7 +301,69 @@ def _response_content(response_body: bytes) -> str:
             raise ModelGatewayEmptyResponseError()
         if not isinstance(content, str):
             raise ModelGatewayInvalidResponseError()
-        return content
+        usage_object = payload.get("usage")
+        token_usage: dict[str, int] = {}
+        if isinstance(usage_object, dict):
+            usage = cast(dict[str, object], usage_object)
+            for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                value = usage.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    token_usage[key] = value
+        return content, token_usage
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise ModelGatewayInvalidResponseError() from None
+
+
+def _anthropic_response_content_and_token_usage(
+    response_body: bytes,
+) -> tuple[str, dict[str, int]]:
+    try:
+        payload_object: object = json.loads(response_body)
+        if not isinstance(payload_object, dict):
+            raise ModelGatewayInvalidResponseError()
+        payload = cast(dict[str, Any], payload_object)
+        if payload.get("stop_reason") == "max_tokens":
+            raise ModelGatewayInvalidResponseError()
+        content_blocks = payload.get("content")
+        if not isinstance(content_blocks, list) or not content_blocks:
+            raise ModelGatewayEmptyResponseError()
+        text_parts: list[str] = []
+        for block_object in cast(list[object], content_blocks):
+            if not isinstance(block_object, dict):
+                raise ModelGatewayInvalidResponseError()
+            block = cast(dict[str, object], block_object)
+            if block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if not isinstance(text, str):
+                raise ModelGatewayInvalidResponseError()
+            text_parts.append(text)
+        if not text_parts:
+            raise ModelGatewayEmptyResponseError()
+
+        token_usage: dict[str, int] = {}
+        usage_object = payload.get("usage")
+        if isinstance(usage_object, dict):
+            usage = cast(dict[str, object], usage_object)
+            input_tokens = usage.get("input_tokens")
+            output_tokens = usage.get("output_tokens")
+            if (
+                isinstance(input_tokens, int)
+                and not isinstance(input_tokens, bool)
+                and input_tokens >= 0
+            ):
+                token_usage["prompt_tokens"] = input_tokens
+            if (
+                isinstance(output_tokens, int)
+                and not isinstance(output_tokens, bool)
+                and output_tokens >= 0
+            ):
+                token_usage["completion_tokens"] = output_tokens
+            if "prompt_tokens" in token_usage and "completion_tokens" in token_usage:
+                token_usage["total_tokens"] = (
+                    token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+                )
+        return "".join(text_parts), token_usage
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise ModelGatewayInvalidResponseError() from None
 

@@ -1,9 +1,34 @@
 {
   "title": "Durchläufe",
+  "analysis": {
+    "heading": "Datensatzanalyse",
+    "loading": "Datensatzanalysen werden geladen…",
+    "unavailable": "Datensatzanalysen sind vorübergehend nicht verfügbar.",
+    "failed": "Datensatzanalyse fehlgeschlagen",
+    "fallbackTitle": "Datensatzanalyse",
+    "artifactCount_one": "{{count}} Artefakt",
+    "artifactCount_other": "{{count}} Artefakte",
+    "isolatedRuntime": "isolierte Laufzeit",
+    "open": "Analyse öffnen",
+    "openTitle": "Diese Ausführung in der Datenanalyse öffnen"
+  },
   "description": {
+    "product": "Forschungsläufe prüfen, Ergebnisse öffnen und bei Bedarf reproduzieren.",
     "prefix": "Jede Experimentausführung über alle Sitzungen hinweg — Befehl, Codeversion, Umgebung, Hardware und Ausgaben. ",
     "suffix": " führt ihn erneut aus und vergleicht die Ergebnisse."
   },
+  "summary": {
+    "total": "{{count}} Läufe",
+    "succeeded": "{{count}} erfolgreich",
+    "failed": "{{count}} fehlgeschlagen"
+  },
+  "run": {
+    "generated": "{{name}} erstellt",
+    "completed": "{{name}} abgeschlossen",
+    "failed": "Ausführung fehlgeschlagen",
+    "additionalOutputs": "{{count}} weitere Ergebnisse"
+  },
+  "technicalDetails": "Technische Details",
   "pane": {
     "subtitle": "diese Sitzung",
     "closeAria": "Durchläufe schließen"

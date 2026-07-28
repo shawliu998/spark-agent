@@ -53,8 +53,25 @@
     "title": "Modelo",
     "hint": "Los proveedores de abajo aportan los modelos que puedes elegir aquí",
     "connectPrompt": "Conecta el entorno de ejecución para configurar modelos.",
+    "loading": "Cargando el modelo configurado…",
     "notSet": "Sin configurar — elige un modelo predeterminado",
     "providersDivider": "Proveedores"
+  },
+  "researchModel": {
+    "title": "Conexión del modelo de investigación",
+    "hint": "Modelo opcional compatible con OpenAI para los flujos de investigación. Cada ejecución remota sigue requiriendo aprobación explícita de los datos.",
+    "desktopOnly": "Configura el modelo de investigación en la aplicación de escritorio empaquetada.",
+    "provider": "Proveedor",
+    "protocol": "Protocolo de conexión",
+    "openaiCompatible": "Compatible con OpenAI",
+    "anthropicNative": "Anthropic nativo",
+    "endpoint": "Punto de conexión", "endpointPlaceholder": "https://api.example.com/v1",
+    "model": "Modelo", "modelPlaceholder": "nombre-del-modelo",
+    "embedding": "Modelo de embeddings", "optional": "opcional", "embeddingPlaceholder": "modelo-de-embeddings",
+    "embeddingUnavailable": "Este proveedor no ofrece embeddings mediante esta conexión. El agente de investigación funciona, pero las preguntas semánticas sobre PDF requieren un endpoint de embeddings compatible.",
+    "apiKey": "Clave de API", "keyStoredPlaceholder": "Guardada en el llavero de macOS — escribe solo para reemplazar", "keyPlaceholder": "Guardar en el llavero de macOS", "keyOptionalPlaceholder": "No es necesaria para este proveedor local",
+    "credentialStored": "Credencial guardada en el llavero de macOS", "credentialMissing": "No hay credencial del modelo de investigación", "credentialNotRequired": "Este proveedor local no necesita una clave de API", "removeKey": "Eliminar clave",
+    "readFailed": "No se pudo leer la conexión del modelo de investigación.", "saveFailed": "No se pudo guardar la conexión del modelo de investigación.", "saved": "Conexión guardada. Science Core se está reiniciando."
   },
   "providers": {
     "modelCount_one": "{{count}} modelo",

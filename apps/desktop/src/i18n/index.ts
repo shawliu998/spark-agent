@@ -2,6 +2,8 @@ import i18n from "i18next";
 import { initReactI18next } from "react-i18next";
 
 import { DEFAULT_LOCALE, detectInitialLocale } from "./config";
+import { researchResources } from "./researchResources";
+import { workspaceResources } from "./workspaceResources";
 
 // Statically bundled: the whole UI string set across 7 languages is a few KB,
 // so it ships in the main chunk. Revisit lazy-loading only if this grows large.
@@ -73,13 +75,13 @@ export const NAMESPACES = [
 ] as const;
 
 const resources = {
-  en: { common: enCommon, nav: enNav, settings: enSettings, runs: enRuns, session: enSession, inspector: enInspector, errors: enErrors, pages: enPages },
-  "zh-Hans": { common: zhCommon, nav: zhNav, settings: zhSettings, runs: zhRuns, session: zhSession, inspector: zhInspector, errors: zhErrors, pages: zhPages },
-  ja: { common: jaCommon, nav: jaNav, settings: jaSettings, runs: jaRuns, session: jaSession, inspector: jaInspector, errors: jaErrors, pages: jaPages },
-  es: { common: esCommon, nav: esNav, settings: esSettings, runs: esRuns, session: esSession, inspector: esInspector, errors: esErrors, pages: esPages },
-  de: { common: deCommon, nav: deNav, settings: deSettings, runs: deRuns, session: deSession, inspector: deInspector, errors: deErrors, pages: dePages },
-  fr: { common: frCommon, nav: frNav, settings: frSettings, runs: frRuns, session: frSession, inspector: frInspector, errors: frErrors, pages: frPages },
-  ko: { common: koCommon, nav: koNav, settings: koSettings, runs: koRuns, session: koSession, inspector: koInspector, errors: koErrors, pages: koPages },
+  en: { common: enCommon, nav: enNav, settings: enSettings, runs: enRuns, session: enSession, inspector: enInspector, errors: enErrors, pages: { ...enPages, research: researchResources.en, ...workspaceResources.en } },
+  "zh-Hans": { common: zhCommon, nav: zhNav, settings: zhSettings, runs: zhRuns, session: zhSession, inspector: zhInspector, errors: zhErrors, pages: { ...zhPages, research: researchResources["zh-Hans"], ...workspaceResources["zh-Hans"] } },
+  ja: { common: jaCommon, nav: jaNav, settings: jaSettings, runs: jaRuns, session: jaSession, inspector: jaInspector, errors: jaErrors, pages: { ...jaPages, research: researchResources.ja, ...workspaceResources.ja } },
+  es: { common: esCommon, nav: esNav, settings: esSettings, runs: esRuns, session: esSession, inspector: esInspector, errors: esErrors, pages: { ...esPages, research: researchResources.es, ...workspaceResources.es } },
+  de: { common: deCommon, nav: deNav, settings: deSettings, runs: deRuns, session: deSession, inspector: deInspector, errors: deErrors, pages: { ...dePages, research: researchResources.de, ...workspaceResources.de } },
+  fr: { common: frCommon, nav: frNav, settings: frSettings, runs: frRuns, session: frSession, inspector: frInspector, errors: frErrors, pages: { ...frPages, research: researchResources.fr, ...workspaceResources.fr } },
+  ko: { common: koCommon, nav: koNav, settings: koSettings, runs: koRuns, session: koSession, inspector: koInspector, errors: koErrors, pages: { ...koPages, research: researchResources.ko, ...workspaceResources.ko } },
 } as const;
 
 void i18n.use(initReactI18next).init({

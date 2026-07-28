@@ -45,9 +45,9 @@ export const WORKFLOW_STARTERS: WorkflowStarter[] = [
     id: "example-climate",
     icon: <Globe2 size={17} strokeWidth={1.75} />,
     prompt:
-      "Analyze the real climate dataset at climate-trends/data/gistemp_global_means.csv " +
-      "(NASA GISTEMP v4 global land–ocean temperature anomalies in °C vs the 1951–1980 mean; " +
-      "the header is on line 2 and missing values are `***` — see climate-trends/README.md). " +
+      "Analyze the real climate dataset at climate-trends/data/gistemp_annual_global_means.csv " +
+      "(a Core-ready annual series derived from NASA GISTEMP v4 global land–ocean temperature anomalies " +
+      "in °C vs the 1951–1980 mean — see climate-trends/README.md for source and transformation). " +
       "Load the annual J-D series, quantify the warming rate (°C/decade) over the full record and " +
       "over 1975–present, compare decadal means, save one publication-quality figure as " +
       "climate-trends/warming_trend.png, and write climate-trends/report.md citing the dataset " +

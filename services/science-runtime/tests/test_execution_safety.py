@@ -121,6 +121,20 @@ def test_reserved_file_collision_rolls_back_only_files_created_by_runtime(
     assert blocker.read_text(encoding="utf-8") == "user-owned"
 
 
+def test_reserved_runtime_artifacts_are_group_readable_and_complete(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    reserved = execution._reserve_runtime_files(run_dir)
+
+    assert set(reserved) == set(execution._RESERVED_ARTIFACTS)
+    assert {path.name for path in run_dir.iterdir()} == set(execution._RESERVED_ARTIFACTS)
+    assert {
+        name: reserved_file.path.stat().st_mode & 0o777
+        for name, reserved_file in reserved.items()
+    } == {name: 0o640 for name in execution._RESERVED_ARTIFACTS}
+
+
 def test_reserved_file_rewrite_rejects_symlink_substitution(
     tmp_path: Path,
 ) -> None:
@@ -173,6 +187,61 @@ def test_fixed_policy_is_recorded_in_environment_notebook_and_log(
     log = (run_dir / "execution.log").read_text(encoding="utf-8")
     assert "policyProfileId: dataset-analysis-fixed-v1" in log
     assert "policyTemplate: baseline" in log
+
+
+def test_compiled_policy_provenance_is_recorded_in_every_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _data_root, run_dir, dataset_path = _data_layout(tmp_path, monkeypatch)
+    code = "print('ok')"
+    provenance = {
+        "analysisSpecId": "spec-1",
+        "analysisSpecSha256": "b" * 64,
+        "datasetProfileSha256": "c" * 64,
+        "compilerVersion": "analysis-spec-compiler-v1",
+        "approvedCodeSha256": hashlib.sha256(code.encode("utf-8")).hexdigest(),
+    }
+    payload = ExecuteIn.model_validate(
+        {
+            "runId": "run-01",
+            "runDir": str(run_dir),
+            "datasetPath": str(dataset_path),
+            "objective": "Analyze a local CSV",
+            "code": code,
+            "timeoutSeconds": 30,
+            "payloadSha256": "a" * 64,
+            "policyProfileId": "dataset-analysis-spec-v1",
+            "policyTemplate": "analysis-spec-compiler-v1",
+            **provenance,
+        }
+    )
+
+    with patch.object(execution, "NotebookClient") as notebook_client:
+        result = execution.execute_notebook(payload)
+
+    notebook_client.return_value.execute.assert_called_once()
+    assert result.status == "completed"
+    manifest = json.loads((run_dir / "environment.json").read_text(encoding="utf-8"))
+    assert manifest["executionPolicy"] == {
+        "profileId": "dataset-analysis-spec-v1",
+        "template": "analysis-spec-compiler-v1",
+        **provenance,
+    }
+    notebook = json.loads((run_dir / "input.ipynb").read_text(encoding="utf-8"))
+    assert notebook["metadata"]["openScienceRuntime"] == {
+        "schemaVersion": 1,
+        "runId": "run-01",
+        "datasetPath": "input.csv",
+        "payloadSha256": "a" * 64,
+        "environmentHash": result.environment_hash,
+        "policyProfileId": "dataset-analysis-spec-v1",
+        "policyTemplate": "analysis-spec-compiler-v1",
+        **provenance,
+    }
+    log = (run_dir / "execution.log").read_text(encoding="utf-8")
+    for key, value in provenance.items():
+        assert f"{key}: {value}" in log
 
 
 def test_small_output_preview_is_unchanged() -> None:

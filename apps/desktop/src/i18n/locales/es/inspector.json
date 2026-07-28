@@ -2,7 +2,8 @@
   "shell": {
     "maximizePanel": "Maximizar panel",
     "restorePanel": "Restaurar panel",
-    "closeInspector": "Cerrar inspector"
+    "closeInspector": "Cerrar inspector",
+    "resizePanel": "Cambiar el tamaño del panel del inspector"
   },
   "artifact": {
     "previousVersionAria": "Versión anterior",
@@ -267,6 +268,8 @@
       "show": "Mostrar serie"
     },
     "selectSeriesHint": "selecciona una serie para graficar",
-    "noNumericColumns": "No hay columnas numéricas para graficar."
+    "noNumericColumns": "No hay columnas numéricas para graficar.",
+    "chartTitle": "Gráfico del conjunto de datos",
+    "chartDescription": "Gráfico de {{type}} con {{series}} series numéricas seleccionadas en {{rows}} filas. Los valores ausentes se muestran como huecos."
   }
 }

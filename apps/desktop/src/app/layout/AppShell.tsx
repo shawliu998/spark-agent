@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Outlet, useLocation } from "react-router-dom";
 import { PanelLeft } from "lucide-react";
@@ -16,6 +16,21 @@ import { useUpdateStore } from "@/lib/update";
 export function AppShell() {
   const { t } = useTranslation("nav");
   const { sidebarCollapsed, setSidebarCollapsed } = useUiStore();
+  const location = useLocation();
+  const [compactNavigation, setCompactNavigation] = useState(() =>
+    window.matchMedia("(max-width: 900px)").matches,
+  );
+  const [compactSidebarOpen, setCompactSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 900px)");
+    const handleChange = (event: MediaQueryListEvent) => {
+      setCompactNavigation(event.matches);
+      if (!event.matches) setCompactSidebarOpen(false);
+    };
+    query.addEventListener("change", handleChange);
+    return () => query.removeEventListener("change", handleChange);
+  }, []);
 
   // Cmd/Ctrl+B toggles the sidebar, matching the button's tooltip.
   useEffect(() => {
@@ -77,13 +92,29 @@ export function AppShell() {
   // and the sidebar can be re-expanded.
   const isMac = navigator.userAgent.includes("Mac");
   const overlayTitlebar = useOverlayTitlebar();
-  const pageOwnsTitlebar = useLocation().pathname.startsWith("/live");
+  const pageOwnsTitlebar = location.pathname.startsWith("/live");
+  const showFallbackTitlebar =
+    (sidebarCollapsed || (compactNavigation && !compactSidebarOpen)) &&
+    !pageOwnsTitlebar;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-bg text-text">
-      <Sidebar project={mockProject} />
+      <Sidebar
+        project={mockProject}
+        compactOverlay={compactNavigation}
+        compactOpen={compactSidebarOpen}
+        onCompactOpenChange={setCompactSidebarOpen}
+      />
+      {compactNavigation && compactSidebarOpen && (
+        <button
+          type="button"
+          aria-label={t("sidebar.collapse")}
+          onClick={() => setCompactSidebarOpen(false)}
+          className="absolute inset-0 z-40 bg-text/10"
+        />
+      )}
       <main className="flex min-w-0 flex-1 flex-col">
-        {sidebarCollapsed && !pageOwnsTitlebar && (
+        {showFallbackTitlebar && (
           <div
             data-tauri-drag-region={overlayTitlebar || undefined}
             className={cn(
@@ -92,10 +123,13 @@ export function AppShell() {
             )}
           >
             <button
-              onClick={() => setSidebarCollapsed(false)}
+              onClick={() => {
+                if (compactNavigation) setCompactSidebarOpen(true);
+                else setSidebarCollapsed(false);
+              }}
               aria-label={t("sidebar.expand")}
               title={t("sidebar.expandTitle", { shortcut: isMac ? "⌘B" : "Ctrl+B" })}
-              className="fade-in rounded p-1 text-text hover:bg-surface-2"
+              className="fade-in touch-target flex h-10 w-10 items-center justify-center rounded-input text-text hover:bg-surface-2"
             >
               <PanelLeft size={14} strokeWidth={1.5} />
             </button>

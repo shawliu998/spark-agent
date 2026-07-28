@@ -19,19 +19,26 @@ const RUNTIME_DEFAULTS = {
 afterEach(() => useRuntimeStore.setState(RUNTIME_DEFAULTS));
 
 describe("NotebooksPage strings (i18n)", () => {
-  it("renders the page heading and the desktop-only empty state in English", async () => {
+  it("renders the persisted project notebook shell in English", async () => {
     renderAt("/notebooks");
-    expect(await screen.findByRole("heading", { level: 1, name: "Notebooks" })).toBeInTheDocument();
-    expect(screen.getByText("Notebooks are available in the desktop app.")).toBeInTheDocument();
-    expect(screen.getByText("New notebook")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Project notebooks" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Read persisted analysis outputs from Science Core/),
+    ).toBeInTheDocument();
   });
 });
 
 describe("FilesPage strings (i18n)", () => {
-  it("renders the desktop-only explorer message and the preview prompt in English", async () => {
+  it("renders the persisted project artifact shell in English", async () => {
     renderAt("/files");
-    expect(await screen.findByText("The file explorer is available in the desktop app.")).toBeInTheDocument();
-    expect(screen.getByText("Select a file to preview it here.")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "Project artifacts" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Read persisted analysis outputs from Science Core/),
+    ).toBeInTheDocument();
   });
 });
 

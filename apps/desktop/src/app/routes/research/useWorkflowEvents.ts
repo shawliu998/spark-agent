@@ -26,6 +26,7 @@ export type WorkflowConnectionState =
 interface UseWorkflowEventsOptions {
   projectId: string | null;
   selectedWorkflowId: string | null;
+  selectedIsAgentRun: boolean;
   setError: Dispatch<SetStateAction<string | null>>;
   onSnapshotApplied: (snapshot: ResearchWorkflowSnapshot) => void;
 }
@@ -48,6 +49,7 @@ interface WorkflowEventsController {
 export function useWorkflowEvents({
   projectId,
   selectedWorkflowId,
+  selectedIsAgentRun,
   setError,
   onSnapshotApplied,
 }: UseWorkflowEventsOptions): WorkflowEventsController {
@@ -110,7 +112,9 @@ export function useWorkflowEvents({
 
   const refreshWorkflow = useCallback(
     async (workflowId: string, signal?: AbortSignal) => {
-      const nextSnapshot = await scienceCore.getWorkflow(workflowId, { signal });
+      const nextSnapshot = selectedIsAgentRun
+        ? await scienceCore.getAgentRun(workflowId, { signal })
+        : await scienceCore.getWorkflow(workflowId, { signal });
       if (signal?.aborted || selectedWorkflowIdRef.current !== workflowId) return;
       if (
         nextSnapshot.workflow.id !== workflowId ||
@@ -136,7 +140,7 @@ export function useWorkflowEvents({
         if (!page.hasMore) break;
       }
     },
-    [applySnapshot],
+    [applySnapshot, selectedIsAgentRun],
   );
 
   useEffect(() => {
@@ -188,6 +192,7 @@ export function useWorkflowEvents({
             selected != null &&
             selected.workflow.status !== "completed" &&
             selected.workflow.status !== "failed" &&
+            selected.workflow.status !== "unsupported" &&
             selected.workflow.status !== "cancelled";
           const baseDelay = hidden ? 15_000 : active ? 1_500 : 10_000;
           schedule(Math.min(baseDelay * 2 ** failures, 30_000));

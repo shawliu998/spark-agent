@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from ...analysis import sha256_file
 from ...models import (
+    IntentDecisionRecord,
     PlanRecord,
     ProjectRecord,
     SourcePageRecord,
@@ -77,17 +78,34 @@ def ready_source_descriptors(
     if project is None:
         raise WorkflowFailure("project-missing", "The workflow project is missing.")
     project_root = Path(project.project_path).resolve()
-    sources = list(
-        session.scalars(
-            select(SourceRecord)
-            .where(
-                SourceRecord.project_id == workflow.project_id,
-                SourceRecord.source_kind == "pdf",
-                SourceRecord.ingestion_status == "ready",
-            )
-            .order_by(SourceRecord.created_at, SourceRecord.id)
-        )
+    source_query = select(SourceRecord).where(
+        SourceRecord.project_id == workflow.project_id,
+        SourceRecord.source_kind == "pdf",
+        SourceRecord.ingestion_status == "ready",
     )
+    selected_source_ids: list[str] | None = None
+    if workflow.creation_mode == "autonomous":
+        decision = (
+            session.get(IntentDecisionRecord, workflow.current_intent_decision_id)
+            if workflow.current_intent_decision_id is not None
+            else None
+        )
+        selected_source_ids = (
+            decision.selected_source_ids
+            if decision is not None and decision.intent == "literature-synthesis"
+            else []
+        )
+        source_query = source_query.where(SourceRecord.id.in_(selected_source_ids))
+    sources = list(
+        session.scalars(source_query.order_by(SourceRecord.created_at, SourceRecord.id))
+    )
+    if selected_source_ids is not None:
+        sources_by_id = {source.id: source for source in sources}
+        sources = [
+            sources_by_id[source_id]
+            for source_id in selected_source_ids
+            if source_id in sources_by_id
+        ]
     descriptors: list[FrozenSourceDescriptor] = []
     for source in sources:
         page_manifest = source_page_manifest_hash(session, source.id)

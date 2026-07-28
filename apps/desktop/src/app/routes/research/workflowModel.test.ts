@@ -4,7 +4,9 @@ import type {
   WorkflowEvent,
 } from "@spark/research-domain";
 import {
+  canonicalAutonomousLiteratureIdentity,
   generationModeForSnapshot,
+  matchesAutonomousLiteratureIdentity,
   mergeWorkflowEvents,
   resultReviewState,
   sameCreateIntent,
@@ -21,6 +23,7 @@ function snapshot(
       id: "workflow-1",
       projectId: "project-1",
       goal: "Compare studies",
+      mode: "advanced" as const,
       workflowType: "literature-synthesis",
       status: "running",
       revision,
@@ -55,6 +58,45 @@ function event(id: string, sequence: number): WorkflowEvent {
 }
 
 describe("workflow model", () => {
+  it("matches only the exact local autonomous literature identity", () => {
+    const identity = canonicalAutonomousLiteratureIdentity(
+      "project-1",
+      "  Compare studies  ",
+      ["paper-b", "paper-a", "paper-a"],
+    );
+    expect(identity).toEqual({
+      projectId: "project-1",
+      goal: "Compare studies",
+      sourceIds: ["paper-a", "paper-b"],
+    });
+    const current = snapshot() as unknown as ResearchWorkflowSnapshot;
+    current.workflow = {
+      ...current.workflow,
+      mode: "autonomous",
+      workflowType: "literature-synthesis",
+      generationMode: "local-deterministic",
+      sourceIds: ["paper-b", "paper-a"],
+      goal: "Compare studies",
+    } as typeof current.workflow;
+    expect(matchesAutonomousLiteratureIdentity(current, identity)).toBe(true);
+    for (const changed of [
+      { projectId: "project-2" },
+      { goal: "Different question" },
+      { sourceIds: ["paper-a"] },
+    ]) {
+      expect(matchesAutonomousLiteratureIdentity(current, { ...identity!, ...changed })).toBe(false);
+    }
+    (current.workflow as { generationMode: string }).generationMode = "remote-model-assisted";
+    expect(matchesAutonomousLiteratureIdentity(current, identity)).toBe(false);
+
+    (current.workflow as { generationMode: string }).generationMode = "local-deterministic";
+    (current.workflow as { workflowType: null; status: string }).workflowType = null;
+    (current.workflow as { workflowType: null; status: string }).status = "completed";
+    expect(matchesAutonomousLiteratureIdentity(current, identity)).toBe(false);
+    (current.workflow as { workflowType: null; status: string }).status = "routing";
+    expect(matchesAutonomousLiteratureIdentity(current, identity)).toBe(true);
+  });
+
   it("orders snapshots by revision before event cursor", () => {
     expect(snapshotIsOlder(snapshot(2, 99), snapshot(3, 1))).toBe(true);
     expect(snapshotIsOlder(snapshot(3, 1), snapshot(3, 2))).toBe(true);
@@ -157,6 +199,7 @@ describe("workflow model", () => {
     const intent = {
       projectId: "project-1",
       goal: "Compare studies",
+      mode: "advanced" as const,
       workflowType: "literature-synthesis" as const,
       datasetSourceId: null,
       generationMode: "remote-model-assisted" as const,
@@ -166,6 +209,22 @@ describe("workflow model", () => {
     expect(sameCreateIntent(intent, { ...intent })).toBe(true);
     expect(
       sameCreateIntent(intent, { ...intent, remoteDataApproved: false }),
+    ).toBe(false);
+
+    const autonomousIntent = {
+      projectId: "project-1",
+      goal: "Route selected sources",
+      mode: "autonomous" as const,
+      sourceIds: ["paper-1"],
+      remoteDataApproved: true,
+      idempotencyKey: "intent-2",
+    };
+    expect(sameCreateIntent(autonomousIntent, { ...autonomousIntent })).toBe(true);
+    expect(
+      sameCreateIntent(autonomousIntent, {
+        ...autonomousIntent,
+        remoteDataApproved: false,
+      }),
     ).toBe(false);
   });
 });

@@ -24,8 +24,11 @@ from ...analysis_service import (
 from ...model_gateway import OpenAICompatibleModelGateway
 from ...models import (
     AnalysisIntentRecord,
+    AnalysisSpecRecord,
     ApprovalRecord,
+    DiscoverySpecRecord,
     EventRecord,
+    InteractionRequestRecord,
     JobRecord,
     PlanRecord,
     ProjectRecord,
@@ -35,12 +38,17 @@ from ...models import (
     WorkflowRecord,
     utc_now,
 )
+from ..discovery_adapter import discovery_operation_key
+from ..discovery_schemas import DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION
 from ..schemas import (
     AnalysisApprovalEventData,
+    AnalysisSpecEventData,
     CancelEventData,
     CreatedEventData,
     DatasetAnalysisReviewResult,
     DatasetReviewWarningsAcceptedEventData,
+    PaperDiscoveryPlanSpec,
+    PaperDiscoveryPlanStep,
     PlanEventData,
     RemoteDataApprovalEventData,
     ResearchWorkflowCreateIn,
@@ -87,7 +95,7 @@ def start_workflow(
         return existing
     dataset: SourceRecord | None = None
     if payload.workflow_type == "dataset-analysis":
-        dataset = _verified_dataset_for_workflow(session, project, payload.dataset_source_id)
+        dataset = verified_dataset_for_workflow(session, project, payload.dataset_source_id)
     if payload.generation_mode == "remote-model-assisted" and not gateway.configured:
         raise WorkflowConflict(
             "model-gateway-not-configured",
@@ -187,7 +195,7 @@ def _workflow_create_replay(
     return existing
 
 
-def _verified_dataset_for_workflow(
+def verified_dataset_for_workflow(
     session: Session,
     project: ProjectRecord,
     dataset_source_id: str,
@@ -263,34 +271,46 @@ def materialize_plan_tasks(
         return existing
     spec = assert_plan_for_workflow(workflow, plan)
     tasks: list[TaskRecord] = []
-    for order_index, step in enumerate(spec.steps):
-        inputs = model_payload(step.inputs)
+    for zero_based_index, step in enumerate(spec.steps):
+        if isinstance(step, PaperDiscoveryPlanStep):
+            order_index = step.order_index
+            inputs = step.inputs.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=False,
+            )
+            step_type = step.task_type
+        else:
+            order_index = zero_based_index
+            inputs = model_payload(step.inputs)
+            step_type = step.type
         expected_outputs, risk_level, timeout_seconds = plan_step_materialization(
             spec,
-            order_index,
+            zero_based_index,
         )
+        step_key = step.key
         task = TaskRecord(
             id=str(uuid.uuid4()),
             project_id=workflow.project_id,
             workflow_id=workflow.id,
             plan_id=plan.id,
-            step_key=step.key,
+            step_key=step_key,
             order_index=order_index,
             objective=step.objective,
-            task_type=step.type,
+            task_type=step_type,
             inputs=inputs,
             input_sha256=content_sha256(
                 {
                     "inputs": inputs,
                     "objective": step.objective,
-                    "stepKey": step.key,
-                    "stepType": step.type,
+                    "stepKey": step_key,
+                    "stepType": step_type,
                 }
             ),
             expected_outputs=expected_outputs,
             outputs={},
             acceptance_criteria=list(step.acceptance_criteria),
-            permissions=TASK_PERMISSIONS_BY_TYPE[step.type],
+            permissions=TASK_PERMISSIONS_BY_TYPE[step_type],
             risk_level=risk_level,
             status="pending",
             row_version=1,
@@ -338,6 +358,7 @@ def approve_plan(
         "workflow-plan-approval-v1",
         "workflow-plan-approval-v2",
         "workflow-plan-approval-v3",
+        DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
     }:
         raise WorkflowConflict(
             "approval-schema-unsupported",
@@ -352,6 +373,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -360,6 +382,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -368,6 +391,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -376,6 +400,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -384,6 +409,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -475,15 +501,74 @@ def approve_plan(
         .values(status="approved", approved_at=now)
         .execution_options(synchronize_session=False)
     )
+    discovery_plan = (
+        PaperDiscoveryPlanSpec.model_validate(plan.spec_json)
+        if plan.generator == "paper-discovery-v1"
+        else None
+    )
+    if discovery_plan is not None:
+        discovery_result = session.execute(
+            update(DiscoverySpecRecord)
+            .where(
+                DiscoverySpecRecord.id == discovery_plan.discovery_spec_id,
+                DiscoverySpecRecord.workflow_id == workflow.id,
+                DiscoverySpecRecord.revision
+                == discovery_plan.discovery_spec_revision,
+                DiscoverySpecRecord.spec_sha256
+                == discovery_plan.discovery_spec_sha256,
+                DiscoverySpecRecord.status == "pending-approval",
+            )
+            .values(status="approved", approved_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if cast(CursorResult[object], discovery_result).rowcount != 1:
+            raise WorkflowConflict(
+                "discovery-spec-approval-mismatch",
+                "The plan no longer matches its pending discovery specification.",
+            )
+    approved_analysis_spec: AnalysisSpecRecord | None = None
+    analysis_spec_id = plan.spec_json.get("analysisSpecId")
+    analysis_spec_sha256 = plan.spec_json.get("analysisSpecSha256")
+    if analysis_spec_id is not None or analysis_spec_sha256 is not None:
+        analysis_spec = (
+            session.get(AnalysisSpecRecord, analysis_spec_id)
+            if isinstance(analysis_spec_id, str)
+            else None
+        )
+        if (
+            analysis_spec is None
+            or analysis_spec.workflow_id != workflow.id
+            or analysis_spec.spec_sha256 != analysis_spec_sha256
+            or analysis_spec.status != "pending-approval"
+        ):
+            raise WorkflowConflict(
+                "analysis-spec-approval-mismatch",
+                "The plan no longer matches its pending analysis specification.",
+            )
+        analysis_spec.status = "approved"
+        approved_analysis_spec = analysis_spec
     tasks = materialize_plan_tasks(session, workflow, plan)
     first_task = tasks[0]
     transition_task(session, first_task, "queued")
+    first_query_id = first_task.inputs.get("queryId")
+    first_provider = first_task.inputs.get("provider")
+    operation_key = (
+        discovery_operation_key(
+            discovery_plan.discovery_spec_id,
+            first_query_id,
+            first_provider,
+        )
+        if discovery_plan is not None
+        and isinstance(first_query_id, str)
+        and first_provider in {"crossref", "openalex"}
+        else f"workflow:{workflow.id}:task:{first_task.id}"
+    )
     job = enqueue_job(
         session,
         workflow,
         kind="execute-task",
         task=first_task,
-        operation_key=f"workflow:{workflow.id}:task:{first_task.id}",
+        operation_key=operation_key,
     )
     transition_workflow(
         session,
@@ -491,32 +576,56 @@ def approve_plan(
         "running",
         expected_revision=expected_revision,
     )
+    events: list[tuple[str, WorkflowEventData, str | None, str | None]] = [
+        (
+            "plan.approved",
+            PlanEventData(
+                plan_id=plan.id,
+                version=plan.version,
+                plan_sha256=plan.spec_sha256,
+            ),
+            None,
+            None,
+        )
+    ]
+    if approved_analysis_spec is not None:
+        events.append(
+            (
+                "analysis.spec-approved",
+                AnalysisSpecEventData(
+                    analysis_spec_id=approved_analysis_spec.id,
+                    revision=approved_analysis_spec.revision,
+                    spec_sha256=approved_analysis_spec.spec_sha256,
+                    dataset_profile_sha256=(
+                        approved_analysis_spec.dataset_profile_sha256
+                    ),
+                    selector_kind=cast(
+                        Literal["local-deterministic", "remote-model-assisted"],
+                        approved_analysis_spec.selector_kind,
+                    ),
+                    prompt_version=approved_analysis_spec.prompt_version,
+                ),
+                None,
+                None,
+            )
+        )
+    events.append(
+        (
+            "step.queued",
+            TaskEventData(
+                task_id=first_task.id,
+                step_key=first_task.step_key or "",
+                order_index=first_task.order_index or 0,
+                status="queued",
+            ),
+            first_task.id,
+            job.id,
+        )
+    )
     append_workflow_events(
         session,
         workflow,
-        [
-            (
-                "plan.approved",
-                PlanEventData(
-                    plan_id=plan.id,
-                    version=plan.version,
-                    plan_sha256=plan.spec_sha256,
-                ),
-                None,
-                None,
-            ),
-            (
-                "step.queued",
-                TaskEventData(
-                    task_id=first_task.id,
-                    step_key=first_task.step_key or "",
-                    order_index=first_task.order_index or 0,
-                    status="queued",
-                ),
-                first_task.id,
-                job.id,
-            ),
-        ],
+        events,
     )
     session.commit()
     session.refresh(workflow)
@@ -661,7 +770,11 @@ def decide_analysis_execution(
                         task_id=task.id,
                         payload_sha256=intent.payload_sha256,
                         approval_schema_version=cast(
-                            Literal["analysis-intent-v2", "analysis-intent-v3"],
+                            Literal[
+                                "analysis-intent-v2",
+                                "analysis-intent-v3",
+                                "analysis-intent-v4",
+                            ],
                             approval.payload_schema_version,
                         ),
                         expected_workflow_revision=expected_revision,
@@ -717,7 +830,11 @@ def decide_analysis_execution(
                         job_id=job.id,
                         payload_sha256=intent.payload_sha256,
                         approval_schema_version=cast(
-                            Literal["analysis-intent-v2", "analysis-intent-v3"],
+                            Literal[
+                                "analysis-intent-v2",
+                                "analysis-intent-v3",
+                                "analysis-intent-v4",
+                            ],
                             approval.payload_schema_version,
                         ),
                         expected_workflow_revision=expected_revision,
@@ -881,10 +998,22 @@ def request_cancel(
             )
             .values(status="cancelled", finished_at=now, updated_at=now)
         )
+        cancel_pending_interactions(session, workflow.id)
         transition_workflow(session, workflow, "cancelled")
     session.commit()
     session.refresh(workflow)
     return workflow
+
+
+def cancel_pending_interactions(session: Session, workflow_id: str) -> None:
+    session.execute(
+        update(InteractionRequestRecord)
+        .where(
+            InteractionRequestRecord.workflow_id == workflow_id,
+            InteractionRequestRecord.status == "pending",
+        )
+        .values(status="cancelled")
+    )
 
 
 def accept_review_warnings(
@@ -1156,7 +1285,9 @@ def _retry_workflow_once(
     failed_jobs = select(JobRecord).where(
         JobRecord.workflow_id == workflow.id,
         JobRecord.status == "failed",
-        JobRecord.kind.in_(["generate-plan", "execute-task", "review-workflow"]),
+        JobRecord.kind.in_(
+            ["route-intent", "generate-plan", "execute-task", "review-workflow"]
+        ),
     )
     if task_id is not None:
         failed_jobs = failed_jobs.where(JobRecord.task_id == task_id)
@@ -1189,7 +1320,10 @@ def _retry_workflow_once(
         transition_task(session, task, "queued")
         target = "running"
     else:
-        target = "reviewing" if kind == "review-workflow" else "planning"
+        if kind == "route-intent":
+            target = "routing"
+        else:
+            target = "reviewing" if kind == "review-workflow" else "planning"
     enqueue_job(
         session,
         workflow,
@@ -1296,6 +1430,8 @@ def _resume_workflow_once(
             "analysis-execution-rejected",
             "analysis-repair-not-safe",
             "analysis-repair-limit-exceeded",
+            "analysis-compiled-execution-failed",
+            "analysis-review-required",
         }
     )
     if (

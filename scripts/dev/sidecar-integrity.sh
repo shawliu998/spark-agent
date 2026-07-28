@@ -4,18 +4,18 @@
 # desktop bundle. Fetch scripts and quality checks both consume these records;
 # there is no second asset/checksum table to keep in sync.
 SIDECAR_ASSET_MANIFEST=(
-  'opencode|1.17.13|aarch64-apple-darwin|opencode-darwin-arm64.zip|dd016d3e26b347d675ab26c45d1e287545912d5c4c49fa0770b622d4a1367e23'
-  'opencode|1.17.13|x86_64-apple-darwin|opencode-darwin-x64.zip|0bf3d9d134097ca698b83f64c55db960d6d2d0c409069bf4cfd863e5de503b4a'
-  'opencode|1.17.13|aarch64-unknown-linux-gnu|opencode-linux-arm64.tar.gz|bbaccdd374aaab66cd97c7f8ad1c080aa393610fa5f80ee8dfc007f9500afaf9'
-  'opencode|1.17.13|x86_64-unknown-linux-gnu|opencode-linux-x64.tar.gz|157afa289d1a8d9372de0ce19ac726119b937a1f6b201808d46f06e4e59bb348'
-  'opencode|1.17.13|aarch64-pc-windows-msvc|opencode-windows-arm64.zip|bafec2dd6b89055910284ba910d59605295866563ccdb3d035c0c4b887dd11e6'
-  'opencode|1.17.13|x86_64-pc-windows-msvc|opencode-windows-x64.zip|18aa3df701a6eafcca201b5bcc63e086c96c8daa6ae2495cf718e12cb0ce3361'
-  'uv|0.11.26|aarch64-apple-darwin|uv-aarch64-apple-darwin.tar.gz|8f7fbf1708399b921857bce71e1d60f0d3ccf52a30caebc1c1a2f175dce13ab6'
-  'uv|0.11.26|x86_64-apple-darwin|uv-x86_64-apple-darwin.tar.gz|922b460202707dd5f4ccacbadbe7f6a546cc46e82a99bf50ca99a7977a78eddd'
-  'uv|0.11.26|aarch64-unknown-linux-gnu|uv-aarch64-unknown-linux-gnu.tar.gz|befa1a59c91e96eb601b0fd9a97c03dd666f17baba644b2b4db9c59a767e387e'
-  'uv|0.11.26|x86_64-unknown-linux-gnu|uv-x86_64-unknown-linux-gnu.tar.gz|6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0'
-  'uv|0.11.26|aarch64-pc-windows-msvc|uv-aarch64-pc-windows-msvc.zip|98246149741f558e25e45ecf2b0b20f34de0634269f2bf0dcb4012d4b6ba289a'
-  'uv|0.11.26|x86_64-pc-windows-msvc|uv-x86_64-pc-windows-msvc.zip|4e1278ede866be6c0bf32d2f466cc6de7a9fb399ecf20c9ce2d186e52424be47'
+  'opencode|1.17.13|aarch64-apple-darwin|opencode-darwin-arm64.zip|dd016d3e26b347d675ab26c45d1e287545912d5c4c49fa0770b622d4a1367e23|5124dfe29f6b4552a71a00d1b60427229c58576cb3e2bff5c884cd7c12d66bdb'
+  'opencode|1.17.13|x86_64-apple-darwin|opencode-darwin-x64.zip|0bf3d9d134097ca698b83f64c55db960d6d2d0c409069bf4cfd863e5de503b4a|04065dcf635fef5785453f7eb7a2ad225c772d24893e8f204bdac4a3abc482af'
+  'opencode|1.17.13|aarch64-unknown-linux-gnu|opencode-linux-arm64.tar.gz|bbaccdd374aaab66cd97c7f8ad1c080aa393610fa5f80ee8dfc007f9500afaf9|97cec34266f1fb21752755c1539a9accc1b5a1b8b3d1642046db9c15f424da54'
+  'opencode|1.17.13|x86_64-unknown-linux-gnu|opencode-linux-x64.tar.gz|157afa289d1a8d9372de0ce19ac726119b937a1f6b201808d46f06e4e59bb348|ae98d78e8b9a4f3ef4fd16920bfb3dedeab731c0586badff501f75b53ece3b6d'
+  'opencode|1.17.13|aarch64-pc-windows-msvc|opencode-windows-arm64.zip|bafec2dd6b89055910284ba910d59605295866563ccdb3d035c0c4b887dd11e6|26408853adea4128d977c787c4a2d947649b4bfaa806b2e9c6c0436b6309f2f5'
+  'opencode|1.17.13|x86_64-pc-windows-msvc|opencode-windows-x64.zip|18aa3df701a6eafcca201b5bcc63e086c96c8daa6ae2495cf718e12cb0ce3361|f8c45bae73a8f1e2088023fdd34dc2fe0a7f93f505f073e0703e4e1a19afe8ff'
+  'uv|0.11.26|aarch64-apple-darwin|uv-aarch64-apple-darwin.tar.gz|8f7fbf1708399b921857bce71e1d60f0d3ccf52a30caebc1c1a2f175dce13ab6|c9300ed8425e2c85230259a172066a32b475bc56f7ebe907783b2459159ea554'
+  'uv|0.11.26|x86_64-apple-darwin|uv-x86_64-apple-darwin.tar.gz|922b460202707dd5f4ccacbadbe7f6a546cc46e82a99bf50ca99a7977a78eddd|ef0df4073dd04f3827b40c55ecb9c99144598a4eec728dd109d76fd7bead0375'
+  'uv|0.11.26|aarch64-unknown-linux-gnu|uv-aarch64-unknown-linux-gnu.tar.gz|befa1a59c91e96eb601b0fd9a97c03dd666f17baba644b2b4db9c59a767e387e|9a36adc1a125e969a6952ef69b8072960a532f45e3434b972250e61801861c5b'
+  'uv|0.11.26|x86_64-unknown-linux-gnu|uv-x86_64-unknown-linux-gnu.tar.gz|6426a73c3837e6e2483ee344cbc00f36394d179afcba6183cb77437e67db4af0|29b90e884c384e1578ac37335521d807c192aa44d5a4a9b9f4690bb3850e179d'
+  'uv|0.11.26|aarch64-pc-windows-msvc|uv-aarch64-pc-windows-msvc.zip|98246149741f558e25e45ecf2b0b20f34de0634269f2bf0dcb4012d4b6ba289a|f13a990b845aba00a30734c6c678e71b321148fdf8e28101033cce4d2b7452c5'
+  'uv|0.11.26|x86_64-pc-windows-msvc|uv-x86_64-pc-windows-msvc.zip|4e1278ede866be6c0bf32d2f466cc6de7a9fb399ecf20c9ce2d186e52424be47|deeaa21aac3e3e40b3fa00788208aa9a319cefbb3c2aa598cf580565a82ebc34'
 )
 
 SKILLS_ARCHIVE_MANIFEST=(
@@ -49,11 +49,11 @@ resolve_sidecar() {
   local requested_tool="$1"
   local requested_version="$2"
   local requested_triple="$3"
-  local record record_tool record_version record_triple record_asset record_digest
+  local record record_tool record_version record_triple record_asset record_digest record_binary_digest
   local resolved=''
 
   for record in "${SIDECAR_ASSET_MANIFEST[@]}"; do
-    IFS='|' read -r record_tool record_version record_triple record_asset record_digest <<<"$record"
+    IFS='|' read -r record_tool record_version record_triple record_asset record_digest record_binary_digest <<<"$record"
     if [[ "$record_tool" == "$requested_tool" &&
       "$record_version" == "$requested_version" &&
       "$record_triple" == "$requested_triple" ]]; then
@@ -62,7 +62,7 @@ resolve_sidecar() {
           "$requested_tool" "$requested_version" "$requested_triple" >&2
         return 1
       fi
-      resolved="${record_asset}|${record_digest}"
+      resolved="${record_asset}|${record_digest}|${record_binary_digest}"
     fi
   done
 
@@ -150,6 +150,39 @@ verify_sha256() {
     return 1
   fi
   printf 'Verified SHA-256 for %s\n' "$(basename "$file")"
+}
+
+verify_tree_manifest() {
+  local tree="$1"
+  local manifest="$2"
+  local expected actual
+  [[ -d "$tree" && ! -L "$tree" && -f "$manifest" && ! -L "$manifest" ]] || {
+    printf 'Tree or manifest is missing or a symlink\n' >&2
+    return 1
+  }
+  if find -H "$tree" -type l -print -quit | grep -q .; then
+    printf 'Tree contains a symlink: %s\n' "$tree" >&2
+    return 1
+  fi
+  expected="$(mktemp)" || return 1
+  actual="$(mktemp)" || { rm -f "$expected"; return 1; }
+  awk -F '|' 'NF != 2 || $1 !~ /^[0-9a-f]{64}$/ || $2 == "" || $2 ~ /^\// || index($2, "..") { exit 1 } { print }' "$manifest" | LC_ALL=C sort -u >"$expected" || { rm -f "$expected" "$actual"; return 1; }
+  [[ "$(wc -l <"$expected" | tr -d ' ')" -eq "$(wc -l <"$manifest" | tr -d ' ')" ]] || { rm -f "$expected" "$actual"; return 1; }
+  (cd "$tree" && find . -type f -print | LC_ALL=C sort | while IFS= read -r relative; do
+    digest="$(verify_file_sha256 "$relative")" || exit 1
+    printf '%s|%s\n' "$digest" "${relative#./}"
+  done) | LC_ALL=C sort >"$actual" || return 1
+  cmp -s "$expected" "$actual"
+  local status=$?
+  rm -f "$expected" "$actual"
+  return "$status"
+}
+
+verify_file_sha256() {
+  local file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$file" | awk '{print $1}';
+  elif command -v shasum >/dev/null 2>&1; then shasum -a 256 "$file" | awk '{print $1}';
+  else return 1; fi
 }
 
 # Copy into a temporary file beside the destination, then replace with a

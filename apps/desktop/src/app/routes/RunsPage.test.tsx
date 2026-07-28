@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunRecord } from "@ai4s/shared";
+import type { AnalysisRun, ResearchProject } from "@spark/research-domain";
 import type { RunPage, RunQuery } from "@/lib/runs";
 import { useUiStore } from "@/lib/store";
 import { RunsPage } from "./RunsPage";
@@ -13,6 +14,17 @@ vi.mock("@/lib/runs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/runs")>()),
   queryRuns: (q: RunQuery) => queryRuns(q),
   readRunLog: (hash: string) => readRunLog(hash),
+}));
+
+const listProjects = vi.fn();
+const listAnalysisRuns = vi.fn();
+const fetchArtifactBlob = vi.fn();
+vi.mock("@/lib/scienceCore", () => ({
+  scienceCore: {
+    listProjects: () => listProjects(),
+    listAnalysisRuns: (projectId: string) => listAnalysisRuns(projectId),
+    fetchArtifactBlob: (artifactId: string) => fetchArtifactBlob(artifactId),
+  },
 }));
 
 const openArtifactExternally = vi.fn();
@@ -38,6 +50,44 @@ const run: RunRecord = {
     hardware: { cpu: "AMD EPYC 7742", cores: 64, memGb: 512, gpu: ["NVIDIA A100-SXM4-40GB"], accelerator: "cuda" },
   },
 };
+
+const analysisProject = {
+  id: "project_1",
+  title: "Climate evidence",
+} as ResearchProject;
+
+const analysisRun = {
+  id: "analysis_run_1",
+  intentId: "intent_1",
+  taskId: "task_1",
+  projectId: analysisProject.id,
+  datasetSourceId: "dataset_1",
+  objective: "Describe annual temperature anomaly trends",
+  code: "print('analysis')",
+  payloadSha256: "payload",
+  status: "completed",
+  environmentHash: "environment",
+  inputArtifacts: [],
+  outputArtifacts: ["artifact_1"],
+  stdout: "",
+  stderr: "",
+  log: "completed",
+  logs: "completed",
+  artifacts: [
+    {
+      id: "artifact_1",
+      artifactType: "dataset",
+      path: "runs/analysis_run_1/summary.csv",
+      mimeType: "text/csv",
+      contentHash: "hash",
+      sizeBytes: 512,
+      createdAt: "2025-07-03T10:00:00.000Z",
+    },
+  ],
+  createdAt: "2025-07-03T10:00:00.000Z",
+  finishedAt: "2025-07-03T10:00:08.000Z",
+  error: null,
+} satisfies AnalysisRun;
 
 /** A stand-in index: filters a fixed dataset by the query, like the real backend. */
 function serve(dataset: RunRecord[]) {
@@ -74,12 +124,18 @@ describe("RunsPage", () => {
     queryRuns.mockReset();
     readRunLog.mockReset();
     openArtifactExternally.mockReset();
+    listProjects.mockReset();
+    listAnalysisRuns.mockReset();
+    fetchArtifactBlob.mockReset();
+    listProjects.mockResolvedValue([]);
+    listAnalysisRuns.mockResolvedValue([]);
     serve([run]);
   });
 
   it("lists runs with their command and expands the newest to show the recipe", async () => {
     renderPage();
     expect(await screen.findByText("python train.py --lr 3e-4")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Technical details"));
     expect(screen.getByText(/NVIDIA A100-SXM4-40GB/)).toBeInTheDocument();
     expect(screen.getByText("output/metrics.json")).toBeInTheDocument();
     expect(screen.getByText(/3.11.4/)).toBeInTheDocument();
@@ -125,6 +181,13 @@ describe("RunsPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /Failed/ }));
     await waitFor(() => expect(screen.queryByText("python ok.py")).not.toBeInTheDocument());
     expect(screen.getByText("python bad.py")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, node) =>
+          node?.tagName === "SPAN" &&
+          node.textContent === "1 run · 0 succeeded · 1 failed",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("opens an output file in the OS when clicked", async () => {
@@ -154,9 +217,52 @@ describe("RunsPage", () => {
     expect(await screen.findByText("python train.py --lr 3e-4")).toBeInTheDocument();
   });
 
+  it("uses the generated artifact as the run title while keeping the command secondary", async () => {
+    renderPage();
+    expect(await screen.findByText("Generated metrics.json")).toBeInTheDocument();
+    expect(screen.getByText("python train.py --lr 3e-4")).toBeInTheDocument();
+  });
+
+  it("keeps a failed status primary even when the run captured an output", async () => {
+    serve([{ ...run, status: "failed" }]);
+    renderPage();
+    expect(await screen.findByText("Execution failed")).toBeInTheDocument();
+    expect(screen.queryByText("Generated metrics.json")).not.toBeInTheDocument();
+    expect(screen.getByText("output/metrics.json")).toBeInTheDocument();
+  });
+
+  it("shows how many additional outputs belong to a successful run", async () => {
+    serve([
+      {
+        ...run,
+        outputs: [
+          { path: "output/metrics.json", hash: "bbbb", size: 64 },
+          { path: "output/figure.png", hash: "cccc", size: 2048 },
+          { path: "output/summary.csv", hash: "dddd", size: 512 },
+        ],
+      },
+    ]);
+    renderPage();
+
+    expect(await screen.findByText("Generated metrics.json")).toBeInTheDocument();
+    expect(screen.getByText("+2")).toHaveAttribute("title", "2 additional outputs");
+  });
+
   it("explains the empty state", async () => {
     serve([]);
     renderPage();
     expect(await screen.findByText(/No runs recorded yet/)).toBeInTheDocument();
+  });
+
+  it("includes durable dataset analysis runs in the global ledger", async () => {
+    serve([]);
+    listProjects.mockResolvedValue([analysisProject]);
+    listAnalysisRuns.mockResolvedValue([analysisRun]);
+    renderPage();
+
+    expect(await screen.findByText("Describe annual temperature anomaly trends")).toBeInTheDocument();
+    expect(screen.getByText("Climate evidence · isolated runtime")).toBeInTheDocument();
+    expect(screen.getByText("summary.csv")).toBeInTheDocument();
+    expect(screen.queryByText("No runs recorded yet")).not.toBeInTheDocument();
   });
 });

@@ -13,6 +13,10 @@ describe("CommandPalette", () => {
 
     expect(screen.queryByPlaceholderText("Type a command…")).not.toBeInTheDocument();
 
+    // Route modules load asynchronously. Wait for the app shell before sending
+    // a global shortcut so the test observes the same state as a real user.
+    await screen.findByRole("navigation", { name: "Primary navigation" });
+
     await user.keyboard("{Meta>}k{/Meta}");
     const input = await screen.findByPlaceholderText("Type a command…");
     expect(input).toBeInTheDocument();

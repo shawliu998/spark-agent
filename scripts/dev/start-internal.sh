@@ -4,6 +4,7 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 COMPOSE_PROJECT="${SPARK_AGENT_INTERNAL_COMPOSE_PROJECT:-spark-agent-internal-dev}"
 CORE_DATA_DIR="${SPARK_AGENT_CORE_HOST_DATA_DIR:-${ROOT_DIR}/.local/science-core}"
+DESKTOP_PORT="${SPARK_AGENT_DESKTOP_PORT:-5173}"
 MODEL_KEYCHAIN_SERVICE="io.github.shawliu998.sparkagent.model-api-key"
 MODEL_KEYCHAIN_ACCOUNT="openai-compatible"
 MODEL_API_KEY=""
@@ -41,6 +42,9 @@ fi
 if [[ -n "${SPARK_AGENT_OPENAI_API_KEY_SECRET+x}" ]]; then
   fail "SPARK_AGENT_OPENAI_API_KEY_SECRET is set in the host environment. Unset it and use 'pnpm model-key:set' so only macOS Keychain persists the credential."
 fi
+[[ "${DESKTOP_PORT}" =~ ^[0-9]+$ ]] || fail "SPARK_AGENT_DESKTOP_PORT must be a numeric TCP port."
+(( DESKTOP_PORT >= 1024 && DESKTOP_PORT <= 65535 )) || fail "SPARK_AGENT_DESKTOP_PORT must be between 1024 and 65535."
+[[ "${DESKTOP_PORT}" == "1420" || "${DESKTOP_PORT}" == "5173" ]] || fail "SPARK_AGENT_DESKTOP_PORT must be 1420 or 5173 so it matches the science-core loopback CORS allowlist."
 
 command -v docker >/dev/null 2>&1 || fail "Docker CLI was not found. Install Docker Desktop or OrbStack."
 docker compose version >/dev/null 2>&1 || fail "Docker Compose was not found. Install the Docker Compose plugin."
@@ -174,11 +178,11 @@ if ! health_ready; then
   fail "science-core did not become healthy within 120 seconds; recent service logs are shown above."
 fi
 
-printf 'Science services ready at %s. Starting the desktop web client…\n' "${CORE_URL}"
+printf 'Science services ready at %s. Starting the desktop web client on port %s…\n' "${CORE_URL}" "${DESKTOP_PORT}"
 VITE_SCIENCE_CORE_URL="${CORE_URL}" \
 VITE_SCIENCE_CORE_TOKEN="${SPARK_AGENT_CORE_TOKEN}" \
   pnpm --filter @ai4s/desktop exec vite \
-    --host 127.0.0.1 --port 5173 --strictPort &
+    --host 127.0.0.1 --port "${DESKTOP_PORT}" --strictPort &
 DEV_PID=$!
 wait "${DEV_PID}"
 DEV_PID=""

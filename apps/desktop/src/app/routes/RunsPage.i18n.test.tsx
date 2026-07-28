@@ -13,10 +13,9 @@ describe("RunsPage strings (i18n)", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Runs" })).toBeInTheDocument();
     expect(
       screen.getByText(
-        /Every experiment execution across all sessions — command, code version, environment, hardware, and outputs\./,
+        /Review research executions, open their outputs, and reproduce a result when needed\./,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("Reproduce")).toBeInTheDocument();
   });
 
   it("renders the empty state (no runs recorded) in English", async () => {

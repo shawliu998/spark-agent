@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { analyzeColumns, defaultChartSpec, type ChartType } from "@/lib/tableChart";
 import type { ParsedTable } from "@/lib/csv";
@@ -20,6 +20,8 @@ export function TableChart({ table }: { table: ParsedTable }) {
   const [type, setType] = useState<ChartType>(def?.type ?? "line");
   const [xIndex, setXIndex] = useState<number>(def?.xIndex ?? -1);
   const [ys, setYs] = useState<number[]>(def?.yIndexes ?? []);
+  const titleId = useId();
+  const descriptionId = useId();
 
   if (!def) {
     return <div className="p-4 text-sm text-muted">{t("tableChart.noNumericColumns")}</div>;
@@ -76,6 +78,7 @@ export function TableChart({ table }: { table: ParsedTable }) {
           onChange={(v) => setType(v as ChartType)}
           options={["line", "bar", "scatter"]}
           labelFor={(v) => t(`tableChart.chartType.${v as ChartType}`)}
+          groupLabel={t("tableChart.chartTypeLabel", { defaultValue: "Chart type" })}
         />
         <label className="flex items-center gap-1 text-muted">
           {t("tableChart.xAxisFieldLabel")}
@@ -98,17 +101,19 @@ export function TableChart({ table }: { table: ParsedTable }) {
             return (
               <button
                 key={c.index}
+                type="button"
                 onClick={() => toggleY(c.index)}
                 className={cn(
                   "inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] ring-1 transition-colors",
                   on ? "text-text ring-border" : "text-muted/60 ring-transparent hover:text-muted",
                 )}
+                aria-pressed={on}
                 style={on ? { background: "var(--surface-2)" } : undefined}
                 title={on ? t("tableChart.toggleSeries.hide") : t("tableChart.toggleSeries.show")}
               >
                 <span
                   className="h-2 w-2 rounded-full"
-                  style={{ background: on ? SERIES[ys.indexOf(c.index) % 8] : "var(--border)" }}
+                  style={{ background: on ? SERIES[c.index % SERIES.length] : "var(--border)" }}
                 />
                 {c.name}
               </button>
@@ -118,7 +123,16 @@ export function TableChart({ table }: { table: ParsedTable }) {
       </div>
 
       <div className="flex min-h-0 flex-1 items-center justify-center p-4">
-        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto max-h-full w-full max-w-[760px]">
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          className="h-auto max-h-full w-full max-w-[760px]"
+          role="img"
+          aria-labelledby={`${titleId} ${descriptionId}`}
+        >
+          <title id={titleId}>{t("tableChart.chartTitle")}</title>
+          <desc id={descriptionId}>
+            {t("tableChart.chartDescription", { type, series: ys.length, rows: n })}
+          </desc>
           {/* y gridlines */}
           {[0, 0.25, 0.5, 0.75, 1].map((f) => {
             const v = yMin + f * ySpan;
@@ -126,7 +140,7 @@ export function TableChart({ table }: { table: ParsedTable }) {
             return (
               <g key={f}>
                 <line x1={pad.l} y1={y} x2={W - pad.r} y2={y} stroke="currentColor" className="text-border" strokeWidth={0.75} strokeOpacity={0.6} />
-                <text x={pad.l - 6} y={y + 3} textAnchor="end" className="fill-muted font-mono text-[10px]">
+                <text x={pad.l - 6} y={y + 3} textAnchor="end" className="fill-muted font-mono text-[11px]">
                   {v.toPrecision(3)}
                 </text>
               </g>
@@ -135,7 +149,7 @@ export function TableChart({ table }: { table: ParsedTable }) {
 
           {/* series */}
           {ys.map((sIdx, si) => {
-            const color = SERIES[si % 8];
+            const color = SERIES[sIdx % SERIES.length];
             const vals = cols[sIdx].values;
             if (type === "bar") {
               const groupW = (plotW / Math.max(1, n)) * 0.8;
@@ -152,13 +166,26 @@ export function TableChart({ table }: { table: ParsedTable }) {
                 </g>
               );
             }
-            const pts = vals
-              .map((v, i) => (v === null || (xIsValue && !Number.isFinite(xVals[i])) ? null : { x: xAt(i), y: yAt(v) }))
-              .filter((p): p is { x: number; y: number } => p !== null);
+            const points = vals.map((v, i) =>
+              v === null || (xIsValue && !Number.isFinite(xVals[i]))
+                ? null
+                : { x: xAt(i), y: yAt(v) },
+            );
+            const pts = points.filter((p): p is { x: number; y: number } => p !== null);
+            const linePath = points.reduce(
+              (path, point) => {
+                if (!point) return { value: path.value, gap: true };
+                return {
+                  value: `${path.value}${path.gap ? "M" : "L"}${point.x.toFixed(1)},${point.y.toFixed(1)}`,
+                  gap: false,
+                };
+              },
+              { value: "", gap: true },
+            ).value;
             return (
               <g key={sIdx}>
-                {type === "line" && pts.length > 1 && (
-                  <path d={pts.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")} fill="none" stroke={color} strokeWidth={1.75} />
+                {type === "line" && pts.length > 1 && linePath && (
+                  <path d={linePath} fill="none" stroke={color} strokeWidth={1.75} />
                 )}
                 {pts.map((p, i) => (
                   <circle key={i} cx={p.x} cy={p.y} r={type === "scatter" ? 3 : 2.2} fill={color} />
@@ -172,12 +199,12 @@ export function TableChart({ table }: { table: ParsedTable }) {
             const step = Math.ceil(n / 8);
             if (i % step !== 0 && i !== n - 1) return null;
             return (
-              <text key={i} x={xAt(i)} y={H - pad.b + 16} textAnchor="middle" className="fill-muted font-mono text-[9.5px]">
+              <text key={i} x={xAt(i)} y={H - pad.b + 16} textAnchor="middle" className="fill-muted font-mono text-[11px]">
                 {lab.length > 8 ? lab.slice(0, 7) + "…" : lab}
               </text>
             );
           })}
-          <text x={pad.l + plotW / 2} y={H - 6} textAnchor="middle" className="fill-muted font-mono text-[10px]">
+          <text x={pad.l + plotW / 2} y={H - 6} textAnchor="middle" className="fill-muted font-mono text-[11px]">
             {xIndex >= 0 ? cols[xIndex].name : t("tableChart.rowLabel")}
           </text>
         </svg>
@@ -185,9 +212,9 @@ export function TableChart({ table }: { table: ParsedTable }) {
 
       <div className="flex items-center gap-3 border-t border-border px-3 py-2 text-[11px]">
         <div className="flex flex-wrap gap-x-3 gap-y-1">
-          {ys.map((sIdx, si) => (
+          {ys.map((sIdx) => (
             <span key={sIdx} className="inline-flex items-center gap-1 text-muted">
-              <span className="h-2 w-3 rounded-sm" style={{ background: SERIES[si % 8] }} />
+              <span className="h-2 w-3 rounded-sm" style={{ background: SERIES[sIdx % SERIES.length] }} />
               {cols[sIdx].name}
             </span>
           ))}
@@ -203,18 +230,26 @@ function Segmented({
   onChange,
   options,
   labelFor,
+  groupLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: string[];
   labelFor?: (v: string) => string;
+  groupLabel: string;
 }) {
   return (
-    <div className="flex overflow-hidden rounded-md ring-1 ring-border">
+    <div
+      role="group"
+      aria-label={groupLabel}
+      className="flex overflow-hidden rounded-md ring-1 ring-border"
+    >
       {options.map((o) => (
         <button
           key={o}
+          type="button"
           onClick={() => onChange(o)}
+          aria-pressed={value === o}
           className={cn(
             "px-2 py-1 text-[11px] font-medium capitalize transition-colors",
             value === o ? "bg-surface-2 text-text" : "text-muted hover:text-text",

@@ -2,23 +2,86 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/cn";
 
-/** Two contexts render markdown: chat bubbles (theme colors, compact) and the
- *  file-preview "paper" (document-neutral black-on-white, editorial scale —
- *  like the Office previews, a document keeps its own colors in dark mode). */
+interface MarkdownAstNode {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MarkdownAstNode[];
+}
+
+const REPORT_EVIDENCE_COMMENT =
+  /^<!--\s*\[@evidence:[^:\]\s]+:[a-f0-9]{64}\]\s*-->$/i;
+
+function reportCitationPlugin(indices: ReadonlySet<number>) {
+  return () => (tree: MarkdownAstNode) => {
+    const visit = (node: MarkdownAstNode) => {
+      if (
+        !node.children ||
+        node.type === "link" ||
+        node.type === "code" ||
+        node.type === "inlineCode"
+      ) {
+        return;
+      }
+      node.children = node.children.flatMap((child) => {
+        if (
+          child.type === "html" &&
+          child.value &&
+          REPORT_EVIDENCE_COMMENT.test(child.value.trim())
+        ) {
+          return [];
+        }
+        if (child.type !== "text" || !child.value) {
+          visit(child);
+          return [child];
+        }
+        const fragments: MarkdownAstNode[] = [];
+        let offset = 0;
+        for (const match of child.value.matchAll(/\[([1-9][0-9]{0,4})\]/g)) {
+          const start = match.index ?? 0;
+          const index = Number(match[1]);
+          if (!indices.has(index)) continue;
+          if (start > offset) {
+            fragments.push({
+              type: "text",
+              value: child.value.slice(offset, start),
+            });
+          }
+          fragments.push({
+            type: "link",
+            url: `#spark-citation-${index}`,
+            children: [{ type: "text", value: match[0] }],
+          });
+          offset = start + match[0].length;
+        }
+        if (fragments.length === 0) return [child];
+        if (offset < child.value.length) {
+          fragments.push({ type: "text", value: child.value.slice(offset) });
+        }
+        return fragments;
+      });
+    };
+    visit(tree);
+  };
+}
+
+/** Two contexts render markdown: chat bubbles use app theme tokens while the
+ *  file preview uses stable paper tokens so exported research reads the same
+ *  in light and dark app themes. Both share one deliberate type hierarchy. */
 type Variant = "chat" | "document";
 
 const STYLES: Record<Variant, Record<string, string>> = {
   chat: {
-    root: "text-[15px] leading-relaxed text-text",
+    root: "text-base leading-relaxed text-text",
     p: "my-2 first:mt-0 last:mb-0",
     a: "text-link underline underline-offset-2",
-    code: "rounded bg-surface-2 px-1 py-0.5 font-mono text-[13px] text-link",
-    pre: "my-3 overflow-x-auto rounded-input bg-surface-2 p-3 font-mono text-[13px] leading-5 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-text",
+    code: "rounded bg-surface-2 px-1 py-0.5 font-mono text-sm text-link",
+    pre: "my-3 overflow-x-auto rounded-input bg-surface-2 p-3 font-mono text-sm leading-5 [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-text",
     ul: "my-2 ml-5 list-disc space-y-1",
     ol: "my-2 ml-5 list-decimal space-y-1",
-    h1: "mb-3 mt-5 text-2xl font-semibold first:mt-0",
-    h2: "mb-2 mt-5 text-xl font-semibold first:mt-0",
-    h3: "mb-2 mt-4 text-lg font-semibold first:mt-0",
+    h1: "mb-3 mt-5 text-document-display font-bold first:mt-0",
+    h2: "mb-2 mt-5 text-document-heading font-semibold first:mt-0",
+    h3: "mb-2 mt-4 text-document-subheading font-semibold first:mt-0",
     h4: "mb-1.5 mt-3 text-base font-semibold first:mt-0",
     blockquote: "my-2 border-l-2 border-border pl-3 text-muted",
     hr: "my-4 border-border",
@@ -26,34 +89,26 @@ const STYLES: Record<Variant, Record<string, string>> = {
     th: "border border-border bg-surface-2 px-3 py-1.5 text-left font-semibold",
     td: "border border-border px-3 py-1.5",
   },
-  // Editorial-blog paper: warm ink on white, serif headings, terracotta accent
-  // (#c15f3c — the app's brand). Theme-independent by design: a document reads
-  // the same in light or dark mode, so colors are fixed, not tokens.
-  //
-  // Two font stacks, both explicit so the paper never inherits the app's UI
-  // font. Body: a comfortable reading sans (SF/Segoe + PingFang for Chinese).
-  // Headings: the finest reading serifs that actually ship on macOS/Windows
-  // (Iowan/Charter → Georgia), CJK falling back to Songti.
+  // A research artifact is a dense, reviewable document, not an editorial
+  // landing page. Its neutral paper tokens are stable across app themes while
+  // typography stays aligned with the native desktop UI.
   document: {
-    root: "text-[16px] leading-[1.8] text-[#2b2620] antialiased [font-feature-settings:'liga','kern'] [font-family:-apple-system,'SF_Pro_Text','Segoe_UI','PingFang_SC','Microsoft_YaHei',sans-serif] selection:bg-[#f2d9cd]",
-    p: "my-4 tracking-[0.006em] [text-wrap:pretty] first:mt-0 last:mb-0",
-    a: "font-medium text-[#bf5a34] underline decoration-[#e2bdac] decoration-1 underline-offset-[3px] transition-colors hover:decoration-[#bf5a34]",
-    code: "rounded-[4px] bg-[#f7f0ea] px-1.5 py-0.5 font-mono text-[13px] text-[#a94e2c] ring-1 ring-[#eee0d6]",
-    pre: "my-5 overflow-x-auto rounded-lg bg-[#faf6f2] p-4 font-mono text-[13px] leading-6 ring-1 ring-[#ece2d9] [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[#4b433a] [&_code]:ring-0",
-    ul: "my-4 ml-[1.15em] list-disc space-y-2 marker:text-[#c98a6b]",
-    ol: "my-4 ml-[1.15em] list-decimal space-y-2 marker:text-[13px] marker:font-medium marker:text-[#c98a6b]",
-    // Serif display headings give the editorial/blog feel; the stack falls back
-    // to system CJK serif so Chinese posts read as editorial too. Tracking stays
-    // near-zero — negative tracking crams CJK glyphs.
-    h1: "mb-3 mt-10 text-[33px] font-bold leading-[1.25] tracking-[-0.01em] text-[#1c1915] [text-wrap:balance] first:mt-0 [font-family:'Iowan_Old_Style','Charter',Georgia,'Songti_SC','Noto_Serif_CJK_SC',serif]",
-    h2: "mb-4 mt-11 flex items-baseline gap-2.5 text-[23px] font-semibold leading-snug tracking-[-0.005em] text-[#1c1915] [text-wrap:balance] before:relative before:top-[0.14em] before:h-[0.82em] before:w-[3px] before:shrink-0 before:rounded-full before:bg-[#c15f3c] before:content-[''] first:mt-0 [font-family:'Iowan_Old_Style','Charter',Georgia,'Songti_SC','Noto_Serif_CJK_SC',serif]",
-    h3: "mb-2 mt-8 text-[18.5px] font-semibold leading-snug text-[#2b2620] first:mt-0 [font-family:'Iowan_Old_Style','Charter',Georgia,'Songti_SC','Noto_Serif_CJK_SC',serif]",
-    h4: "mb-2 mt-6 text-[12.5px] font-semibold uppercase tracking-[0.08em] text-[#9a8d7c] first:mt-0",
-    blockquote: "my-5 rounded-r-md border-l-[3px] border-[#d98c6a] bg-[#faf6f2] py-1.5 pl-5 pr-4 text-[#6b6155] [&_p]:my-1.5",
-    hr: "mx-auto my-10 w-12 border-t-2 border-[#e6ddd2]",
-    table: "border-collapse text-[14px] tabular-nums",
-    th: "border-b-2 border-[#e2d5c8] px-4 py-2.5 text-left font-semibold text-[#1c1915]",
-    td: "border-b border-[#efe8df] px-4 py-2.5",
+    root: "mx-auto max-w-[68ch] font-sans text-base leading-relaxed text-[var(--document-text)] antialiased [font-feature-settings:'liga','kern'] selection:bg-[var(--document-selection)]",
+    p: "my-4 [text-wrap:pretty] first:mt-0 last:mb-0",
+    a: "font-medium text-[var(--document-link)] underline decoration-[var(--document-border)] decoration-1 underline-offset-4 transition-colors hover:decoration-[var(--document-link)]",
+    code: "rounded-input bg-[var(--document-subtle)] px-1.5 py-0.5 font-mono text-sm text-[var(--document-code)] ring-1 ring-[var(--document-border)]",
+    pre: "my-5 overflow-x-auto rounded-card bg-[var(--document-subtle)] p-4 font-mono text-sm leading-6 ring-1 ring-[var(--document-border)] [&_code]:bg-transparent [&_code]:p-0 [&_code]:text-[var(--document-text)] [&_code]:ring-0",
+    ul: "my-4 ml-5 list-disc space-y-2 marker:text-[var(--document-muted)]",
+    ol: "my-4 ml-5 list-decimal space-y-2 marker:font-medium marker:text-[var(--document-muted)]",
+    h1: "mb-4 mt-10 text-document-display font-bold text-[var(--document-text)] [text-wrap:balance] first:mt-0",
+    h2: "mb-3 mt-9 text-document-heading font-semibold text-[var(--document-text)] [text-wrap:balance] first:mt-0",
+    h3: "mb-2 mt-7 text-document-subheading font-semibold text-[var(--document-text)] first:mt-0",
+    h4: "mb-2 mt-6 text-base font-semibold text-[var(--document-text)] first:mt-0",
+    blockquote: "my-5 rounded-card border border-[var(--document-border)] bg-[var(--document-subtle)] px-4 py-2 text-[var(--document-muted)] [&_p]:my-1.5",
+    hr: "my-8 border-[var(--document-border)]",
+    table: "min-w-full border-collapse text-sm tabular-nums",
+    th: "border-b-2 border-[var(--document-border)] bg-[var(--document-subtle)] px-4 py-2.5 text-left font-semibold text-[var(--document-text)]",
+    td: "border-b border-[var(--document-border)] px-4 py-2.5",
   },
 };
 
@@ -61,23 +116,54 @@ export function MarkdownViewer({
   children,
   className,
   variant = "chat",
+  citationIndices = [],
+  onCitationClick,
+  citationAriaLabel,
 }: {
   children: string;
   className?: string;
   variant?: Variant;
+  citationIndices?: readonly number[];
+  onCitationClick?: (index: number, trigger: HTMLButtonElement) => void;
+  citationAriaLabel?: (index: number) => string;
 }) {
   const s = STYLES[variant];
+  const citationIndexSet = new Set(citationIndices);
+  const citationRemarkPlugin =
+    citationIndexSet.size > 0 && onCitationClick
+      ? reportCitationPlugin(citationIndexSet)
+      : null;
   return (
     <div className={cn(s.root, className)}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={
+          citationRemarkPlugin
+            ? [remarkGfm, citationRemarkPlugin]
+            : [remarkGfm]
+        }
         components={{
           p: ({ children }) => <p className={s.p}>{children}</p>,
-          a: ({ children, href }) => (
-            <a href={href} className={s.a}>
-              {children}
-            </a>
-          ),
+          a: ({ children, href }) => {
+            const citationMatch = href?.match(/^#spark-citation-([1-9][0-9]{0,4})$/);
+            if (citationMatch && onCitationClick) {
+              const index = Number(citationMatch[1]);
+              return (
+                <button
+                  type="button"
+                  className="citation-link"
+                  onClick={(event) => onCitationClick(index, event.currentTarget)}
+                  aria-label={citationAriaLabel?.(index)}
+                >
+                  {children}
+                </button>
+              );
+            }
+            return (
+              <a href={href} className={s.a}>
+                {children}
+              </a>
+            );
+          },
           code: ({ children }) => <code className={s.code}>{children}</code>,
           // Block code: the plain wrapper — its inner <code> is restyled via [&_code].
           pre: ({ children }) => <pre className={s.pre}>{children}</pre>,

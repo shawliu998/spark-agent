@@ -91,7 +91,9 @@ def recover_interrupted_analysis_state(session: Session) -> None:
     )
     for intent in orphaned_intents:
         exact_run = session.scalar(
-            select(RunRecord).where(RunRecord.analysis_intent_id == intent.id)
+            select(RunRecord)
+            .where(RunRecord.analysis_intent_id == intent.id)
+            .order_by(RunRecord.attempt.desc(), RunRecord.created_at.desc())
         )
         if exact_run is not None:
             task = session.get(TaskRecord, intent.task_id)

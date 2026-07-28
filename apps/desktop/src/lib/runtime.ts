@@ -86,6 +86,8 @@ interface RuntimeState {
   commands: CommandInfo[];
   /** Configured default model ("provider/model"), or null when unset. */
   defaultModel: string | null;
+  /** True while the connected runtime is resolving its model/catalog snapshot. */
+  catalogLoading: boolean;
   /** Apply a new default model and transparently reconnect (see impl). */
   setDefaultModel: (model: string) => Promise<void>;
   /** The composer's approval switch: "approve" (dangerous commands prompt)
@@ -192,6 +194,7 @@ let connectionGeneration = 0;
  * their EventSource is closed, so no later create/send/retry may use them. A
  * workspace-only reconnect deliberately does not advance this generation. */
 let runtimeEndpointGeneration = 0;
+let catalogLoadGeneration = 0;
 /** User-authored endpoint selection. A committed bundled-runtime mutation may
  * persist its returned URL after Disconnect, but must never overwrite a newer
  * Server URL the user entered while that mutation was running. */
@@ -715,6 +718,7 @@ function terminateRunningTurnsForRuntimeRestart(): void {
  * learned from the previous endpoint may be sent to, displayed as belonging
  * to, or used to recover against the replacement endpoint. */
 function clearEndpointNamespace(): void {
+  catalogLoadGeneration++;
   openSessionSeq++;
   conversationNavigationGeneration++;
   workspaceTransitionGeneration++;
@@ -745,7 +749,8 @@ function clearEndpointNamespace(): void {
     skills: [],
     agents: [],
     commands: [],
-    defaultModel: null,
+  defaultModel: null,
+  catalogLoading: false,
     approvalMode: "approve",
     error: null,
     questions: [],
@@ -1074,7 +1079,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   skills: [],
   agents: [],
   commands: [],
-  defaultModel: null,
+    defaultModel: null,
+    catalogLoading: false,
   approvalMode: "approve",
   tools: [],
   hiddenExamples: initialHidden(),
@@ -1192,6 +1198,8 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
   loadCatalog: async () => {
     const catalogClient = client;
     if (!catalogClient) return;
+    const loadGeneration = ++catalogLoadGeneration;
+    set({ catalogLoading: true });
     try {
       const [firstSkills, agents, defaultModel, commands] = await Promise.all([
         catalogClient.listSkills(),
@@ -1199,20 +1207,23 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
         catalogClient.getDefaultModel().catch(() => null),
         catalogClient.listCommands().catch(() => []),
       ]);
-      if (client !== catalogClient) return;
+      if (client !== catalogClient || loadGeneration !== catalogLoadGeneration) return;
       set({ agents, defaultModel, commands });
       let skills = firstSkills;
       // The first workspace-scoped /api/skill call triggers OpenCode's lazy
       // instance init and can answer before the scan finishes — poll briefly.
       for (let i = 0; skills.length === 0 && i < 4; i++) {
         await sleep(400);
-        if (client !== catalogClient) return;
+        if (client !== catalogClient || loadGeneration !== catalogLoadGeneration) return;
         skills = await catalogClient.listSkills();
       }
-      if (client !== catalogClient) return;
+      if (client !== catalogClient || loadGeneration !== catalogLoadGeneration) return;
       set({ skills });
     } catch {
       /* ignore transient failures */
+    } finally {
+      if (client === catalogClient && loadGeneration === catalogLoadGeneration)
+        set({ catalogLoading: false });
     }
   },
 

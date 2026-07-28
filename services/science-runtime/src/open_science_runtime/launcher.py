@@ -25,10 +25,11 @@ def _prepare_socket_path(socket_path: Path) -> None:
         raise RuntimeError("Runtime socket directory is unavailable") from error
     if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_ISLNK(parent_stat.st_mode):
         raise RuntimeError("Runtime socket parent must be a real directory")
-    # The mount is a dedicated 16 MiB tmpfs. Restore its mode and clear every
-    # entry so notebook-created siblings, directories, and poisoned symlinks
-    # cannot persist across the container's restart policy.
-    parent.chmod(0o700)
+    # The mount is a dedicated 16 MiB tmpfs. Group execute lets only the
+    # explicitly group-added Science Core process traverse to the public UDS;
+    # other users still cannot list or enter the directory. Clear every entry
+    # so poisoned siblings cannot persist across an app-owned restart.
+    parent.chmod(0o710)
     for entry in parent.iterdir():
         try:
             entry_stat = entry.lstat()
@@ -102,7 +103,7 @@ def _socket_layout_matches(socket_path: Path, identity: _SocketIdentity) -> bool
         parent_stat = parent.lstat()
         if (
             not stat.S_ISDIR(parent_stat.st_mode)
-            or stat.S_IMODE(parent_stat.st_mode) != 0o700
+            or stat.S_IMODE(parent_stat.st_mode) != 0o710
         ):
             return False
         entries = list(parent.iterdir())

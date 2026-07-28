@@ -7,6 +7,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from open_science_core.workflow.schemas import (
+    AgentStoppedEventData,
     AnalysisExecutionPendingApprovalOut,
     AnalysisIntentCreatedEventData,
     CollectArtifactsStepInput,
@@ -742,6 +743,72 @@ class DatasetWorkflowSchemaTest(unittest.TestCase):
         negative_elapsed["data"]["elapsedSeconds"] = -1
         with self.assertRaises(ValidationError):
             WorkflowEventOut.model_validate(negative_elapsed)
+
+    def test_agent_stopped_event_is_discriminated_from_general_decisions(self) -> None:
+        stopped = {
+            "id": "event-stop-1",
+            "sequence": 10,
+            "type": "agent.stopped",
+            "taskId": "task-1",
+            "jobId": "job-1",
+            "data": {
+                "observationId": "observation-1",
+                "decisionId": "decision-1",
+                "action": "stop",
+                "taskId": "task-1",
+                "targetStepKey": None,
+                "previousAnalysisSpecId": None,
+                "proposedAnalysisSpecId": None,
+                "expectedWorkflowRevision": 1,
+                "reasonCode": "workflow-complete",
+                "discoverySelection": None,
+                "discoverySelectionSha256": None,
+            },
+            "createdAt": "2026-07-25T00:00:00Z",
+        }
+        event = WorkflowEventOut.model_validate(stopped)
+        self.assertIsInstance(event.data, AgentStoppedEventData)
+
+        invalid_stop = deepcopy(stopped)
+        assert isinstance(invalid_stop["data"], dict)
+        invalid_stop["data"]["action"] = "continue"
+        with self.assertRaises(ValidationError):
+            WorkflowEventOut.model_validate(invalid_stop)
+
+    def test_interaction_events_are_discriminated_by_lifecycle_stage(self) -> None:
+        requested = {
+            "id": "event-interaction-requested",
+            "sequence": 1,
+            "type": "interaction.requested",
+            "taskId": None,
+            "jobId": None,
+            "data": {
+                "interactionId": "interaction-1",
+                "requestType": "single-choice",
+                "required": True,
+                "responseId": None,
+                "responseRevision": None,
+                "expectedWorkflowRevision": 2,
+            },
+            "createdAt": "2026-07-16T00:00:00Z",
+        }
+        WorkflowEventOut.model_validate(requested)
+
+        requested_with_response = deepcopy(requested)
+        assert isinstance(requested_with_response["data"], dict)
+        requested_with_response["data"]["responseId"] = "response-1"
+        requested_with_response["data"]["responseRevision"] = 1
+        with self.assertRaises(ValidationError):
+            WorkflowEventOut.model_validate(requested_with_response)
+
+        answered_without_response = deepcopy(requested)
+        answered_without_response["type"] = "interaction.answered"
+        with self.assertRaises(ValidationError):
+            WorkflowEventOut.model_validate(answered_without_response)
+
+        answered = deepcopy(requested_with_response)
+        answered["type"] = "interaction.answered"
+        WorkflowEventOut.model_validate(answered)
 
     def test_dataset_approvals_cannot_fall_back_to_the_literature_envelope(self) -> None:
         common = {

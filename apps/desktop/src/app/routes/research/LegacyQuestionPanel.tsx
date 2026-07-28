@@ -52,11 +52,11 @@ export function LegacyQuestionPanel({
 }: LegacyQuestionPanelProps) {
   const { t } = useTranslation("pages");
   return (
-    <details className="rounded-card border border-border bg-surface">
-      <summary className="cursor-pointer px-4 py-3 text-xs font-medium text-muted hover:text-text">
-        {t("research.legacy.heading", { defaultValue: "Quick question (legacy)" })}
+    <details className="border-b border-border">
+      <summary className="cursor-pointer px-1 py-3 text-xs font-medium text-muted hover:text-text">
+        {t("research.legacy.heading", { defaultValue: "Quick evidence question" })}
       </summary>
-      <div className="border-t border-border p-4">
+      <div className="border-t border-border px-1 py-4">
         <form onSubmit={(event) => void onSubmit(event)}>
           <label htmlFor="research-question" className="text-xs font-medium text-text">
             {t("research.questionLabel", { defaultValue: "Research question" })}
@@ -72,7 +72,7 @@ export function LegacyQuestionPanel({
             className="mt-2 w-full resize-y rounded-input border border-border bg-bg px-3 py-2 text-sm leading-relaxed text-text outline-none placeholder:text-muted focus:border-accent"
           />
           {literatureReady && remoteDestination && readySourceCount > 0 && (
-            <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-input border border-warn/25 bg-warn/5 px-3 py-2.5 text-[11px] leading-relaxed text-muted">
+            <label className="mt-2 flex cursor-pointer items-start gap-2 rounded-input border border-warn/25 bg-warn/5 px-3 py-2.5 text-xs leading-relaxed text-muted">
               <input
                 type="checkbox"
                 checked={approved}
@@ -87,7 +87,7 @@ export function LegacyQuestionPanel({
                   host: remoteDestination?.endpointHost,
                 })}
                 {remoteDestination && (
-                  <span className="mt-1 block break-all font-mono text-[9px]">
+                  <span className="mt-1 block break-all font-mono text-caption">
                     {t("research.endpointIdentity", {
                       defaultValue: "Endpoint identity",
                     })}
@@ -98,7 +98,7 @@ export function LegacyQuestionPanel({
             </label>
           )}
           <div className="mt-3 flex items-center gap-3 border-t border-border-faint pt-3">
-            <span className="min-w-0 flex-1 truncate text-[11px] text-muted">
+            <span className="min-w-0 flex-1 truncate text-xs text-muted">
               {readySourceCount > 0
                 ? t("research.readySourceCount", {
                     defaultValue: "{{count}} indexed sources",
@@ -176,7 +176,7 @@ function AnswerView({
   return (
     <article className="mt-5 space-y-4">
       <section className="rounded-card border border-border bg-surface p-4 shadow-card">
-        <div className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted">
+        <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted">
           {hasVerifiedEvidence ? (
             <CheckCircle2 size={14} className="text-ok" />
           ) : (
@@ -190,7 +190,7 @@ function AnswerView({
                 defaultValue: "Remote answer — no locally matched passage",
               })}
         </div>
-        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-[10px] text-muted">
+        <div className="mb-3 flex flex-wrap items-center gap-1.5 text-caption text-muted">
           <span className="rounded-full bg-warn/10 px-2 py-0.5 text-warn ring-1 ring-warn/20">
             {t("research.remoteGenerated", { defaultValue: "Remote model output" })}
           </span>
@@ -202,9 +202,9 @@ function AnswerView({
             </>
           )}
         </div>
-        <dl className="mb-3 grid gap-2 rounded-input border border-border-faint bg-bg px-3 py-2 text-[10px] sm:grid-cols-2">
+        <dl className="mb-3 grid gap-2 rounded-input border border-border-faint bg-bg px-3 py-2 text-caption sm:grid-cols-2">
           <div className="min-w-0">
-            <dt className="uppercase tracking-wider text-muted">
+            <dt className="font-medium text-muted">
               {t("research.remoteEndpoint", { defaultValue: "Remote endpoint" })}
             </dt>
             <dd className="mt-0.5 break-words font-mono text-text">
@@ -212,7 +212,7 @@ function AnswerView({
             </dd>
           </div>
           <div className="min-w-0">
-            <dt className="uppercase tracking-wider text-muted">
+            <dt className="font-medium text-muted">
               {t("research.endpointIdentity", { defaultValue: "Endpoint identity" })}
             </dt>
             <dd className="mt-0.5 break-all font-mono text-text">
@@ -222,7 +222,7 @@ function AnswerView({
           </div>
           {answer.promptVersion && (
             <div className="min-w-0">
-              <dt className="uppercase tracking-wider text-muted">
+              <dt className="font-medium text-muted">
                 {t("research.promptVersion", { defaultValue: "Prompt version" })}
               </dt>
               <dd className="mt-0.5 break-words font-mono text-text">
@@ -231,7 +231,7 @@ function AnswerView({
             </div>
           )}
         </dl>
-        <p className="mb-3 rounded-input border border-warn/25 bg-warn/5 px-3 py-2 text-[11px] leading-relaxed text-muted">
+        <p className="mb-3 rounded-input border border-warn/25 bg-warn/5 px-3 py-2 text-xs leading-relaxed text-muted">
           {t("research.paperQaEvidenceBoundary", {
             defaultValue:
               "A passage match confirms only that quoted text occurs in an imported PDF. It does not validate this answer's correctness, completeness, scientific quality, or entailment.",
@@ -241,7 +241,7 @@ function AnswerView({
       </section>
 
       <div className="flex items-center gap-2 pt-1">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+        <h3 className="text-xs font-medium text-muted">
           {t("research.claimsHeading", {
             defaultValue: "Generated claims — not claim-reviewed ({{count}})",
             count: answer.claims.length,
@@ -253,12 +253,12 @@ function AnswerView({
       {answer.claims.map((claim, index) => (
         <section key={claim.id} className="rounded-card border border-border bg-surface p-4">
           <div className="flex items-start gap-3">
-            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-2 text-[10px] font-semibold text-muted ring-1 ring-border">
+            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-2 text-caption font-semibold text-muted ring-1 ring-border">
               {index + 1}
             </span>
             <div className="min-w-0 flex-1">
               <p className="text-sm font-medium leading-relaxed text-text">{claim.statement}</p>
-              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-caption">
                 <span className="rounded-full bg-warn/10 px-2 py-0.5 text-warn ring-1 ring-warn/20">
                   {t("research.notClaimReviewed", {
                     defaultValue: "Not reviewed for claim support",
@@ -294,7 +294,7 @@ function AnswerView({
                       : "border-border bg-bg hover:border-accent/30 hover:bg-surface-2",
                   )}
                 >
-                  <span className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted">
+                  <span className="flex items-center gap-2 text-caption font-medium text-muted">
                     <Quote size={12} className="text-accent" />
                     {t("research.evidencePage", {
                       defaultValue: "{{source}}, page {{page}}",
@@ -310,7 +310,7 @@ function AnswerView({
                     </span>
                     <ChevronRight size={12} className="transition-transform group-hover:translate-x-0.5" />
                   </span>
-                  <span className="mt-1.5 block line-clamp-4 font-serif text-[13px] leading-relaxed text-text/90">
+                  <span className="mt-1.5 block line-clamp-4 font-serif text-ui leading-relaxed text-text/90">
                     {evidence.text}
                   </span>
                 </button>

@@ -24,6 +24,7 @@ export function RightPane({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  const { t } = useTranslation(["inspector", "common"]);
   const { inspectorWidth, inspectorMaximized, setInspectorWidth, setInspectorMaximized } =
     useUiStore();
   // While dragging, the live width lives here; the store (and localStorage)
@@ -41,13 +42,13 @@ export function RightPane({
       Math.min(w, INSPECTOR_MAX, Math.round(window.innerWidth * MAX_FRACTION)),
     );
 
-  const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+  const onDividerPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     setDragWidth(inspectorWidth);
   };
 
-  const onDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+  const onDividerPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
     if (!dragging) return;
     // The pane ends at the window's right edge, so the width is whatever is
     // right of the pointer.
@@ -67,6 +68,21 @@ export function RightPane({
     setDragWidth(null);
   };
 
+  const maxWidth = () => clamp(INSPECTOR_MAX);
+  const onDividerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const step = 24;
+    const current = clamp(inspectorWidth);
+    const next =
+      event.key === "ArrowLeft" ? clamp(current + step) :
+      event.key === "ArrowRight" ? clamp(current - step) :
+      event.key === "Home" ? INSPECTOR_MIN :
+      event.key === "End" ? maxWidth() :
+      null;
+    if (next === null) return;
+    event.preventDefault();
+    setInspectorWidth(next);
+  };
+
   if (inspectorMaximized) {
     // The pane header stays the top row — PaneTitlebarInset (rendered inside
     // each header) clears the macOS traffic lights, so no extra strip here.
@@ -78,23 +94,34 @@ export function RightPane({
       className="relative hidden h-full shrink-0 lg:block"
       style={{ width: dragWidth ?? inspectorWidth }}
     >
-      <div className="h-full">{children}</div>
+      <div id="right-inspector-pane" className="h-full">{children}</div>
       {/* Drag divider: resize within [INSPECTOR_MIN, INSPECTOR_MAX]; dragging
           far right snaps the pane closed. */}
-      <div
+      <button
+        type="button"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label={t("shell.resizePanel")}
+        aria-controls="right-inspector-pane"
+        aria-valuemin={INSPECTOR_MIN}
+        aria-valuemax={maxWidth()}
+        aria-valuenow={clamp(inspectorWidth)}
+        tabIndex={0}
+        onKeyDown={onDividerKeyDown}
         onPointerDown={onDividerPointerDown}
         onPointerMove={onDividerPointerMove}
         onPointerUp={onDividerPointerUp}
         onPointerCancel={onDividerPointerUp}
-        className="group absolute inset-y-0 left-0 z-10 w-[5px] cursor-col-resize"
+        className="group absolute inset-y-0 left-0 z-10 w-[5px] cursor-col-resize border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        <div
+        <span
+          aria-hidden="true"
           className={cn(
             "absolute inset-y-0 left-0 w-[2px] transition-colors",
             dragging ? "bg-accent/60" : "bg-transparent group-hover:bg-accent/40",
           )}
         />
-      </div>
+      </button>
     </div>
   );
 }
@@ -120,7 +147,7 @@ export function MaximizePaneButton() {
   const label = inspectorMaximized ? t("shell.restorePanel") : t("shell.maximizePanel");
   return (
     <button
-      className="text-text hover:opacity-60"
+      className="flex h-11 w-11 items-center justify-center text-text hover:opacity-60"
       aria-label={label}
       title={label}
       onClick={() => setInspectorMaximized(!inspectorMaximized)}

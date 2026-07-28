@@ -9,12 +9,19 @@
   },
   "items": {
     "new": "新規",
+    "agentSession": "新しいエージェントセッション",
     "research": "リサーチ",
     "analysis": "データ分析",
     "notebooks": "ノートブック",
     "files": "ファイル",
     "runs": "実行",
     "skills": "スキル"
+  },
+  "groups": {
+    "primary": "メインナビゲーション",
+    "workspace": "ワークスペース",
+    "resources": "研究ツール",
+    "agent": "エージェント"
   },
   "history": {
     "heading": "履歴",

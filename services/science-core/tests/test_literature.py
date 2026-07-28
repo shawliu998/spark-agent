@@ -54,6 +54,45 @@ class TypedTestClient(TestClient):
 
 
 class PaperQaCredentialBoundaryTest(unittest.TestCase):
+    def test_paperqa_kwargs_keep_chat_and_embedding_contract_explicit(self) -> None:
+        configured = paperqa_settings_kwargs(
+            "vendor/chat-model",
+            "vendor/embedding-model",
+            API_KEY,
+            "https://models.example.test/v1",
+        )
+        self.assertEqual(configured["llm"], "openai/vendor/chat-model")
+        self.assertEqual(configured["embedding"], "openai/vendor/embedding-model")
+        self.assertEqual(
+            configured["embedding_config"]["kwargs"]["api_base"],
+            "https://models.example.test/v1",
+        )
+        self.assertNotIn(API_KEY, repr(configured))
+
+    def test_anthropic_is_rejected_before_paperqa_import_or_network(self) -> None:
+        adapter = PaperQaAdapter()
+        with patch(
+            "open_science_core.literature.app_settings",
+            replace(
+                settings,
+                model_protocol="anthropic",
+                llm_model="claude-test",
+                openai_api_key=API_KEY,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "separately configured OpenAI-compatible embedding connection",
+            ):
+                asyncio.run(
+                    adapter.ask(
+                        "project",
+                        [],
+                        "question",
+                        None,
+                    )
+                )
+
     @unittest.skipUnless(paper_qa_available(), "PaperQA2 is not installed")
     def test_real_paperqa_configs_are_provider_qualified_and_secret_safe(self) -> None:
         real_settings_type = cast(

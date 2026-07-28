@@ -38,4 +38,16 @@ describe("FigureBlock", () => {
     expect(onComment.mock.calls[0][0]).toMatchObject({ index: 2, note: "add a scale bar" });
     expect(onComment.mock.calls[0][1]).toBe("atlas_fig1a.png");
   });
+
+  it("starts a centered annotation from the keyboard", async () => {
+    render(<FigureBlock block={block} />);
+
+    const annotationSurface = screen.getByRole("button", {
+      name: "Add annotation",
+    });
+    annotationSurface.focus();
+    await userEvent.keyboard("{Enter}");
+
+    expect(await screen.findByLabelText("Annotation note")).toBeInTheDocument();
+  });
 });

@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from collections import defaultdict
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,7 +15,12 @@ from ..service import content_sha256
 from ..state import WorkflowBlockedError, WorkflowFailure
 from .lifecycle import previous_task
 from .sources import validated_source_descriptors_for_task
-from .text import normalized_contains, rank_passages, select_diverse_passages
+from .text import (
+    PassagePage,
+    normalized_contains,
+    rank_passages,
+    select_diverse_passages,
+)
 
 
 def extract_local_evidence(
@@ -47,7 +52,7 @@ def extract_local_evidence(
             .order_by(SourcePageRecord.source_id, SourcePageRecord.page_index)
         )
     )
-    candidates = rank_passages(payload.query, pages)
+    candidates = rank_passages(payload.query, cast(list[PassagePage], pages))
     selected = select_diverse_passages(
         candidates,
         max_passages=payload.max_passages,
@@ -120,6 +125,32 @@ def evidence_fingerprint(evidence: EvidenceSpanRecord) -> dict[str, Any]:
     }
 
 
+def page_contains_verified_quote(page: SourcePageRecord, quote: str) -> bool:
+    if normalized_contains(page.text, quote):
+        return True
+    if not page.words:
+        return False
+    located = locate_quote(
+        quote,
+        [
+            PdfPage(
+                page_index=page.page_index,
+                page_label=page.page_label,
+                width=page.width,
+                height=page.height,
+                text=page.text,
+                words=page.words,
+            )
+        ],
+    )
+    return bool(
+        located is not None
+        and located.verified
+        and normalized_contains(located.text, quote)
+        and normalized_contains(quote, located.text)
+    )
+
+
 def validate_evidence_integrity(
     session: Session,
     workflow: WorkflowRecord,
@@ -141,13 +172,16 @@ def validate_evidence_integrity(
         quote_hash_ok = evidence.quote_hash == hashlib.sha256(
             evidence.text.encode("utf-8")
         ).hexdigest()
+        page_quote_ok = page is not None and page_contains_verified_quote(
+            page, evidence.text
+        )
         if not (
             source is not None
             and source.project_id == workflow.project_id
             and evidence.verified
             and quote_hash_ok
             and page is not None
-            and normalized_contains(page.text, evidence.text)
+            and page_quote_ok
         ):
             raise WorkflowFailure(
                 "evidence-integrity-failed",

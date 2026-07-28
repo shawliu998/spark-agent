@@ -1392,7 +1392,25 @@ fn spawn_sidecar(
         // policy on every start, repairing legacy full/partial permission configs.
         let cfg_file = effective_config_file(app)?;
         let existing = std::fs::read_to_string(&cfg_file).unwrap_or_default();
-        if let Some(seeded) = crate::opencode_config::seed_default_permission(&existing) {
+        let safe = crate::opencode_config::seed_default_permission(&existing)
+            .unwrap_or_else(|| existing.clone());
+        let app_data = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| "app data directory is unavailable".to_string())?;
+        let descriptor = crate::science_core_runtime::skill_mcp_descriptor_path(&app_data);
+        let executable =
+            std::env::current_exe().map_err(|_| "app executable is unavailable".to_string())?;
+        let seeded = crate::opencode_config::seed_skill_mcp(
+            &safe,
+            executable
+                .to_str()
+                .ok_or_else(|| "app executable path is invalid".to_string())?,
+            descriptor
+                .to_str()
+                .ok_or_else(|| "Science Skill MCP descriptor path is invalid".to_string())?,
+        )?;
+        if seeded != existing {
             write_private_atomic(&cfg_file, seeded.as_bytes())?;
         }
         // Secrets live under the runtime root (provider/connector keys in

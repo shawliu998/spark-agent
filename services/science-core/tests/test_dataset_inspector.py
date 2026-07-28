@@ -13,6 +13,8 @@ import open_science_core.dataset_inspector as dataset_inspector
 from open_science_core.dataset_inspector import (
     DatasetInspectionError,
     dataset_profile_sha256,
+    exact_correlation_preflight_csv_dataset,
+    exact_two_group_preflight_csv_dataset,
     inspect_csv_dataset,
 )
 
@@ -532,6 +534,207 @@ class DatasetInspectorTest(unittest.TestCase):
                     dataset_path=path,
                     source_id="dataset-source-5",
                     expected_content_hash=content_hash,
+                )
+
+    def test_exact_two_group_preflight_handles_cp1252_semicolon_and_special_values(
+        self,
+    ) -> None:
+        content = (
+            "group;score\r\n"
+            "=contrôle;1\r\n"
+            "=contrôle;NA\r\n"
+            '"traité;B";3\r\n'
+            "other;9\r\n"
+            ";5\r\n"
+        ).encode("cp1252")
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            path, content_hash = _write_dataset(workspace, "groups.csv", content)
+
+            result = exact_two_group_preflight_csv_dataset(
+                workspace_root=workspace,
+                dataset_path=path,
+                expected_content_hash=content_hash,
+                outcome_column="score",
+                group_column="group",
+                groups=("=contrôle", "traité;B"),
+            )
+
+            self.assertEqual(result.encoding, "cp1252")
+            self.assertEqual(result.delimiter, ";")
+            self.assertEqual(result.rows_read, 5)
+            self.assertEqual(dict(result.valid_counts), {"=contrôle": 1, "traité;B": 1})
+            self.assertEqual(dict(result.missing_counts), {"=contrôle": 1, "traité;B": 0})
+            self.assertEqual(
+                dict(result.non_constant_groups),
+                {"=contrôle": False, "traité;B": False},
+            )
+            self.assertEqual(result.excluded_row_count, 2)
+
+    def test_exact_correlation_preflight_counts_complete_and_missing_pairs(self) -> None:
+        content = b"x|y|note\n+1|2|a\nNA|3|b\n4|null|c\n1e2|6|d\n"
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            path, content_hash = _write_dataset(workspace, "correlation.csv", content)
+
+            result = exact_correlation_preflight_csv_dataset(
+                workspace_root=workspace,
+                dataset_path=path,
+                expected_content_hash=content_hash,
+                x_column="x",
+                y_column="y",
+            )
+
+            self.assertEqual(result.delimiter, "|")
+            self.assertEqual(result.rows_read, 4)
+            self.assertEqual(result.valid_pair_count, 2)
+            self.assertEqual(result.missing_pair_count, 2)
+
+    def test_exact_preflight_streams_every_row_without_sampling(self) -> None:
+        rows = ["group,score"]
+        rows.extend(
+            f"{'a' if index % 2 == 0 else 'b'},{index}"
+            for index in range(2_001)
+        )
+        content = ("\n".join(rows) + "\n").encode()
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            path, content_hash = _write_dataset(workspace, "complete.csv", content)
+
+            result = exact_two_group_preflight_csv_dataset(
+                workspace_root=workspace,
+                dataset_path=path,
+                expected_content_hash=content_hash,
+                outcome_column="score",
+                group_column="group",
+                groups=("a", "b"),
+            )
+
+            self.assertEqual(result.rows_read, 2_001)
+            self.assertEqual(dict(result.valid_counts), {"a": 1_001, "b": 1_000})
+            self.assertEqual(dict(result.missing_counts), {"a": 0, "b": 0})
+            self.assertEqual(
+                dict(result.non_constant_groups), {"a": True, "b": True}
+            )
+            self.assertEqual(result.excluded_row_count, 0)
+
+    def test_exact_preflight_rejects_missing_duplicate_and_non_numeric_columns(
+        self,
+    ) -> None:
+        fixtures = {
+            "missing.csv": b"group,score\na,1\nb,2\n",
+            "duplicate.csv": b"group,score,score\na,1,2\nb,2,3\n",
+            "non-numeric.csv": b"group,score\na,1\nb,not-a-number\n",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            written = {
+                name: _write_dataset(workspace, name, content)
+                for name, content in fixtures.items()
+            }
+
+            missing_path, missing_hash = written["missing.csv"]
+            with self.assertRaisesRegex(DatasetInspectionError, "not present"):
+                exact_correlation_preflight_csv_dataset(
+                    workspace_root=workspace,
+                    dataset_path=missing_path,
+                    expected_content_hash=missing_hash,
+                    x_column="score",
+                    y_column="absent",
+                )
+
+            duplicate_path, duplicate_hash = written["duplicate.csv"]
+            with self.assertRaisesRegex(DatasetInspectionError, "duplicate"):
+                exact_two_group_preflight_csv_dataset(
+                    workspace_root=workspace,
+                    dataset_path=duplicate_path,
+                    expected_content_hash=duplicate_hash,
+                    outcome_column="score",
+                    group_column="group",
+                    groups=("a", "b"),
+                )
+
+            non_numeric_path, non_numeric_hash = written["non-numeric.csv"]
+            with self.assertRaisesRegex(DatasetInspectionError, "non-numeric"):
+                exact_two_group_preflight_csv_dataset(
+                    workspace_root=workspace,
+                    dataset_path=non_numeric_path,
+                    expected_content_hash=non_numeric_hash,
+                    outcome_column="score",
+                    group_column="group",
+                    groups=("a", "b"),
+                )
+
+    def test_exact_preflight_rejects_hash_mismatch_and_file_change(self) -> None:
+        original = b"x,y\n1,2\n3,4\n"
+        replacement = b"x,y\n5,6\n7,8\n"
+        self.assertEqual(len(original), len(replacement))
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            path, content_hash = _write_dataset(workspace, "mutable.csv", original)
+
+            with self.assertRaisesRegex(DatasetInspectionError, "content hash"):
+                exact_correlation_preflight_csv_dataset(
+                    workspace_root=workspace,
+                    dataset_path=path,
+                    expected_content_hash="0" * 64,
+                    x_column="x",
+                    y_column="y",
+                )
+
+            original_stat = path.stat()
+            original_parser = dataset_inspector.exact_preflight_with_encoding_fallback
+
+            def parse_then_tamper(
+                descriptor: int,
+                prefix: bytes,
+                *,
+                request: object,
+            ) -> object:
+                result = original_parser(
+                    descriptor,
+                    prefix,
+                    request=request,  # type: ignore[arg-type]
+                )
+                path.chmod(0o644)
+                path.write_bytes(replacement)
+                path.chmod(0o444)
+                os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+                return result
+
+            with (
+                patch.object(
+                    dataset_inspector,
+                    "exact_preflight_with_encoding_fallback",
+                    side_effect=parse_then_tamper,
+                ),
+                self.assertRaisesRegex(DatasetInspectionError, "changed while"),
+            ):
+                exact_correlation_preflight_csv_dataset(
+                    workspace_root=workspace,
+                    dataset_path=path,
+                    expected_content_hash=content_hash,
+                    x_column="x",
+                    y_column="y",
+                )
+
+    def test_exact_preflight_enforces_record_bound(self) -> None:
+        content = b"group,score\na," + (b"1" * 100) + b"\n"
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory).resolve()
+            path, content_hash = _write_dataset(workspace, "oversized.csv", content)
+
+            with (
+                patch.object(dataset_inspector, "_MAX_RECORD_CHARS", 32),
+                self.assertRaisesRegex(DatasetInspectionError, "4 MiB inspection limit"),
+            ):
+                exact_two_group_preflight_csv_dataset(
+                    workspace_root=workspace,
+                    dataset_path=path,
+                    expected_content_hash=content_hash,
+                    outcome_column="score",
+                    group_column="group",
+                    groups=("a", "b"),
                 )
 
 

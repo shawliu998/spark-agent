@@ -16,7 +16,9 @@ mod provenance;
 mod runs;
 mod runs_index;
 mod runtime;
+mod science_core_runtime;
 mod science_mcp;
+mod skill_mcp_bridge;
 mod tools;
 mod updates;
 mod uv;
@@ -27,6 +29,8 @@ use preview_server::PreviewState;
 use provenance::ProvenanceState;
 use runtime::RuntimeState;
 use tauri::Manager;
+
+pub use skill_mcp_bridge::{is_skill_mcp_invocation, run_skill_mcp_stdio};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -49,6 +53,11 @@ pub fn run() {
         .manage(PreviewState::default())
         .manage(ProvenanceState::default())
         .manage(runs::RunState::default())
+        .manage(science_core_runtime::ScienceCoreState::default())
+        .setup(|app| {
+            science_core_runtime::bootstrap(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             runtime::start_runtime,
             runtime::runtime_password,
@@ -81,6 +90,7 @@ pub fn run() {
             artifact_file::absolute_path,
             artifact_file::resolve_artifact,
             artifact_file::save_text_file,
+            artifact_file::save_binary_file,
             artifact_file::open_url,
             artifact_file::add_files_to_workspace,
             artifact_file::add_text_to_workspace,
@@ -96,6 +106,13 @@ pub fn run() {
             runs_index::query_runs_cmd,
             science_mcp::science_mcp_python,
             science_mcp::setup_science_mcp,
+            science_core_runtime::science_core_status,
+            science_core_runtime::science_core_connection,
+            science_core_runtime::science_project_host_path,
+            science_core_runtime::science_core_retry,
+            science_core_runtime::science_core_stop,
+            science_core_runtime::science_model_config,
+            science_core_runtime::science_model_config_save,
             examples::install_example,
             git_snapshot::commit_workspace_snapshot,
             compute::list_ssh_hosts,
@@ -122,6 +139,10 @@ pub fn run() {
                 runtime::kill_child(&app.state::<RuntimeState>());
                 kernel::kill_kernel(&app.state::<KernelState>());
                 jupyter::kill_jupyter(&app.state::<JupyterState>());
+                science_core_runtime::stop_for_exit(
+                    app.state::<science_core_runtime::ScienceCoreState>()
+                        .inner(),
+                );
             }
         });
 }

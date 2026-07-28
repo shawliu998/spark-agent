@@ -1,9 +1,34 @@
 {
   "title": "Exécutions",
+  "analysis": {
+    "heading": "Analyse de données",
+    "loading": "Chargement des analyses de données…",
+    "unavailable": "Les analyses de données sont temporairement indisponibles.",
+    "failed": "Échec de l’analyse de données",
+    "fallbackTitle": "Analyse de données",
+    "artifactCount_one": "{{count}} artefact",
+    "artifactCount_other": "{{count}} artefacts",
+    "isolatedRuntime": "environnement isolé",
+    "open": "Ouvrir l’analyse",
+    "openTitle": "Ouvrir cette exécution dans Analyse de données"
+  },
   "description": {
+    "product": "Examinez les exécutions de recherche, ouvrez leurs résultats et reproduisez-les si nécessaire.",
     "prefix": "Chaque exécution d'expérience dans toutes les sessions — commande, version du code, environnement, matériel et sorties. ",
     "suffix": " la relance et compare les résultats."
   },
+  "summary": {
+    "total": "{{count}} exécutions",
+    "succeeded": "{{count}} réussies",
+    "failed": "{{count}} échouées"
+  },
+  "run": {
+    "generated": "{{name}} généré",
+    "completed": "{{name}} terminé",
+    "failed": "Échec de l’exécution",
+    "additionalOutputs": "{{count}} résultats supplémentaires"
+  },
+  "technicalDetails": "Détails techniques",
   "pane": {
     "subtitle": "cette session",
     "closeAria": "Fermer les exécutions"

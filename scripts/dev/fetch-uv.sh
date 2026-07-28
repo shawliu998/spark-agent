@@ -12,7 +12,7 @@ OUT_DIR="$ROOT/apps/desktop/src-tauri/binaries"
 
 TRIPLE="${1:-$(rustc -Vv | sed -n 's/host: //p')}"
 RESOLVED_SIDECAR="$(resolve_sidecar uv "$UV_VERSION" "$TRIPLE")"
-IFS='|' read -r ASSET EXPECTED_SHA256 <<<"$RESOLVED_SIDECAR"
+IFS='|' read -r ASSET EXPECTED_SHA256 EXPECTED_BINARY_SHA256 <<<"$RESOLVED_SIDECAR"
 
 URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${ASSET}"
 TMP="$(mktemp -d)"
@@ -33,5 +33,6 @@ else
   [ -n "$BIN" ] || { echo "No uv binary in archive" >&2; exit 1; }
   DESTINATION="$OUT_DIR/uv-$TRIPLE"
 fi
+verify_sha256 "$BIN" "$EXPECTED_BINARY_SHA256"
 install_sidecar_atomically "$BIN" "$DESTINATION"
 echo "Placed uv sidecar for $TRIPLE in $OUT_DIR"

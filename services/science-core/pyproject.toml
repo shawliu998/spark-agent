@@ -4,13 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spark-agent-core"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local evidence, provenance, and research workflow service for Spark Agent."
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "alembic>=1.15,<2",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
+  "markdown-it-py>=4.2,<5",
+  "paper-search-mcp==0.1.4+spark.3",
   "pydantic>=2.11,<3",
   "pymupdf>=1.26,<2",
   "python-multipart>=0.0.20,<1",

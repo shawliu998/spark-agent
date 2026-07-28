@@ -2,7 +2,8 @@
   "shell": {
     "maximizePanel": "Panel maximieren",
     "restorePanel": "Panel wiederherstellen",
-    "closeInspector": "Inspector schließen"
+    "closeInspector": "Inspector schließen",
+    "resizePanel": "Inspector-Bereich vergrößern oder verkleinern"
   },
   "artifact": {
     "previousVersionAria": "Vorherige Version",
@@ -267,6 +268,8 @@
       "show": "Serie anzeigen"
     },
     "selectSeriesHint": "Serie zum Plotten auswählen",
-    "noNumericColumns": "Keine numerischen Spalten zum Plotten."
+    "noNumericColumns": "Keine numerischen Spalten zum Plotten.",
+    "chartTitle": "Datensatzdiagramm",
+    "chartDescription": "{{type}}-Diagramm mit {{series}} ausgewählten numerischen Reihen über {{rows}} Zeilen. Fehlende Werte werden als Lücken dargestellt."
   }
 }

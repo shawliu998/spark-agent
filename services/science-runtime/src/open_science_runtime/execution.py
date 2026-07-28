@@ -99,6 +99,7 @@ def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
             payload.code,
             policy_profile_id=payload.policy_profile_id,
             policy_template=payload.policy_template,
+            approved_code_sha256=payload.approved_code_sha256,
         )
     except CodePolicyError as error:
         raise HTTPException(
@@ -113,10 +114,7 @@ def execute_notebook(payload: ExecuteIn) -> ExecuteOut:
 
     manifest = {
         **environment_manifest(),
-        "executionPolicy": {
-            "profileId": payload.policy_profile_id,
-            "template": payload.policy_template,
-        },
+        "executionPolicy": _policy_attestation(payload),
     }
     manifest_bytes = canonical_json_bytes(manifest)
     environment_hash = sha256_bytes(manifest_bytes)
@@ -372,6 +370,7 @@ def _build_notebook(
             "environmentHash": environment_hash,
             "policyProfileId": payload.policy_profile_id,
             "policyTemplate": payload.policy_template,
+            **_compiled_provenance_attestation(payload),
         },
     }
     return notebook
@@ -386,7 +385,7 @@ def _reserve_runtime_files(run_dir: Path) -> dict[str, _ReservedFile]:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
-            descriptor = os.open(path, flags, 0o600)
+            descriptor = os.open(path, flags, 0o640)
             try:
                 file_stat = os.fstat(descriptor)
                 if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
@@ -622,6 +621,17 @@ def _build_log(
         f"environmentHash: {environment_hash}",
         f"policyProfileId: {payload.policy_profile_id}",
         f"policyTemplate: {payload.policy_template or '-'}",
+        *(
+            [
+                f"analysisSpecId: {payload.analysis_spec_id}",
+                f"analysisSpecSha256: {payload.analysis_spec_sha256}",
+                f"datasetProfileSha256: {payload.dataset_profile_sha256}",
+                f"compilerVersion: {payload.compiler_version}",
+                f"approvedCodeSha256: {payload.approved_code_sha256}",
+            ]
+            if payload.analysis_spec_id is not None
+            else []
+        ),
         f"runDir: {run_dir.relative_to(data_root).as_posix()}",
         f"datasetPath: {dataset_path.relative_to(data_root).as_posix()}",
         f"timeoutSeconds: {payload.timeout_seconds}",
@@ -637,6 +647,30 @@ def _build_log(
         "",
     ]
     return "\n".join(lines)
+
+
+def _compiled_provenance_attestation(payload: ExecuteIn) -> dict[str, str]:
+    if payload.analysis_spec_id is None:
+        return {}
+    assert payload.analysis_spec_sha256 is not None
+    assert payload.dataset_profile_sha256 is not None
+    assert payload.compiler_version is not None
+    assert payload.approved_code_sha256 is not None
+    return {
+        "analysisSpecId": payload.analysis_spec_id,
+        "analysisSpecSha256": payload.analysis_spec_sha256,
+        "datasetProfileSha256": payload.dataset_profile_sha256,
+        "compilerVersion": payload.compiler_version,
+        "approvedCodeSha256": payload.approved_code_sha256,
+    }
+
+
+def _policy_attestation(payload: ExecuteIn) -> dict[str, object]:
+    return {
+        "profileId": payload.policy_profile_id,
+        "template": payload.policy_template,
+        **_compiled_provenance_attestation(payload),
+    }
 
 
 def _artifact_metadata(

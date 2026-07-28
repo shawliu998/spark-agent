@@ -53,8 +53,25 @@
     "title": "Modèle",
     "hint": "Les fournisseurs ci-dessous proposent les modèles que vous pouvez choisir ici",
     "connectPrompt": "Connectez le runtime pour configurer les modèles.",
+    "loading": "Chargement du modèle configuré…",
     "notSet": "Non défini — choisissez un modèle par défaut",
     "providersDivider": "Fournisseurs"
+  },
+  "researchModel": {
+    "title": "Connexion du modèle de recherche",
+    "hint": "Modèle facultatif compatible OpenAI pour les flux de recherche. Chaque exécution distante exige toujours une autorisation explicite des données.",
+    "desktopOnly": "Configurez le modèle de recherche dans l’application de bureau empaquetée.",
+    "provider": "Fournisseur",
+    "protocol": "Protocole de connexion",
+    "openaiCompatible": "Compatible OpenAI",
+    "anthropicNative": "Anthropic natif",
+    "endpoint": "Point de terminaison", "endpointPlaceholder": "https://api.example.com/v1",
+    "model": "Modèle", "modelPlaceholder": "nom-du-modèle",
+    "embedding": "Modèle d’embedding", "optional": "facultatif", "embeddingPlaceholder": "modèle-d’embedding",
+    "embeddingUnavailable": "Ce fournisseur ne propose pas d’embeddings via cette connexion. L’agent de recherche fonctionne, mais les questions sémantiques sur PDF exigent un endpoint d’embeddings compatible.",
+    "apiKey": "Clé API", "keyStoredPlaceholder": "Stockée dans le trousseau macOS — saisir uniquement pour remplacer", "keyPlaceholder": "Stockée dans le trousseau macOS", "keyOptionalPlaceholder": "Non requise pour ce fournisseur local",
+    "credentialStored": "Identifiant stocké dans le trousseau macOS", "credentialMissing": "Aucun identifiant de modèle de recherche", "credentialNotRequired": "Ce fournisseur local ne nécessite pas de clé API", "removeKey": "Supprimer la clé",
+    "readFailed": "Impossible de lire la connexion du modèle de recherche.", "saveFailed": "Impossible d’enregistrer la connexion du modèle de recherche.", "saved": "Connexion enregistrée. Science Core redémarre."
   },
   "providers": {
     "modelCount_one": "{{count}} modèle",

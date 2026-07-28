@@ -9,12 +9,19 @@
   },
   "items": {
     "new": "Nouveau",
+    "agentSession": "Nouvelle session d’agent",
     "research": "Recherche",
     "analysis": "Analyse de données",
     "notebooks": "Notebooks",
     "files": "Fichiers",
     "runs": "Exécutions",
     "skills": "Compétences"
+  },
+  "groups": {
+    "primary": "Navigation principale",
+    "workspace": "Espace de travail",
+    "resources": "Outils de recherche",
+    "agent": "Agent"
   },
   "history": {
     "heading": "Historique",

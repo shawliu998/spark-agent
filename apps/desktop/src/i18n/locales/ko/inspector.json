@@ -2,7 +2,8 @@
   "shell": {
     "maximizePanel": "패널 최대화",
     "restorePanel": "패널 복원",
-    "closeInspector": "인스펙터 닫기"
+    "closeInspector": "인스펙터 닫기",
+    "resizePanel": "인스펙터 창 크기 조절"
   },
   "artifact": {
     "previousVersionAria": "이전 버전",
@@ -255,6 +256,8 @@
       "show": "시리즈 표시"
     },
     "selectSeriesHint": "플롯할 시리즈를 선택하세요",
-    "noNumericColumns": "차트로 표시할 숫자 열이 없습니다."
+    "noNumericColumns": "차트로 표시할 숫자 열이 없습니다.",
+    "chartTitle": "데이터셋 차트",
+    "chartDescription": "{{rows}}개 행에서 선택한 숫자 계열 {{series}}개를 표시하는 {{type}} 차트입니다. 결측값은 간격으로 표시됩니다."
   }
 }

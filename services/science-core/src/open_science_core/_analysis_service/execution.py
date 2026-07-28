@@ -26,13 +26,21 @@ from ..analysis import (
     execute_in_runtime,
     validate_python_code,
 )
+from ..analysis_spec import (
+    AnalysisSpec,
+    StructuredAnalysisResult,
+    analysis_spec_sha256,
+    structured_analysis_result_sha256,
+)
 from ..config import settings
 from ..fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
     GENERAL_ANALYSIS_POLICY_ID,
     AnalysisPolicyId,
+    AnalysisPolicyTemplate,
     FixedAnalysisPolicyError,
-    FixedAnalysisTemplate,
     fixed_analysis_template_for_repair_attempt,
 )
 from ..models import (
@@ -43,6 +51,7 @@ from ..models import (
     ProjectRecord,
     RunRecord,
     SourceRecord,
+    StructuredAnalysisResultRecord,
     TaskRecord,
     WorkflowRecord,
     utc_now,
@@ -50,6 +59,7 @@ from ..models import (
 from ..schemas import AnalysisRunOut
 from .errors import (
     ANALYSIS_V3_SCHEMA,
+    ANALYSIS_V4_SCHEMA,
     AnalysisServiceError,
     execution_http_error,
     runtime_result_error_summary,
@@ -101,7 +111,12 @@ class _ExecutionSnapshot:
     payload_sha256: str
     timeout_seconds: int
     policy_profile_id: AnalysisPolicyId
-    policy_template: FixedAnalysisTemplate | None
+    policy_template: AnalysisPolicyTemplate | None
+    analysis_spec_id: str | None
+    analysis_spec_sha256: str | None
+    dataset_profile_sha256: str | None
+    compiler_version: str | None
+    approved_code_sha256: str | None
     project_path: Path
     dataset_path: Path
     run_dir: Path
@@ -139,10 +154,16 @@ def _intent_fingerprint(intent: AnalysisIntentRecord) -> tuple[object, ...]:
         intent.workflow_id,
         intent.plan_step_id,
         intent.previous_intent_id,
+        intent.analysis_spec_id,
+        intent.spec_sha256,
         intent.dataset_source_id,
         intent.dataset_content_hash,
+        intent.dataset_profile_sha256,
         intent.objective,
         intent.code,
+        intent.compiler_version,
+        intent.code_sha256,
+        intent.runtime_policy_id,
         _freeze_json(intent.expected_outputs),
         intent.timeout_seconds,
         intent.risk_level,
@@ -293,6 +314,11 @@ async def _execute_analysis_intent(
                 timeout_seconds=snapshot.timeout_seconds,
                 policy_profile_id=snapshot.policy_profile_id,
                 policy_template=snapshot.policy_template,
+                analysis_spec_id=snapshot.analysis_spec_id,
+                analysis_spec_sha256=snapshot.analysis_spec_sha256,
+                dataset_profile_sha256=snapshot.dataset_profile_sha256,
+                compiler_version=snapshot.compiler_version,
+                approved_code_sha256=snapshot.approved_code_sha256,
             )
             assert_runtime_input_unchanged(
                 exchange_run_dir=snapshot.exchange_run_dir,
@@ -359,6 +385,11 @@ def _execution_source_preflight(
                 intent.code,
                 policy_profile_id=policy_profile_id,
                 policy_template=policy_template,
+                approved_code_sha256=(
+                    intent.code_sha256
+                    if policy_profile_id == COMPILED_ANALYSIS_POLICY_ID
+                    else None
+                ),
             )
         except ValueError as error:
             raise AnalysisServiceError(
@@ -444,11 +475,19 @@ def _claim_execution(
                 code="analysis-already-claimed",
             )
 
+        previous_run = session.scalar(
+            select(RunRecord)
+            .where(RunRecord.analysis_intent_id == intent.id)
+            .order_by(RunRecord.attempt.desc(), RunRecord.id.desc())
+        )
+        run_attempt = previous_run.attempt + 1 if previous_run is not None else 1
         run_id = str(uuid.uuid4())
         run = RunRecord(
             id=run_id,
             task_id=task.id,
             analysis_intent_id=intent.id,
+            previous_run_id=previous_run.id if previous_run is not None else None,
+            attempt=run_attempt,
             environment_hash=None,
             input_artifacts=[dataset.id],
             output_artifacts=[],
@@ -477,6 +516,7 @@ def _claim_execution(
         exchange_runs_dir = child_path(settings.runtime_exchange_dir, "runs")
         exchange_run_dir = child_path(exchange_runs_dir, run_id)
         policy_profile_id, policy_template = _analysis_policy_for_intent(intent, approval)
+        compiled = policy_profile_id == COMPILED_ANALYSIS_POLICY_ID
         return _ExecutionSnapshot(
             intent_id=intent.id,
             task_id=task.id,
@@ -491,6 +531,11 @@ def _claim_execution(
             timeout_seconds=intent.timeout_seconds or task.timeout_seconds,
             policy_profile_id=policy_profile_id,
             policy_template=policy_template,
+            analysis_spec_id=intent.analysis_spec_id if compiled else None,
+            analysis_spec_sha256=intent.spec_sha256 if compiled else None,
+            dataset_profile_sha256=(intent.dataset_profile_sha256 if compiled else None),
+            compiler_version=intent.compiler_version if compiled else None,
+            approved_code_sha256=intent.code_sha256 if compiled else None,
             project_path=project_path,
             dataset_path=dataset_path,
             run_dir=run_dir,
@@ -564,6 +609,12 @@ def _finalize_execution(
                 "Workflow changed or was cancelled before analysis completion",
                 code="workflow-execution-superseded",
             )
+        structured_result = _validated_compiled_result(snapshot, collected)
+        structured_result_sha256 = (
+            None
+            if structured_result is None
+            else structured_analysis_result_sha256(structured_result)
+        )
         artifact_records: list[ArtifactRecord] = []
         artifact_paths: set[str] = set()
         for item in collected:
@@ -588,10 +639,34 @@ def _finalize_execution(
                     "payloadSha256": snapshot.payload_sha256,
                     "policyProfileId": snapshot.policy_profile_id,
                     "policyTemplate": snapshot.policy_template,
+                    **_compiled_provenance_attestation(snapshot),
+                    **(
+                        {"structuredResultSha256": structured_result_sha256}
+                        if structured_result_sha256 is not None
+                        and Path(item.project_relative_path).name == "results.json"
+                        else {}
+                    ),
                 },
             )
             artifact_records.append(artifact)
             session.add(artifact)
+
+        if structured_result is not None:
+            assert snapshot.analysis_spec_id is not None
+            assert structured_result_sha256 is not None
+            session.add(
+                StructuredAnalysisResultRecord(
+                    id=str(uuid.uuid4()),
+                    analysis_spec_id=snapshot.analysis_spec_id,
+                    analysis_intent_id=intent.id,
+                    run_id=run.id,
+                    schema_version="1",
+                    result_json=structured_result.model_dump(
+                        mode="json", by_alias=True
+                    ),
+                    result_sha256=structured_result_sha256,
+                )
+            )
 
         run.environment_hash = runtime_result.environment_hash
         run.output_artifacts = [artifact.path for artifact in artifact_records]
@@ -647,6 +722,94 @@ def _finalize_execution(
         raise _CommittedFinalizationError(error) from error
 
 
+def _validated_compiled_result(
+    snapshot: _ExecutionSnapshot,
+    collected: Sequence[CollectedArtifact],
+) -> StructuredAnalysisResult | None:
+    if snapshot.analysis_spec_id is None:
+        return None
+    captured = {
+        Path(item.project_relative_path).name: item
+        for item in collected
+        if Path(item.project_relative_path).name
+        in {"analysis-spec.json", "results.json"}
+    }
+    if set(captured) != {"analysis-spec.json", "results.json"} or any(
+        item.attestation_bytes is None for item in captured.values()
+    ):
+        raise AnalysisServiceError(
+            409,
+            "Compiled analysis output is missing its structured evidence",
+            code="analysis-structured-result-missing",
+        )
+    spec_bytes = captured["analysis-spec.json"].attestation_bytes
+    result_bytes = captured["results.json"].attestation_bytes
+    assert spec_bytes is not None
+    assert result_bytes is not None
+    try:
+        spec = AnalysisSpec.model_validate_json(spec_bytes)
+        result = StructuredAnalysisResult.model_validate_json(result_bytes)
+    except (ValueError, UnicodeDecodeError) as error:
+        raise AnalysisServiceError(
+            409,
+            "Compiled analysis output does not match the strict result schema",
+            code="analysis-structured-result-invalid",
+        ) from error
+    if (
+        snapshot.analysis_spec_sha256 is None
+        or snapshot.dataset_profile_sha256 is None
+        or analysis_spec_sha256(spec) != snapshot.analysis_spec_sha256
+        or spec.dataset_source_id != snapshot.dataset_source_id
+        or spec.dataset_content_hash != snapshot.dataset_content_hash
+        or spec.dataset_profile_hash != snapshot.dataset_profile_sha256
+        or result.objective != spec.objective
+        or result.operation_type != spec.operation.type
+        or result.dataset_source_id != spec.dataset_source_id
+        or result.dataset_content_hash != spec.dataset_content_hash
+        or result.dataset_profile_hash != spec.dataset_profile_hash
+        or captured["analysis-spec.json"].content_hash
+        != snapshot.analysis_spec_sha256
+        or captured["results.json"].content_hash
+        != structured_analysis_result_sha256(result)
+        or not _structured_result_matches_spec(spec, result)
+    ):
+        raise AnalysisServiceError(
+            409,
+            "Compiled analysis output does not match the approved AnalysisSpec",
+            code="analysis-structured-result-binding-invalid",
+        )
+    return result
+
+
+def _structured_result_matches_spec(
+    spec: AnalysisSpec,
+    result: StructuredAnalysisResult,
+) -> bool:
+    operation = spec.operation
+    operation_result = result.result
+    if operation.type == "descriptive":
+        return (
+            operation_result.type == "descriptive"
+            and [item.column for item in operation_result.columns]
+            == operation.columns
+            and result.requested_method == "descriptive"
+        )
+    if operation.type == "two-group-comparison":
+        return (
+            operation_result.type == "two-group-comparison"
+            and operation_result.outcome_column == operation.outcome_column
+            and operation_result.group_column == operation.group_column
+            and operation_result.groups == operation.groups
+            and result.requested_method == operation.method
+        )
+    return (
+        operation_result.type == "correlation"
+        and operation_result.x_column == operation.x_column
+        and operation_result.y_column == operation.y_column
+        and result.requested_method == operation.method
+    )
+
+
 def _verify_runtime_policy_attestation(
     snapshot: _ExecutionSnapshot,
     runtime_result: RuntimeExecutionResult,
@@ -685,6 +848,7 @@ def _verify_runtime_policy_attestation(
     if environment.get("executionPolicy") != {
         "profileId": snapshot.policy_profile_id,
         "template": snapshot.policy_template,
+        **_compiled_provenance_attestation(snapshot),
     }:
         raise RuntimeServiceError("runtime environment policy attestation is invalid")
 
@@ -698,6 +862,7 @@ def _verify_runtime_policy_attestation(
         "environmentHash": runtime_result.environment_hash,
         "policyProfileId": snapshot.policy_profile_id,
         "policyTemplate": snapshot.policy_template,
+        **_compiled_provenance_attestation(snapshot),
     }
     for name in ("input.ipynb", "executed.ipynb"):
         notebook = _attestation_json(_attestation_bytes(evidence, name), name)
@@ -813,6 +978,17 @@ def _verify_execution_log_header(
         "environmentHash",
         "policyProfileId",
         "policyTemplate",
+        *(
+            [
+                "analysisSpecId",
+                "analysisSpecSha256",
+                "datasetProfileSha256",
+                "compilerVersion",
+                "approvedCodeSha256",
+            ]
+            if snapshot.analysis_spec_id is not None
+            else []
+        ),
         "runDir",
         "datasetPath",
         "timeoutSeconds",
@@ -839,6 +1015,7 @@ def _verify_execution_log_header(
         "environmentHash": runtime_result.environment_hash,
         "policyProfileId": snapshot.policy_profile_id,
         "policyTemplate": snapshot.policy_template or "-",
+        **_compiled_provenance_attestation(snapshot),
         "runDir": snapshot.exchange_run_dir.relative_to(
             settings.runtime_exchange_dir
         ).as_posix(),
@@ -877,9 +1054,34 @@ def _parse_runtime_utc_timestamp(value: str) -> datetime:
 def _analysis_policy_for_intent(
     intent: AnalysisIntentRecord,
     approval: ApprovalRecord,
-) -> tuple[AnalysisPolicyId, FixedAnalysisTemplate | None]:
+) -> tuple[AnalysisPolicyId, AnalysisPolicyTemplate | None]:
     if intent.workflow_id is None:
         return GENERAL_ANALYSIS_POLICY_ID, None
+    if approval.payload_schema_version == ANALYSIS_V4_SCHEMA:
+        compiled_fields = (
+            intent.analysis_spec_id,
+            intent.spec_sha256,
+            intent.dataset_profile_sha256,
+            intent.compiler_version,
+            intent.code_sha256,
+            intent.runtime_policy_id,
+        )
+        if (
+            any(value is None for value in compiled_fields)
+            or intent.runtime_policy_id != COMPILED_ANALYSIS_POLICY_ID
+            or intent.compiler_version != COMPILED_ANALYSIS_TEMPLATE
+            or intent.repair_attempt != 0
+            or intent.previous_intent_id is not None
+            or intent.code_diff is not None
+            or intent.code_sha256
+            != hashlib.sha256(intent.code.encode("utf-8")).hexdigest()
+        ):
+            raise AnalysisServiceError(
+                409,
+                "Workflow analysis compiled policy binding is invalid",
+                code="analysis-code-policy-mismatch",
+            )
+        return COMPILED_ANALYSIS_POLICY_ID, COMPILED_ANALYSIS_TEMPLATE
     if approval.payload_schema_version != ANALYSIS_V3_SCHEMA:
         raise AnalysisServiceError(
             409,
@@ -901,6 +1103,25 @@ def _analysis_policy_for_intent(
             code="analysis-code-policy-mismatch",
         ) from error
     return FIXED_ANALYSIS_POLICY_ID, template
+
+
+def _compiled_provenance_attestation(snapshot: _ExecutionSnapshot) -> dict[str, str]:
+    if snapshot.analysis_spec_id is None:
+        return {}
+    if (
+        snapshot.analysis_spec_sha256 is None
+        or snapshot.dataset_profile_sha256 is None
+        or snapshot.compiler_version is None
+        or snapshot.approved_code_sha256 is None
+    ):
+        raise RuntimeServiceError("runtime compiled provenance is incomplete")
+    return {
+        "analysisSpecId": snapshot.analysis_spec_id,
+        "analysisSpecSha256": snapshot.analysis_spec_sha256,
+        "datasetProfileSha256": snapshot.dataset_profile_sha256,
+        "compilerVersion": snapshot.compiler_version,
+        "approvedCodeSha256": snapshot.approved_code_sha256,
+    }
 
 
 def _revalidate_claimed_execution(

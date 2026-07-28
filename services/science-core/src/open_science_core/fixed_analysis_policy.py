@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import ast
-from typing import Literal
+from typing import Literal, TypeAlias
 
 AnalysisPolicyId = Literal[
     "approved-python-container-v1",
     "dataset-analysis-fixed-v1",
+    "dataset-analysis-spec-v1",
 ]
 GENERAL_ANALYSIS_POLICY_ID: AnalysisPolicyId = "approved-python-container-v1"
 FIXED_ANALYSIS_POLICY_ID: AnalysisPolicyId = "dataset-analysis-fixed-v1"
+COMPILED_ANALYSIS_POLICY_ID: AnalysisPolicyId = "dataset-analysis-spec-v1"
 FixedAnalysisTemplate = Literal["baseline", "repair-1", "repair-2"]
+CompiledAnalysisTemplate = Literal["analysis-spec-compiler-v1"]
+AnalysisPolicyTemplate: TypeAlias = FixedAnalysisTemplate | CompiledAnalysisTemplate
+COMPILED_ANALYSIS_TEMPLATE: CompiledAnalysisTemplate = "analysis-spec-compiler-v1"
 
 
 class FixedAnalysisPolicyError(ValueError):

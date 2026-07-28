@@ -1,9 +1,33 @@
 {
   "title": "実行",
+  "analysis": {
+    "heading": "データセット分析",
+    "loading": "データセット分析の実行を読み込み中…",
+    "unavailable": "データセット分析の実行は一時的に利用できません。",
+    "failed": "データセット分析に失敗しました",
+    "fallbackTitle": "データセット分析",
+    "artifactCount": "{{count}} 件の成果物",
+    "isolatedRuntime": "隔離ランタイム",
+    "open": "分析を開く",
+    "openTitle": "データ分析でこの実行を開く"
+  },
   "description": {
+    "product": "研究タスクの実行結果と成果物を確認し、必要に応じて再現します。",
     "prefix": "すべてのセッションにわたる、実験実行のすべて — コマンド、コードバージョン、環境、ハードウェア、出力。",
     "suffix": " が再実行し、結果を比較します。"
   },
+  "summary": {
+    "total": "{{count}} 件の実行",
+    "succeeded": "{{count}} 件成功",
+    "failed": "{{count}} 件失敗"
+  },
+  "run": {
+    "generated": "{{name}} を生成",
+    "completed": "{{name}} を完了",
+    "failed": "実行に失敗",
+    "additionalOutputs": "他 {{count}} 件の成果物"
+  },
+  "technicalDetails": "技術詳細",
   "pane": {
     "subtitle": "このセッション",
     "closeAria": "実行を閉じる"

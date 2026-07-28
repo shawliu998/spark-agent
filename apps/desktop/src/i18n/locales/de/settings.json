@@ -53,8 +53,25 @@
     "title": "Modell",
     "hint": "Die unten aufgeführten Anbieter stellen die hier wählbaren Modelle bereit",
     "connectPrompt": "Verbinden Sie die Runtime, um Modelle zu konfigurieren.",
+    "loading": "Konfiguriertes Modell wird geladen…",
     "notSet": "Nicht festgelegt — Standardmodell wählen",
     "providersDivider": "Anbieter"
+  },
+  "researchModel": {
+    "title": "Forschungsmodell-Verbindung",
+    "hint": "Optionales OpenAI-kompatibles Modell für Forschungsabläufe. Jede Remote-Ausführung benötigt weiterhin eine ausdrückliche Datenfreigabe.",
+    "desktopOnly": "Konfigurieren Sie das Forschungsmodell in der gepackten Desktop-App.",
+    "provider": "Anbieter",
+    "protocol": "Verbindungsprotokoll",
+    "openaiCompatible": "OpenAI-kompatibel",
+    "anthropicNative": "Anthropic nativ",
+    "endpoint": "Endpunkt", "endpointPlaceholder": "https://api.example.com/v1",
+    "model": "Modell", "modelPlaceholder": "Modellname",
+    "embedding": "Embedding-Modell", "optional": "optional", "embeddingPlaceholder": "Embedding-Modellname",
+    "embeddingUnavailable": "Dieser Anbieter stellt über diese Verbindung keine Embeddings bereit. Der Forschungsagent funktioniert, für semantische PDF-Fragen ist jedoch ein kompatibler Embedding-Endpunkt erforderlich.",
+    "apiKey": "API-Schlüssel", "keyStoredPlaceholder": "Im macOS-Schlüsselbund gespeichert — nur zum Ersetzen eingeben", "keyPlaceholder": "Im macOS-Schlüsselbund speichern", "keyOptionalPlaceholder": "Für diesen lokalen Anbieter nicht erforderlich",
+    "credentialStored": "Zugangsdaten im macOS-Schlüsselbund gespeichert", "credentialMissing": "Keine Forschungsmodell-Zugangsdaten gespeichert", "credentialNotRequired": "Dieser lokale Anbieter benötigt keinen API-Schlüssel", "removeKey": "Schlüssel entfernen",
+    "readFailed": "Die Forschungsmodell-Verbindung konnte nicht gelesen werden.", "saveFailed": "Die Forschungsmodell-Verbindung konnte nicht gespeichert werden.", "saved": "Forschungsmodell-Verbindung gespeichert. Science Core wird neu gestartet."
   },
   "providers": {
     "modelCount_one": "{{count}} Modell",

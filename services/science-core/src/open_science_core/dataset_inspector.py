@@ -10,9 +10,11 @@ import random
 import re
 import stat
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Iterator, Protocol, TextIO
 
 from .config import settings
@@ -54,6 +56,65 @@ class DatasetInspectionError(ValueError):
 class DatasetInspectionResult:
     profile: DatasetProfile
     profile_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExactTwoGroupPreflightResult:
+    outcome_column: str
+    group_column: str
+    groups: tuple[str, str]
+    valid_counts: Mapping[str, int]
+    missing_counts: Mapping[str, int]
+    non_constant_groups: Mapping[str, bool]
+    rows_read: int
+    excluded_row_count: int
+    encoding: str
+    delimiter: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "valid_counts",
+            MappingProxyType(dict(self.valid_counts)),
+        )
+        object.__setattr__(
+            self,
+            "missing_counts",
+            MappingProxyType(dict(self.missing_counts)),
+        )
+        object.__setattr__(
+            self,
+            "non_constant_groups",
+            MappingProxyType(dict(self.non_constant_groups)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExactCorrelationPreflightResult:
+    x_column: str
+    y_column: str
+    valid_pair_count: int
+    missing_pair_count: int
+    rows_read: int
+    encoding: str
+    delimiter: str
+
+
+@dataclass(frozen=True, slots=True)
+class _TwoGroupPreflightRequest:
+    outcome_column: str
+    group_column: str
+    groups: tuple[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _CorrelationPreflightRequest:
+    x_column: str
+    y_column: str
+
+
+_ExactPreflightRequest = _TwoGroupPreflightRequest | _CorrelationPreflightRequest
+_ExactPreflightResult = ExactTwoGroupPreflightResult | ExactCorrelationPreflightResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +297,160 @@ def inspect_csv_dataset(
         )
     finally:
         os.close(descriptor)
+
+
+def exact_two_group_preflight_csv_dataset(
+    *,
+    workspace_root: Path,
+    dataset_path: Path,
+    expected_content_hash: str,
+    outcome_column: str,
+    group_column: str,
+    groups: tuple[str, str],
+    max_file_bytes: int | None = None,
+) -> ExactTwoGroupPreflightResult:
+    """Stream exact selected-group counts from an immutable CSV dataset."""
+
+    _validate_preflight_column(outcome_column, role="outcome")
+    _validate_preflight_column(group_column, role="group")
+    if outcome_column == group_column:
+        raise DatasetInspectionError("Exact preflight columns must be different")
+    _validate_preflight_groups(groups)
+    result = _exact_preflight_csv_dataset(
+        workspace_root=workspace_root,
+        dataset_path=dataset_path,
+        expected_content_hash=expected_content_hash,
+        request=_TwoGroupPreflightRequest(
+            outcome_column=outcome_column,
+            group_column=group_column,
+            groups=groups,
+        ),
+        max_file_bytes=max_file_bytes,
+    )
+    if not isinstance(result, ExactTwoGroupPreflightResult):
+        raise AssertionError("two-group preflight returned the wrong result type")
+    return result
+
+
+def exact_correlation_preflight_csv_dataset(
+    *,
+    workspace_root: Path,
+    dataset_path: Path,
+    expected_content_hash: str,
+    x_column: str,
+    y_column: str,
+    max_file_bytes: int | None = None,
+) -> ExactCorrelationPreflightResult:
+    """Stream exact complete-pair counts from an immutable CSV dataset."""
+
+    _validate_preflight_column(x_column, role="x")
+    _validate_preflight_column(y_column, role="y")
+    if x_column == y_column:
+        raise DatasetInspectionError("Exact preflight columns must be different")
+    result = _exact_preflight_csv_dataset(
+        workspace_root=workspace_root,
+        dataset_path=dataset_path,
+        expected_content_hash=expected_content_hash,
+        request=_CorrelationPreflightRequest(x_column=x_column, y_column=y_column),
+        max_file_bytes=max_file_bytes,
+    )
+    if not isinstance(result, ExactCorrelationPreflightResult):
+        raise AssertionError("correlation preflight returned the wrong result type")
+    return result
+
+
+def _exact_preflight_csv_dataset(
+    *,
+    workspace_root: Path,
+    dataset_path: Path,
+    expected_content_hash: str,
+    request: _ExactPreflightRequest,
+    max_file_bytes: int | None,
+) -> _ExactPreflightResult:
+    effective_max_file_bytes = (
+        settings.max_upload_bytes if max_file_bytes is None else max_file_bytes
+    )
+    _validate_preflight_file_inputs(
+        expected_content_hash=expected_content_hash,
+        max_file_bytes=effective_max_file_bytes,
+    )
+    relative_path, lexical_root, root_identity = _workspace_relative_path(
+        workspace_root,
+        dataset_path,
+    )
+    descriptor = open_workspace_file(
+        lexical_root,
+        relative_path,
+        expected_root_identity=root_identity,
+    )
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise DatasetInspectionError("Dataset path is not a regular file")
+        if before.st_nlink != 1:
+            raise DatasetInspectionError("Dataset file must not have external hard links")
+        if before.st_size <= 0:
+            raise DatasetInspectionError("Dataset file is empty")
+        if before.st_size > effective_max_file_bytes:
+            raise DatasetInspectionError("Dataset exceeds the configured inspection size limit")
+
+        content_hash, prefix, contains_nul = _hash_and_prefix(descriptor)
+        _assert_unchanged(before, os.fstat(descriptor))
+        if content_hash != expected_content_hash:
+            raise DatasetInspectionError("Dataset content hash does not match the expected hash")
+        if contains_nul:
+            raise DatasetInspectionError("Dataset contains NUL bytes and is not a safe text CSV")
+
+        result = exact_preflight_with_encoding_fallback(
+            descriptor,
+            prefix,
+            request=request,
+        )
+        _assert_unchanged(before, os.fstat(descriptor))
+        return result
+    finally:
+        os.close(descriptor)
+
+
+def _validate_preflight_file_inputs(
+    *,
+    expected_content_hash: str,
+    max_file_bytes: int,
+) -> None:
+    if _HASH_PATTERN.fullmatch(expected_content_hash) is None:
+        raise DatasetInspectionError("expected_content_hash must be lowercase hexadecimal SHA-256")
+    if isinstance(max_file_bytes, bool) or max_file_bytes < 1:
+        raise DatasetInspectionError("max_file_bytes must be a positive integer")
+
+
+def _validate_preflight_column(value: str, *, role: str) -> None:
+    if (
+        not value
+        or value != value.strip()
+        or len(value) > 1_000
+        or "\x00" in value
+        or any(not character.isprintable() for character in value)
+    ):
+        raise DatasetInspectionError(
+            f"Exact preflight {role} column must be a safe normalized column name"
+        )
+
+
+def _validate_preflight_groups(groups: tuple[str, str]) -> None:
+    if len(groups) != 2 or groups[0] == groups[1]:
+        raise DatasetInspectionError("Exact two-group preflight requires two distinct groups")
+    if any(
+        not group
+        or group != group.strip()
+        or len(group) > _MAX_PROFILE_CELL_CHARS
+        or "\x00" in group
+        or any(not character.isprintable() for character in group)
+        or group.casefold() in _MISSING_VALUES
+        for group in groups
+    ):
+        raise DatasetInspectionError(
+            "Exact preflight groups must be normalized, bounded, non-missing values"
+        )
 
 
 def _validate_inputs(
@@ -429,6 +644,28 @@ def parse_with_encoding_fallback(
     raise DatasetInspectionError("Dataset encoding cannot be decoded safely") from last_decode_error
 
 
+def exact_preflight_with_encoding_fallback(
+    descriptor: int,
+    prefix: bytes,
+    *,
+    request: _ExactPreflightRequest,
+) -> _ExactPreflightResult:
+    last_decode_error: UnicodeDecodeError | None = None
+    for encoding in _encoding_candidates(prefix):
+        try:
+            delimiter = _detect_delimiter(prefix, encoding)
+            return _parse_exact_preflight(
+                descriptor,
+                encoding=encoding,
+                delimiter=delimiter,
+                request=request,
+            )
+        except UnicodeDecodeError as error:
+            last_decode_error = error
+            continue
+    raise DatasetInspectionError("Dataset encoding cannot be decoded safely") from last_decode_error
+
+
 def _detect_delimiter(prefix: bytes, encoding: str) -> str:
     try:
         text = prefix.decode(encoding, errors="strict")
@@ -466,19 +703,7 @@ def _parse_csv(
         if len(header_row) > 10_000:
             raise DatasetInspectionError("CSV exceeds the 10000-column inspection limit")
 
-        headers: list[str] = []
-        header_changed = False
-        for index, raw_header in enumerate(header_row):
-            normalized = raw_header.strip()
-            if not normalized:
-                normalized = f"column_{index + 1}"
-                header_changed = True
-            safe_header, changed = _safe_display(normalized, max_length=1_000)
-            if not safe_header:
-                safe_header = f"column_{index + 1}"
-                changed = True
-            headers.append(safe_header)
-            header_changed = header_changed or changed
+        headers, header_changed = _normalize_headers(header_row)
 
         duplicate_headers = len(set(headers)) != len(headers)
         sample_capacity = min(
@@ -567,6 +792,183 @@ def _parse_csv(
         ) from error
     finally:
         text_stream.close()
+
+
+def _parse_exact_preflight(
+    descriptor: int,
+    *,
+    encoding: str,
+    delimiter: str,
+    request: _ExactPreflightRequest,
+) -> _ExactPreflightResult:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    binary_stream = os.fdopen(os.dup(descriptor), "rb", closefd=True)
+    text_stream = io.TextIOWrapper(binary_stream, encoding=encoding, errors="strict", newline="")
+    bounded_lines = _BoundedLineIterator(text_stream, _MAX_RECORD_CHARS)
+    reader = csv.reader(bounded_lines, delimiter=delimiter, strict=True)
+    try:
+        header_row = _read_header(reader, bounded_lines)
+        if not header_row:
+            raise DatasetInspectionError("CSV has no usable header row")
+        if len(header_row) > 10_000:
+            raise DatasetInspectionError("CSV exceeds the 10000-column inspection limit")
+        headers, header_changed = _normalize_headers(header_row)
+        if header_changed:
+            raise DatasetInspectionError(
+                "Exact preflight requires unchanged safe normalized column names"
+            )
+        if len(headers) != len(set(headers)):
+            raise DatasetInspectionError(
+                "Exact preflight cannot reference duplicate column names"
+            )
+
+        if isinstance(request, _TwoGroupPreflightRequest):
+            required_columns = (request.outcome_column, request.group_column)
+        else:
+            required_columns = (request.x_column, request.y_column)
+        missing_columns = [name for name in required_columns if name not in headers]
+        if missing_columns:
+            raise DatasetInspectionError(
+                f"Exact preflight column is not present: {missing_columns[0]}"
+            )
+        indexes = {name: headers.index(name) for name in required_columns}
+
+        rows_read = 0
+        valid_counts: dict[str, int] = {}
+        missing_counts: dict[str, int] = {}
+        numeric_baselines: dict[str, float | None] = {}
+        non_constant_groups: dict[str, bool] = {}
+        excluded_row_count = 0
+        valid_pair_count = 0
+        missing_pair_count = 0
+        if isinstance(request, _TwoGroupPreflightRequest):
+            valid_counts = {group: 0 for group in request.groups}
+            missing_counts = {group: 0 for group in request.groups}
+            numeric_baselines = {group: None for group in request.groups}
+            non_constant_groups = {group: False for group in request.groups}
+
+        while True:
+            bounded_lines.start_record()
+            try:
+                row = next(reader)
+            except StopIteration:
+                break
+            except _CsvRecordTooLarge as error:
+                raise DatasetInspectionError(
+                    "CSV record exceeds the safe 4 MiB inspection limit"
+                ) from error
+            except csv.Error as error:
+                if "field larger than field limit" in str(error):
+                    raise DatasetInspectionError(
+                        "CSV field exceeds the safe inspection limit"
+                    ) from error
+                raise DatasetInspectionError(
+                    "Malformed CSV cannot be used for exact preflight"
+                ) from error
+
+            if not row:
+                continue
+            rows_read += 1
+            if len(row) != len(headers):
+                raise DatasetInspectionError(
+                    "Exact preflight requires every row to match the header width"
+                )
+
+            if isinstance(request, _TwoGroupPreflightRequest):
+                outcome_value = row[indexes[request.outcome_column]].strip()
+                numeric_outcome = None
+                if outcome_value.casefold() not in _MISSING_VALUES:
+                    numeric_outcome = _require_exact_numeric_value(
+                        outcome_value,
+                        column_name=request.outcome_column,
+                    )
+                group_value = row[indexes[request.group_column]].strip()
+                if (
+                    group_value.casefold() in _MISSING_VALUES
+                    or group_value not in valid_counts
+                ):
+                    excluded_row_count += 1
+                elif outcome_value.casefold() in _MISSING_VALUES:
+                    missing_counts[group_value] += 1
+                else:
+                    if numeric_outcome is None:
+                        raise AssertionError(
+                            "validated non-missing outcomes must be numeric"
+                        )
+                    baseline = numeric_baselines[group_value]
+                    if baseline is None:
+                        numeric_baselines[group_value] = numeric_outcome
+                    elif numeric_outcome != baseline:
+                        non_constant_groups[group_value] = True
+                    valid_counts[group_value] += 1
+            else:
+                x_value = row[indexes[request.x_column]].strip()
+                y_value = row[indexes[request.y_column]].strip()
+                x_missing = x_value.casefold() in _MISSING_VALUES
+                y_missing = y_value.casefold() in _MISSING_VALUES
+                if not x_missing:
+                    _require_exact_numeric_value(x_value, column_name=request.x_column)
+                if not y_missing:
+                    _require_exact_numeric_value(y_value, column_name=request.y_column)
+                if x_missing or y_missing:
+                    missing_pair_count += 1
+                else:
+                    valid_pair_count += 1
+
+        if isinstance(request, _TwoGroupPreflightRequest):
+            return ExactTwoGroupPreflightResult(
+                outcome_column=request.outcome_column,
+                group_column=request.group_column,
+                groups=request.groups,
+                valid_counts=valid_counts,
+                missing_counts=missing_counts,
+                non_constant_groups=non_constant_groups,
+                rows_read=rows_read,
+                excluded_row_count=excluded_row_count,
+                encoding=encoding,
+                delimiter=delimiter,
+            )
+        return ExactCorrelationPreflightResult(
+            x_column=request.x_column,
+            y_column=request.y_column,
+            valid_pair_count=valid_pair_count,
+            missing_pair_count=missing_pair_count,
+            rows_read=rows_read,
+            encoding=encoding,
+            delimiter=delimiter,
+        )
+    except _CsvRecordTooLarge as error:
+        raise DatasetInspectionError(
+            "CSV record exceeds the safe 4 MiB inspection limit"
+        ) from error
+    finally:
+        text_stream.close()
+
+
+def _normalize_headers(header_row: list[str]) -> tuple[list[str], bool]:
+    headers: list[str] = []
+    header_changed = False
+    for index, raw_header in enumerate(header_row):
+        normalized = raw_header.strip()
+        if not normalized:
+            normalized = f"column_{index + 1}"
+            header_changed = True
+        safe_header, changed = _safe_display(normalized, max_length=1_000)
+        if not safe_header:
+            safe_header = f"column_{index + 1}"
+            changed = True
+        headers.append(safe_header)
+        header_changed = header_changed or changed
+    return headers, header_changed
+
+
+def _require_exact_numeric_value(value: str, *, column_name: str) -> float:
+    _kind, numeric_value = _classify_value(value)
+    if numeric_value is None:
+        raise DatasetInspectionError(
+            f"Exact preflight numeric column contains a non-numeric value: {column_name}"
+        )
+    return float(numeric_value)
 
 
 def _read_header(reader: _CsvReader, bounded_lines: _BoundedLineIterator) -> list[str]:
@@ -720,7 +1122,7 @@ def _classify_value(value: str) -> tuple[str, float | None]:
     if _INTEGER_PATTERN.fullmatch(value):
         try:
             return "integer", float(int(value))
-        except OverflowError:
+        except (OverflowError, ValueError):
             return "string", None
     if _NUMBER_PATTERN.fullmatch(value):
         parsed = float(value)

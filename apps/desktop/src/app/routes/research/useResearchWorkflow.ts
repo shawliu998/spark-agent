@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  InteractionRequest,
+  InteractionResponseValue,
   ResearchGenerationMode,
   ResearchWorkflowAllowedAction,
   ResearchWorkflowSnapshot,
@@ -15,19 +17,36 @@ import {
   errorMessage,
   sameCreateIntent,
   snapshotIsOlder,
+  type WorkflowCreateCandidate,
   type WorkflowCreateIntent,
 } from "./workflowModel";
+import {
+  readLastWorkflowId,
+  writeLastWorkflowId,
+} from "./researchPreferences";
 
 export type { WorkflowConnectionState } from "./useWorkflowEvents";
 
-export interface ResearchWorkflowCreateOptions {
+export interface AutonomousResearchWorkflowCreateOptions {
+  mode: "autonomous";
+  sourceIds: string[];
+  remoteDataApproved: boolean;
+}
+
+export interface AdvancedResearchWorkflowCreateOptions {
+  mode?: "advanced";
   workflowType: ResearchWorkflowType;
   datasetSourceId: string | null;
   generationMode: ResearchGenerationMode;
   remoteDataApproved: boolean;
 }
 
-const DEFAULT_CREATE_OPTIONS: ResearchWorkflowCreateOptions = {
+export type ResearchWorkflowCreateOptions =
+  | AutonomousResearchWorkflowCreateOptions
+  | AdvancedResearchWorkflowCreateOptions;
+
+const DEFAULT_CREATE_OPTIONS: AdvancedResearchWorkflowCreateOptions = {
+  mode: "advanced",
   workflowType: "literature-synthesis",
   datasetSourceId: null,
   generationMode: "local-deterministic",
@@ -42,21 +61,37 @@ function idempotencyKey(): string {
 }
 
 function mergeWorkflowLists(
-  current: ResearchWorkflowSnapshot[],
-  incoming: ResearchWorkflowSnapshot[],
+  ...lists: ResearchWorkflowSnapshot[][]
 ): ResearchWorkflowSnapshot[] {
-  const merged = [...current];
-  for (const candidate of incoming) {
-    const index = merged.findIndex(
-      (item) => item.workflow.id === candidate.workflow.id,
-    );
-    if (index === -1) {
-      merged.push(candidate);
-    } else if (!snapshotIsOlder(candidate, merged[index])) {
-      merged[index] = candidate;
+  const merged: ResearchWorkflowSnapshot[] = [];
+  for (const candidates of lists) {
+    for (const candidate of candidates) {
+      const index = merged.findIndex(
+        (item) => item.workflow.id === candidate.workflow.id,
+      );
+      if (index === -1) {
+        merged.push(candidate);
+      } else if (!snapshotIsOlder(candidate, merged[index])) {
+        merged[index] = candidate;
+      }
     }
   }
-  return merged;
+  return merged.sort((left, right) => {
+    const updatedDifference =
+      workflowTimestamp(right.workflow.updatedAt) -
+      workflowTimestamp(left.workflow.updatedAt);
+    if (updatedDifference !== 0) return updatedDifference;
+    const createdDifference =
+      workflowTimestamp(right.workflow.createdAt) -
+      workflowTimestamp(left.workflow.createdAt);
+    if (createdDifference !== 0) return createdDifference;
+    return left.workflow.id.localeCompare(right.workflow.id);
+  });
+}
+
+function workflowTimestamp(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 export interface ResearchWorkflowController {
@@ -64,8 +99,10 @@ export interface ResearchWorkflowController {
   selectedWorkflowId: string | null;
   snapshot: ResearchWorkflowSnapshot | null;
   events: WorkflowEvent[];
+  interactions: InteractionRequest[];
   loadingList: boolean;
   loadingSnapshot: boolean;
+  loadingInteractions: boolean;
   mutating: boolean;
   connection: WorkflowConnectionState;
   error: string | null;
@@ -76,6 +113,11 @@ export interface ResearchWorkflowController {
     goal: string,
     options?: ResearchWorkflowCreateOptions,
   ) => Promise<void>;
+  respondToInteraction: (
+    interactionId: string,
+    response: InteractionResponseValue,
+  ) => Promise<void>;
+  resolveAgentDecision: (decision: "approved" | "rejected") => Promise<void>;
   approvePlan: () => Promise<void>;
   decideAnalysis: (decision: "approved" | "rejected") => Promise<void>;
   acceptReviewWarnings: () => Promise<void>;
@@ -88,7 +130,10 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
   const [workflows, setWorkflows] = useState<ResearchWorkflowSnapshot[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(false);
+  const [workflowListResolved, setWorkflowListResolved] = useState(false);
   const [mutating, setMutating] = useState(false);
+  const [interactions, setInteractions] = useState<InteractionRequest[]>([]);
+  const [loadingInteractions, setLoadingInteractions] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listRefresh, setListRefresh] = useState(0);
   const mutationInFlightRef = useRef(false);
@@ -97,6 +142,12 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
   const selectedWorkflowIdRef = useRef(selectedWorkflowId);
   const selectionEpochRef = useRef(0);
   const createIntentRef = useRef<WorkflowCreateIntent | null>(null);
+  const responseIntentRef = useRef<{
+    interactionId: string;
+    workflowRevision: number;
+    responseKey: string;
+    idempotencyKey: string;
+  } | null>(null);
   projectIdRef.current = projectId;
   selectedWorkflowIdRef.current = selectedWorkflowId;
 
@@ -113,15 +164,14 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
         (item) => item.workflow.id === next.workflow.id,
       );
       if (existing && snapshotIsOlder(next, existing)) return current;
-      return [
-        next,
-        ...current.filter((item) => item.workflow.id !== next.workflow.id),
-      ];
+      return mergeWorkflowLists(current, [next]);
     });
   }, []);
 
   useEffect(() => {
     createIntentRef.current = null;
+    responseIntentRef.current = null;
+    setInteractions([]);
     abortMutation();
     return () => mutationControllerRef.current?.abort();
   }, [abortMutation, projectId]);
@@ -135,13 +185,32 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     setSelectedWorkflowId(null);
     setError(null);
     setLoadingList(false);
+    setWorkflowListResolved(false);
     if (!projectId) return () => controller.abort();
 
     setLoadingList(true);
-    void scienceCore
-      .listWorkflows(projectId, { limit: 12, signal: controller.signal })
-      .then((next) => {
+    void Promise.all([
+      scienceCore.listWorkflows(projectId, {
+        limit: 12,
+        signal: controller.signal,
+      }),
+      scienceCore.listAgentRuns(projectId, {
+        limit: 20,
+        signal: controller.signal,
+      }),
+      scienceCore.listAgentRuns(projectId, {
+        activeOnly: true,
+        limit: 100,
+        signal: controller.signal,
+      }),
+    ])
+      .then(([resolvedWorkflows, recentAgentRuns, activeAgentRuns]) => {
         if (controller.signal.aborted) return;
+        const next = mergeWorkflowLists(
+          resolvedWorkflows,
+          recentAgentRuns,
+          activeAgentRuns,
+        );
         if (next.some((item) => item.workflow.projectId !== projectId)) {
           throw new Error(
             "Science core returned a workflow outside the selected project",
@@ -153,20 +222,38 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
           selectionChanged ? mergeWorkflowLists(current, next) : next,
         );
         if (!selectionChanged && selectedWorkflowIdRef.current === null) {
-          const nextSelectedWorkflowId = next[0]?.workflow.id ?? null;
+          const storedWorkflowId = readLastWorkflowId();
+          const nextSelectedWorkflowId = next.some(
+            (item) => item.workflow.id === storedWorkflowId,
+          )
+            ? storedWorkflowId
+            : next[0]?.workflow.id ?? null;
           selectedWorkflowIdRef.current = nextSelectedWorkflowId;
           setSelectedWorkflowId(nextSelectedWorkflowId);
         }
+        setWorkflowListResolved(true);
       })
       .catch((reason) => {
         if (!controller.signal.aborted) setError(errorMessage(reason));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoadingList(false);
+        if (!controller.signal.aborted) {
+          setLoadingList(false);
+        }
       });
 
     return () => controller.abort();
   }, [listRefresh, projectId]);
+
+  useEffect(() => {
+    if (workflowListResolved) writeLastWorkflowId(selectedWorkflowId);
+  }, [selectedWorkflowId, workflowListResolved]);
+
+  const selectedIsAgentRun = workflows.some(
+    (item) =>
+      item.workflow.id === selectedWorkflowId &&
+      (item.workflow.mode === "autonomous" || "intentDecision" in item),
+  );
 
   const {
     snapshot,
@@ -180,9 +267,61 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
   } = useWorkflowEvents({
     projectId,
     selectedWorkflowId,
+    selectedIsAgentRun,
     setError,
     onSnapshotApplied: updateWorkflowList,
   });
+
+  useEffect(() => {
+    const controller = new AbortController();
+    responseIntentRef.current = null;
+    if (!selectedWorkflowId || !selectedIsAgentRun) {
+      setInteractions([]);
+      setLoadingInteractions(false);
+      return () => controller.abort();
+    }
+
+    const current = currentSnapshot();
+    if (current && "interactions" in current) {
+      setInteractions(current.interactions);
+    }
+    const expectedProjectId = projectId;
+    setLoadingInteractions(true);
+    void scienceCore
+      .listWorkflowInteractions(selectedWorkflowId, {
+        signal: controller.signal,
+      })
+      .then((next) => {
+        if (
+          controller.signal.aborted ||
+          projectIdRef.current !== expectedProjectId ||
+          selectedWorkflowIdRef.current !== selectedWorkflowId
+        ) {
+          return;
+        }
+        if (next.some((item) => item.workflowId !== selectedWorkflowId)) {
+          throw new Error(
+            "Science core returned an interaction outside the selected workflow",
+          );
+        }
+        setInteractions(next);
+      })
+      .catch((reason) => {
+        if (!controller.signal.aborted) setError(errorMessage(reason));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingInteractions(false);
+      });
+
+    return () => controller.abort();
+  }, [
+    projectId,
+    currentSnapshot,
+    selectedIsAgentRun,
+    selectedWorkflowId,
+    snapshot?.eventCursor,
+    snapshot?.workflow.revision,
+  ]);
 
   const requireAction = useCallback(
     (action: ResearchWorkflowAllowedAction) => {
@@ -289,6 +428,50 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
       options: ResearchWorkflowCreateOptions = DEFAULT_CREATE_OPTIONS,
     ) => {
       if (!projectId) return;
+      const normalizedGoal = goal.trim();
+      if (options.mode === "autonomous") {
+        const sourceIds = [...new Set(options.sourceIds)].sort();
+        if (sourceIds.length === 0) {
+          setError(
+            "Choose at least one ready PDF or CSV source before starting Auto research.",
+          );
+          return;
+        }
+        const candidate = {
+          projectId,
+          goal: normalizedGoal,
+          mode: "autonomous" as const,
+          sourceIds,
+          remoteDataApproved: options.remoteDataApproved,
+        } satisfies WorkflowCreateCandidate;
+        const existingIntent = createIntentRef.current;
+        const intent = sameCreateIntent(existingIntent, candidate)
+          ? existingIntent
+          : { ...candidate, idempotencyKey: idempotencyKey() };
+        createIntentRef.current = intent;
+        selectionEpochRef.current += 1;
+        await runMutation(
+          (signal) =>
+            scienceCore.createAgentRun(
+              projectId,
+              {
+                goal: normalizedGoal,
+                sourceIds,
+                mode: "autonomous",
+                remoteDataApproved: candidate.remoteDataApproved,
+              },
+              { idempotencyKey: intent.idempotencyKey, signal },
+            ),
+          (next) => {
+            createIntentRef.current = null;
+            if ("interactions" in next) setInteractions(next.interactions);
+            selectedWorkflowIdRef.current = next.workflow.id;
+            setSelectedWorkflowId(next.workflow.id);
+          },
+        );
+        return;
+      }
+
       const datasetSourceId =
         options.workflowType === "dataset-analysis"
           ? options.datasetSourceId
@@ -307,12 +490,13 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
           : options.remoteDataApproved;
       const candidate = {
         projectId,
-        goal: goal.trim(),
+        goal: normalizedGoal,
+        mode: "advanced" as const,
         workflowType: options.workflowType,
         datasetSourceId,
         generationMode,
         remoteDataApproved,
-      };
+      } satisfies WorkflowCreateCandidate;
       const existingIntent = createIntentRef.current;
       const intent = sameCreateIntent(existingIntent, candidate)
         ? existingIntent
@@ -347,6 +531,103 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
       );
     },
     [projectId, runMutation],
+  );
+
+  const respondToInteraction = useCallback(
+    async (interactionId: string, response: InteractionResponseValue) => {
+      await runMutation(
+        (signal) => {
+          const current = currentSnapshot();
+          if (!current) throw new Error("The workflow is still loading");
+          const interaction = interactions.find(
+            (item) =>
+              item.id === interactionId &&
+              (item.status === "pending" || item.status === "answered"),
+          );
+          if (!interaction) {
+            throw new Error("The clarification request is no longer answerable");
+          }
+          if (interaction.workflowId !== current.workflow.id) {
+            throw new Error("The clarification request belongs to another workflow");
+          }
+          if (
+            interaction.status === "answered" &&
+            current.workflow.status !== "planning" &&
+            current.workflow.status !== "waiting-plan-approval"
+          ) {
+            throw new Error(
+              "The clarification answer can no longer be changed after execution begins",
+            );
+          }
+          const workflowRevision = current.workflow.revision;
+          const responseKey = JSON.stringify(response);
+          const existing = responseIntentRef.current;
+          const intent =
+            existing?.interactionId === interactionId &&
+            existing.workflowRevision === workflowRevision &&
+            existing.responseKey === responseKey
+              ? existing
+              : {
+                  interactionId,
+                  workflowRevision,
+                  responseKey,
+                  idempotencyKey: idempotencyKey(),
+                };
+          responseIntentRef.current = intent;
+          return scienceCore.respondToInteraction(
+            interactionId,
+            { response, expectedWorkflowRevision: workflowRevision },
+            { idempotencyKey: intent.idempotencyKey, signal },
+          );
+        },
+        (next) => {
+          responseIntentRef.current = null;
+          if ("interactions" in next) {
+            setInteractions(next.interactions);
+          } else {
+            setInteractions((current) =>
+              current.filter((item) => item.id !== interactionId),
+            );
+          }
+        },
+      );
+    },
+    [currentSnapshot, interactions, runMutation],
+  );
+
+  const resolveAgentDecision = useCallback(
+    async (decision: "approved" | "rejected") => {
+      await runMutation((signal) => {
+        const current = currentSnapshot();
+        if (!current || !("pendingDecision" in current)) {
+          throw new Error("The Agent decision is still loading");
+        }
+        const pending = current.pendingDecision;
+        const requiredAction =
+          decision === "approved"
+            ? "approve-agent-decision"
+            : "reject-agent-decision";
+        if (
+          !pending ||
+          pending.status !== "waiting-user-confirmation" ||
+          !pending.requiresUserConfirmation ||
+          !current.allowedActions.includes(requiredAction)
+        ) {
+          throw new Error("The scientific revision is no longer awaiting confirmation");
+        }
+        return scienceCore.resolveAgentDecision(
+          current.workflow.id,
+          pending.id,
+          {
+            decision,
+            decisionOutputSha256: pending.outputSha256,
+            expectedWorkflowRevision: current.workflow.revision,
+          },
+          { signal },
+        );
+      });
+    },
+    [currentSnapshot, runMutation],
   );
 
   const approvePlan = useCallback(async () => {
@@ -477,6 +758,7 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
       if (selectedWorkflowIdRef.current === workflowId) return;
       abortMutation();
       selectionEpochRef.current += 1;
+      setInteractions([]);
       selectedWorkflowIdRef.current = workflowId;
       setSelectedWorkflowId(workflowId);
     },
@@ -488,6 +770,7 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     selectionEpochRef.current += 1;
     selectedWorkflowIdRef.current = null;
     setSelectedWorkflowId(null);
+    setInteractions([]);
     clearSelectionState();
   }, [abortMutation, clearSelectionState]);
 
@@ -496,8 +779,10 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     selectedWorkflowId,
     snapshot,
     events,
+    interactions,
     loadingList,
     loadingSnapshot,
+    loadingInteractions,
     mutating,
     connection,
     error,
@@ -505,6 +790,8 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     startNew,
     refresh,
     create,
+    respondToInteraction,
+    resolveAgentDecision,
     approvePlan,
     decideAnalysis,
     acceptReviewWarnings,

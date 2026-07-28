@@ -8,6 +8,8 @@ import pytest
 
 from open_science_runtime.code_policy import CodePolicyError, validate_python_code
 from open_science_runtime.fixed_analysis_policy import (
+    COMPILED_ANALYSIS_POLICY_ID,
+    COMPILED_ANALYSIS_TEMPLATE,
     FIXED_ANALYSIS_POLICY_ID,
     FixedAnalysisPolicyError,
     FixedAnalysisTemplate,
@@ -187,4 +189,36 @@ def test_fixed_analysis_policy_rejects_every_non_template_statement(
             code,
             policy_profile_id=FIXED_ANALYSIS_POLICY_ID,
             policy_template="baseline",
+        )
+
+
+def test_compiled_analysis_policy_requires_the_exact_approved_source() -> None:
+    code = "import pandas as pd\nprint(pd.__version__)"
+    approved_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+    validate_python_code(
+        code,
+        policy_profile_id=COMPILED_ANALYSIS_POLICY_ID,
+        policy_template=COMPILED_ANALYSIS_TEMPLATE,
+        approved_code_sha256=approved_hash,
+    )
+
+    with pytest.raises(CodePolicyError, match="does not match its approval"):
+        validate_python_code(
+            code + "\nprint('tampered')",
+            policy_profile_id=COMPILED_ANALYSIS_POLICY_ID,
+            policy_template=COMPILED_ANALYSIS_TEMPLATE,
+            approved_code_sha256=approved_hash,
+        )
+
+
+def test_compiled_analysis_policy_still_applies_generic_ast_safety() -> None:
+    code = "import subprocess"
+
+    with pytest.raises(CodePolicyError, match="importing subprocess is not allowed"):
+        validate_python_code(
+            code,
+            policy_profile_id=COMPILED_ANALYSIS_POLICY_ID,
+            policy_template=COMPILED_ANALYSIS_TEMPLATE,
+            approved_code_sha256=hashlib.sha256(code.encode("utf-8")).hexdigest(),
         )

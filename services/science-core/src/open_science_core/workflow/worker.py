@@ -8,7 +8,7 @@ from collections.abc import Callable
 from datetime import timedelta
 from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
@@ -30,12 +30,19 @@ from ._handlers.dataset import (
     execute_leased_analysis_job,
     recover_leased_analysis_job,
 )
+from .agent_loop.recovery import recover_agent_loop_jobs
+from .discovery_handler import (
+    McpBrokerFactory,
+    execute_leased_discovery_job,
+    recover_expired_discovery_job,
+)
 from .handlers import (
     execute_leased_job,
     mark_leased_job_started,
     settle_leased_job_error,
 )
-from .service import transition_task, transition_workflow
+from .mcp_stdio_broker import StdioMcpToolBroker
+from .service import cancel_pending_interactions, transition_task, transition_workflow
 from .state import WorkflowBlockedError, WorkflowFailure
 
 SessionFactory = Callable[[], Session]
@@ -51,12 +58,14 @@ class WorkflowWorker:
         lease_seconds: float = 30.0,
         heartbeat_seconds: float = 10.0,
         analysis_executor: AnalysisServiceExecutor = execute_workflow_analysis_intent,
+        discovery_broker_factory: McpBrokerFactory = StdioMcpToolBroker,
     ) -> None:
         self._session_factory = session_factory
         self._poll_interval_seconds = poll_interval_seconds
         self._lease_seconds = lease_seconds
         self._heartbeat_seconds = heartbeat_seconds
         self._analysis_executor = analysis_executor
+        self._discovery_broker_factory = discovery_broker_factory
         self._worker_id = f"science-core-{uuid.uuid4()}"
         self._stop = asyncio.Event()
         self._loop_task: asyncio.Task[None] | None = None
@@ -161,7 +170,9 @@ class WorkflowWorker:
                 session.scalars(
                     select(WorkflowRecord).where(
                         WorkflowRecord.cancel_requested_at.is_not(None),
-                        WorkflowRecord.status.not_in(["completed", "cancelled"]),
+                        WorkflowRecord.status.not_in(
+                            ["completed", "unsupported", "cancelled"]
+                        ),
                     )
                 )
             )
@@ -199,6 +210,7 @@ class WorkflowWorker:
                     )
                     .values(status="cancelled", finished_at=now, updated_at=now)
                 )
+                cancel_pending_interactions(session, workflow.id)
                 transition_workflow(session, workflow, "cancelled")
             session.commit()
 
@@ -212,7 +224,9 @@ class WorkflowWorker:
                 .where(
                     JobRecord.status == "queued",
                     JobRecord.available_at <= now,
-                    WorkflowRecord.status.not_in(["completed", "cancelled"]),
+                    WorkflowRecord.status.not_in(
+                        ["completed", "unsupported", "cancelled"]
+                    ),
                     WorkflowRecord.cancel_requested_at.is_(None),
                 )
                 .order_by(JobRecord.available_at, JobRecord.created_at)
@@ -252,6 +266,12 @@ class WorkflowWorker:
                 and task is not None
                 and task.task_type == "python-data-analysis"
             )
+            is_discovery_job = (
+                job is not None
+                and job.kind == "execute-task"
+                and task is not None
+                and task.task_type == "paper-discovery"
+            )
         if is_analysis_job:
             execute_leased_analysis_job(
                 self._session_factory,
@@ -260,12 +280,30 @@ class WorkflowWorker:
                 self._analysis_executor,
             )
             return
+        if is_discovery_job:
+            with self._session_factory() as session:
+                execute_leased_discovery_job(
+                    session,
+                    job_id,
+                    lease_token,
+                    broker=self._discovery_broker_factory(),
+                )
+            return
         with self._session_factory() as session:
             execute_leased_job(session, job_id, lease_token)
 
     def _settle_error(self, job_id: str, lease_token: str, error: Exception) -> None:
         with self._session_factory() as session:
             settle_leased_job_error(session, job_id, lease_token, error)
+            job = session.get(JobRecord, job_id)
+            workflow = (
+                session.get(WorkflowRecord, job.workflow_id)
+                if job is not None
+                else None
+            )
+            if workflow is not None:
+                recover_agent_loop_jobs(session, workflow)
+                session.commit()
 
     async def _heartbeat_loop(self, job_id: str, lease_token: str) -> None:
         failures = 0
@@ -322,7 +360,7 @@ class WorkflowWorker:
                     .limit(20)
                 )
             )
-            identities: list[tuple[str, str, bool]] = []
+            identities: list[tuple[str, str, bool, bool]] = []
             for job in expired:
                 if job.lease_token is None:
                     continue
@@ -356,10 +394,26 @@ class WorkflowWorker:
                             job.kind == "execute-task"
                             and task is not None
                             and task.task_type == "python-data-analysis",
+                            job.kind == "execute-task"
+                            and task is not None
+                            and task.task_type == "paper-discovery",
                         )
                     )
             session.commit()
-        for job_id, recovery_token, is_analysis_job in identities:
+        for job_id, recovery_token, is_analysis_job, is_discovery_job in identities:
+            if is_discovery_job:
+                try:
+                    with self._session_factory() as session:
+                        recovered = recover_expired_discovery_job(
+                            session,
+                            job_id,
+                            recovery_token,
+                        )
+                except Exception as error:
+                    self._settle_error(job_id, recovery_token, error)
+                    continue
+                if recovered:
+                    continue
             if is_analysis_job:
                 try:
                     recovered = recover_leased_analysis_job(
@@ -409,10 +463,19 @@ class WorkflowWorker:
                 return False
             intent_id = job.operation_key.removeprefix(prefix)
             intent = session.get(AnalysisIntentRecord, intent_id)
-            run = session.scalar(
-                select(RunRecord.id).where(RunRecord.analysis_intent_id == intent_id)
+            latest_run_attempt = (
+                session.scalar(
+                    select(func.max(RunRecord.attempt)).where(
+                        RunRecord.analysis_intent_id == intent_id
+                    )
+                )
+                or 0
             )
-            return intent is not None and intent.status == "approved" and run is None
+            return (
+                intent is not None
+                and intent.status == "approved"
+                and int(latest_run_attempt) < job.attempt
+            )
 
     def _recover_orphaned_workflows(self) -> None:
         with self._session_factory() as session:
@@ -445,4 +508,26 @@ class WorkflowWorker:
                         "A running step has no durable worker job; inspect it before retrying."
                     ),
                 )
+            autonomous = list(
+                session.scalars(
+                    select(WorkflowRecord).where(
+                        WorkflowRecord.creation_mode == "autonomous",
+                        (
+                            (WorkflowRecord.workflow_type == "dataset-analysis")
+                            | (
+                                (WorkflowRecord.workflow_type == "literature-synthesis")
+                                & (
+                                    WorkflowRecord.generation_mode
+                                    == "local-deterministic"
+                                )
+                            )
+                        ),
+                        WorkflowRecord.status.not_in(
+                            ["completed", "unsupported", "cancelled"]
+                        ),
+                    )
+                )
+            )
+            for workflow in autonomous:
+                recover_agent_loop_jobs(session, workflow)
             session.commit()

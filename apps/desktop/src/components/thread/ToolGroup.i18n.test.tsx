@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useUiStore } from "@/lib/store";
 import { ArtifactCard } from "./ArtifactCard";
 import { StepSummaryRow } from "./StepSummaryRow";
@@ -27,6 +28,29 @@ describe("ArtifactCard strings (i18n)", () => {
     expect(screen.getByText("figure")).toBeInTheDocument();
     expect(screen.getByText("· via write")).toBeInTheDocument();
     expect(screen.getByText("Open")).toBeInTheDocument();
+  });
+
+  it("opens an interactive artifact from the keyboard", async () => {
+    const onOpen = vi.fn();
+    render(
+      <ArtifactCard
+        block={{
+          kind: "artifact",
+          path: "figures/trend.png",
+          filename: "trend.png",
+          artifact: "figure",
+          tool: "write",
+        }}
+        onOpen={onOpen}
+      />,
+    );
+
+    const card = screen.getByRole("button");
+    card.focus();
+    await userEvent.keyboard("{Enter}");
+    await userEvent.keyboard(" ");
+
+    expect(onOpen).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -9,12 +9,19 @@
   },
   "items": {
     "new": "새로 만들기",
+    "agentSession": "새 에이전트 세션",
     "research": "리서치",
     "analysis": "데이터 분석",
     "notebooks": "노트북",
     "files": "파일",
     "runs": "실행",
     "skills": "스킬"
+  },
+  "groups": {
+    "primary": "기본 탐색",
+    "workspace": "작업 공간",
+    "resources": "연구 도구",
+    "agent": "에이전트"
   },
   "history": {
     "heading": "기록",

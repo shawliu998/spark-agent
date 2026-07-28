@@ -1,7 +1,17 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { Files, FlaskConical, FolderTree, NotebookPen, PanelLeft, Plus, Settings, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  Files,
+  FlaskConical,
+  FolderTree,
+  MessageSquarePlus,
+  NotebookPen,
+  PanelLeft,
+  Settings,
+  Trash2,
+} from "lucide-react";
 import type { Project } from "@ai4s/shared";
 import { cn } from "@/lib/cn";
 import { useRuntimeStore } from "@/lib/runtime";
@@ -9,9 +19,8 @@ import { SIDEBAR_MAX, SIDEBAR_MIN, useOverlayTitlebar, useUiStore } from "@/lib/
 import { useUpdateStore } from "@/lib/update";
 import { StatusPills } from "./StatusPills";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
-import { PRODUCT } from "@/config/product";
 import { productNavigation } from "@/product/manifest";
-import logo from "@/assets/logo.webp";
+import sparkWordmark from "@/assets/spark-wordmark.png";
 
 interface Row {
   id: string;
@@ -23,8 +32,24 @@ interface Row {
 /** Dragging the divider below this pointer x collapses the sidebar; dragging
  *  back past it re-expands. Sits below SIDEBAR_MIN so there is a clear "snap". */
 const COLLAPSE_BELOW = 140;
+const NOTEBOOKS_PATH = "/notebooks";
+const FILES_PATH = "/files";
+const RUNS_PATH = "/runs";
+const SKILLS_PATH = "/skills";
 
-export function Sidebar({ project }: { project: Project }) {
+interface SidebarProps {
+  project: Project;
+  compactOverlay?: boolean;
+  compactOpen?: boolean;
+  onCompactOpenChange?: (open: boolean) => void;
+}
+
+export function Sidebar({
+  project,
+  compactOverlay = false,
+  compactOpen = false,
+  onCompactOpenChange = () => {},
+}: SidebarProps) {
   const { t } = useTranslation("nav");
   const navigate = useNavigate();
   const location = useLocation();
@@ -36,8 +61,18 @@ export function Sidebar({ project }: { project: Project }) {
   // are only written on pointer-up.
   const [dragWidth, setDragWidth] = useState<number | null>(null);
   const dragging = dragWidth !== null;
+  const visuallyCollapsed = compactOverlay ? !compactOpen : sidebarCollapsed;
+  const collapseSidebar = () => {
+    if (compactOverlay) onCompactOpenChange(false);
+    else toggleSidebar();
+  };
+  const navigateTo = (path: string) => {
+    navigate(path);
+    if (compactOverlay) onCompactOpenChange(false);
+  };
 
   const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (compactOverlay) return;
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     setDragWidth(sidebarWidth);
@@ -63,7 +98,7 @@ export function Sidebar({ project }: { project: Project }) {
 
   const startNew = () => {
     startDraft();
-    navigate("/live");
+    navigateTo("/live");
   };
 
   const rows: Row[] = [
@@ -78,6 +113,12 @@ export function Sidebar({ project }: { project: Project }) {
   ];
 
   const [pendingDelete, setPendingDelete] = useState<Row | null>(null);
+  const historyContext =
+    location.pathname.startsWith("/live") || location.pathname.startsWith("/example")
+      ? "agent"
+      : "workspace";
+  const [historyByContext, setHistoryByContext] = useState({ agent: true, workspace: false });
+  const historyExpanded = historyByContext[historyContext];
 
   const confirmDelete = () => {
     const row = pendingDelete;
@@ -85,7 +126,7 @@ export function Sidebar({ project }: { project: Project }) {
     if (!row) return;
     if (row.kind === "session") void deleteSession(row.id);
     else hideExample(row.id);
-    if (location.pathname === row.to) navigate("/live");
+    if (location.pathname === row.to) navigateTo("/live");
   };
 
   // With the overlay titlebar (macOS), reserve a draggable strip at the top so
@@ -99,111 +140,172 @@ export function Sidebar({ project }: { project: Project }) {
     <div
       className={cn(
         "relative h-full shrink-0 overflow-hidden",
+        compactOverlay && "absolute inset-y-0 left-0 z-50 shadow-pop",
         !dragging && "transition-[width] duration-200 ease-out",
       )}
-      style={{ width: sidebarCollapsed ? 0 : width }}
+      style={{ width: visuallyCollapsed ? 0 : width }}
     >
       <aside
-        className="flex h-full flex-col border-r border-border bg-surface"
+        className="global-sidebar flex h-full flex-col border-r border-border bg-surface"
         style={{ width }}
+        aria-hidden={visuallyCollapsed || undefined}
+        {...(visuallyCollapsed ? { inert: "" } : {})}
       >
       {/* The strip clears the traffic lights and hosts the collapse button just
           right of them — same spot the expand button lands when collapsed. */}
       {overlayTitlebar && (
-        <div data-tauri-drag-region className="flex h-12 shrink-0 items-center pl-[78px]">
+        <div data-tauri-drag-region className="flex h-12 shrink-0 items-center pl-[76px]">
           <button
-            onClick={toggleSidebar}
+            onClick={collapseSidebar}
             aria-label={t("sidebar.collapse")}
             title={t("sidebar.collapseTitle", { shortcut: "⌘B" })}
-            className="rounded p-1 text-text hover:bg-surface-2"
+            className="touch-target flex h-10 w-10 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text"
           >
-            <PanelLeft size={14} strokeWidth={1.5} />
+            <PanelLeft size={16} strokeWidth={1.6} />
           </button>
         </div>
       )}
-      <div className={cn("px-4 pb-3", overlayTitlebar ? "pt-1" : "pt-4")}>
-        <div className="flex items-baseline gap-1.5">
-          <img src={logo} alt="" className="h-[18px] w-auto self-center" />
-          {/* eslint-disable-next-line i18next/no-literal-string -- product brand name, not translated across locales (see AGENTS.md) */}
-          <div className="font-serif text-[17px] font-semibold leading-none tracking-tight text-text">
-            {PRODUCT.name}
-          </div>
-          <span className="text-[10px] uppercase tracking-widest text-muted">{t("sidebar.betaBadge")}</span>
+      <div className={cn("px-4 pb-4", overlayTitlebar ? "pt-1" : "pt-4")}>
+        <div className="flex items-center gap-2">
+          <img
+            src={sparkWordmark}
+            alt={t("sidebar.productName", { defaultValue: "Spark" })}
+            className="h-[19px] w-auto shrink-0 object-contain dark:invert"
+          />
+          <span className="text-caption font-medium text-muted">{t("sidebar.betaBadge")}</span>
           {!overlayTitlebar && (
             <button
-              onClick={toggleSidebar}
+              onClick={collapseSidebar}
               aria-label={t("sidebar.collapse")}
               title={t("sidebar.collapseTitle", { shortcut: isMac ? "⌘B" : "Ctrl+B" })}
-              className="ml-auto self-center rounded p-1 text-text hover:bg-surface-2"
+              className="touch-target ml-auto flex h-10 w-10 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text"
             >
-              <PanelLeft size={14} strokeWidth={1.5} />
+              <PanelLeft size={16} strokeWidth={1.6} />
             </button>
           )}
         </div>
       </div>
 
-      <nav className="flex flex-col px-3">
-        <NavRow icon={<Plus size={16} />} label={t("items.new")} onClick={startNew} />
-        {productNavigation.map((item) => {
-          const Icon = item.icon;
-          return (
-            <NavRow
-              key={item.id}
-              icon={<Icon size={16} />}
-              label={t(item.labelKey)}
-              onClick={() => navigate(item.path)}
-            />
-          );
-        })}
-        <NavRow icon={<NotebookPen size={16} />} label={t("items.notebooks")} onClick={() => navigate("/notebooks")} />
-        <NavRow icon={<FolderTree size={16} />} label={t("items.files")} onClick={() => navigate("/files")} />
-        <NavRow icon={<FlaskConical size={16} />} label={t("items.runs")} onClick={() => navigate("/runs")} />
-        <NavRow icon={<Files size={16} />} label={t("items.skills")} onClick={() => navigate("/skills")} />
+      <nav className="global-sidebar-nav flex min-h-0 shrink flex-col gap-5 overflow-y-auto px-3" aria-label={t("groups.primary")}>
+        <NavGroup label={t("groups.workspace")}>
+          {productNavigation.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavRow
+                key={item.id}
+                icon={<Icon size={16} />}
+                label={t(item.labelKey)}
+                onClick={() => navigateTo(item.path)}
+                active={location.pathname.startsWith(item.path)}
+              />
+            );
+          })}
+        </NavGroup>
+
+        <NavGroup label={t("groups.resources")}>
+          <NavRow
+            icon={<NotebookPen size={16} />}
+            label={t("items.notebooks")}
+            onClick={() => navigateTo(NOTEBOOKS_PATH)}
+            active={location.pathname.startsWith("/notebooks")}
+          />
+          <NavRow
+            icon={<FolderTree size={16} />}
+            label={t("items.files")}
+            onClick={() => navigateTo(FILES_PATH)}
+            active={location.pathname.startsWith("/files")}
+          />
+          <NavRow
+            icon={<FlaskConical size={16} />}
+            label={t("items.runs")}
+            onClick={() => navigateTo(RUNS_PATH)}
+            active={location.pathname.startsWith("/runs")}
+          />
+        </NavGroup>
+
+        <NavGroup label={t("groups.agent")}>
+          <NavRow
+            icon={<MessageSquarePlus size={16} />}
+            label={t("items.agentSession")}
+            onClick={startNew}
+            active={location.pathname === "/live"}
+          />
+          <NavRow
+            icon={<Files size={16} />}
+            label={t("items.skills")}
+            onClick={() => navigateTo(SKILLS_PATH)}
+            active={location.pathname.startsWith("/skills")}
+          />
+        </NavGroup>
       </nav>
 
-      <div className="mt-4 flex-1 overflow-y-auto px-3 pb-2">
-        <div className="px-2 py-1 text-xs font-medium uppercase tracking-wider text-muted">{t("history.heading")}</div>
-        {rows.length === 0 && (
-          <div className="px-2 py-2 text-xs text-muted">{t("history.empty")}</div>
-        )}
-        {rows.map((row) => (
-          <div key={row.to} className="group relative">
-            <NavLink
-              to={row.to}
-              className={cn(
-                "flex items-center gap-2 rounded-input py-1 pl-2 pr-8 text-[13px] hover:bg-surface-2",
-                location.pathname === row.to ? "bg-surface-2 text-text" : "text-text/90",
-              )}
-            >
-              <span
-                className={cn(
-                  "h-1.5 w-1.5 shrink-0 rounded-full",
-                  row.kind === "example" ? "bg-muted" : "bg-ok",
-                )}
-              />
-              <span className="flex-1 truncate">{row.title}</span>
-              {row.kind === "example" && (
-                <span className="shrink-0 rounded-full bg-surface-2 px-1.5 text-[10px] uppercase tracking-wide text-muted ring-1 ring-border">
-                  {t("history.exampleTag")}
-                </span>
-              )}
-            </NavLink>
-            <button
-              onClick={() => setPendingDelete(row)}
-              aria-label={t("history.deleteAria", { title: row.title })}
-              className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-1 text-muted hover:bg-border hover:text-error group-hover:block"
-            >
-              <Trash2 size={13} />
-            </button>
+      <div className="mt-6 flex min-h-14 flex-1 flex-col overflow-hidden border-t border-border-faint px-3 pb-2 pt-4">
+        <button
+          type="button"
+          onClick={() =>
+            setHistoryByContext((expanded) => ({
+              ...expanded,
+              [historyContext]: !expanded[historyContext],
+            }))
+          }
+          aria-expanded={historyExpanded}
+          className="touch-target flex min-h-10 shrink-0 items-center gap-1.5 rounded-input px-2 text-xs font-medium text-muted hover:bg-surface-2 hover:text-text"
+        >
+          <ChevronDown
+            size={12}
+            className={cn("transition-transform", !historyExpanded && "-rotate-90")}
+          />
+          <span>{t("history.heading")}</span>
+          {rows.length > 0 && <span className="ml-auto tabular-nums">{rows.length}</span>}
+        </button>
+        {historyExpanded && (
+          <div className="min-h-0 flex-1 overflow-y-auto pt-1">
+            {rows.length === 0 && (
+              <div className="px-2 py-2 text-xs text-muted">{t("history.empty")}</div>
+            )}
+            {rows.map((row) => (
+              <div key={row.to} className="group relative">
+                <NavLink
+                  to={row.to}
+                  onClick={() => compactOverlay && onCompactOpenChange(false)}
+                  className={cn(
+                    "touch-target flex min-h-10 items-center gap-2 rounded-input py-2 pl-2 pr-10 text-xs hover:bg-surface-2",
+                    location.pathname === row.to
+                      ? "bg-surface-2 text-text"
+                      : "text-text/90",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "h-1.5 w-1.5 shrink-0 rounded-full",
+                      row.kind === "example" ? "bg-muted" : "bg-ok",
+                    )}
+                  />
+                  <span className="flex-1 truncate">{row.title}</span>
+                  {row.kind === "example" && (
+                    <span className="shrink-0 rounded-full bg-surface-2 px-1.5 text-caption text-muted ring-1 ring-border">
+                      {t("history.exampleTag")}
+                    </span>
+                  )}
+                </NavLink>
+                <button
+                  onClick={() => setPendingDelete(row)}
+                  aria-label={t("history.deleteAria", { title: row.title })}
+                  className="touch-target absolute right-1 top-1/2 hidden h-10 w-10 -translate-y-1/2 items-center justify-center rounded-input text-muted hover:bg-border hover:text-error focus:flex group-focus-within:flex group-hover:flex"
+                >
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
           </div>
-        ))}
+        )}
       </div>
 
       <div className="border-t border-border px-3 py-3">
         <StatusPills />
         <button
-          className="relative mt-2 flex items-center gap-2 rounded-input px-2 py-1 text-[13px] text-muted hover:bg-surface-2 hover:text-text"
-          onClick={() => navigate("/settings")}
+          className="touch-target relative mt-2 flex min-h-10 w-full items-center gap-2 rounded-input px-2 py-2 text-xs text-muted hover:bg-surface-2 hover:text-text"
+          onClick={() => navigateTo("/settings")}
           aria-label={t("sidebar.settings")}
         >
           <Settings size={15} />
@@ -249,13 +351,14 @@ export function Sidebar({ project }: { project: Project }) {
         onPointerUp={onDividerPointerUp}
         onPointerCancel={onDividerPointerUp}
         className={cn(
-          "group absolute inset-y-0 right-0 z-10 w-[5px] cursor-col-resize",
+          "group absolute inset-y-0 right-0 z-10 w-2 cursor-col-resize",
+          compactOverlay && "hidden",
           sidebarCollapsed && !dragging && "pointer-events-none",
         )}
       >
         <div
           className={cn(
-            "absolute inset-y-0 right-0 w-[2px] transition-colors",
+            "absolute inset-y-0 right-0 w-px transition-colors",
             dragging ? "bg-accent/60" : "bg-transparent group-hover:bg-accent/40",
           )}
         />
@@ -264,14 +367,41 @@ export function Sidebar({ project }: { project: Project }) {
   );
 }
 
-function NavRow({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
+function NavRow({
+  icon,
+  label,
+  onClick,
+  active = false,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+}) {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-2 rounded-input px-2 py-1 text-[13px] text-text hover:bg-surface-2"
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "global-sidebar-row touch-target flex min-h-12 w-full items-center gap-2 rounded-input px-2 py-2.5 text-left text-xs transition-colors",
+        active
+          ? "bg-surface-2 font-medium text-text"
+          : "text-text hover:bg-surface-2",
+      )}
     >
-      <span className="text-muted">{icon}</span>
+      <span className={active ? "text-accent" : "text-muted"}>{icon}</span>
       <span>{label}</span>
     </button>
+  );
+}
+
+function NavGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <section aria-label={label}>
+      <p className="global-sidebar-group-label px-2 pb-3 text-xs font-medium text-muted">
+        {label}
+      </p>
+      <div className="flex flex-col gap-0.5">{children}</div>
+    </section>
   );
 }

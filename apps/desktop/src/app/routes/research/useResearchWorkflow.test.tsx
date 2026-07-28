@@ -1,13 +1,22 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResearchWorkflowSnapshot } from "@spark/research-domain";
+import type {
+  AgentResearchWorkflowSnapshot,
+  ResearchWorkflowSnapshot,
+} from "@spark/research-domain";
 import { useResearchWorkflow } from "./useResearchWorkflow";
 
 const core = vi.hoisted(() => ({
   listWorkflows: vi.fn(),
+  listAgentRuns: vi.fn(),
   getWorkflow: vi.fn(),
+  getAgentRun: vi.fn(),
+  listWorkflowInteractions: vi.fn(),
   listWorkflowEvents: vi.fn(),
   createWorkflow: vi.fn(),
+  createAgentRun: vi.fn(),
+  respondToInteraction: vi.fn(),
+  resolveAgentDecision: vi.fn(),
   approveWorkflowPlan: vi.fn(),
   decideWorkflowAnalysisIntent: vi.fn(),
   acceptWorkflowReviewWarnings: vi.fn(),
@@ -53,10 +62,65 @@ function snapshot(
   };
 }
 
+function pendingAgentSnapshot(): AgentResearchWorkflowSnapshot {
+  return {
+    workflow: {
+      id: "agent-run-1",
+      projectId: "project-1",
+      goal: "Compare the paper with the dataset",
+      mode: "autonomous",
+      sourceIds: ["paper-1", "dataset-1"],
+      workflowType: null,
+      generationMode: "local-deterministic",
+      status: "waiting-clarification",
+      revision: 3,
+      currentStepId: null,
+      planVersion: null,
+      retryCount: 0,
+      blockingReason: null,
+      cancelRequestedAt: null,
+      createdAt: "2026-07-16T08:00:00Z",
+      updatedAt: "2026-07-16T08:00:01Z",
+      completedAt: null,
+    },
+    plan: null,
+    pendingApprovals: [],
+    result: null,
+    latestReview: null,
+    datasetProfile: null,
+    analysisIntent: null,
+    analysisRun: null,
+    analysisSpec: null,
+    structuredResult: null,
+    reviewWarningAcceptance: null,
+    intentDecision: {
+      id: "intent-decision-1",
+      workflowId: "agent-run-1",
+      intent: "clarification-required",
+      confidence: 0.61,
+      reasoningSummary: "The requested outcome is ambiguous.",
+      selectedSourceIds: ["paper-1", "dataset-1"],
+      missingInputs: ["Primary outcome"],
+      proposedWorkflowType: "mixed-research",
+      promptVersion: "intent-router-v1",
+      inputSha256: "b".repeat(64),
+      outputSha256: "c".repeat(64),
+      createdAt: "2026-07-16T08:00:01Z",
+    },
+    interactions: [],
+    allowedActions: ["cancel"],
+    eventCursor: 3,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   core.listWorkflows.mockResolvedValue([]);
+  core.listAgentRuns.mockResolvedValue([]);
   core.getWorkflow.mockResolvedValue(snapshot());
+  core.getAgentRun.mockResolvedValue(snapshot());
+  core.listWorkflowInteractions.mockResolvedValue([]);
   core.listWorkflowEvents.mockResolvedValue({ events: [], nextAfter: 1, hasMore: false });
 });
 
@@ -77,6 +141,347 @@ describe("useResearchWorkflow", () => {
 
     await waitFor(() => expect(core.listWorkflowEvents).toHaveBeenCalled());
     expect(order.slice(0, 2)).toEqual(["snapshot", "events"]);
+    unmount();
+  });
+
+  it("restores pending autonomous runs and their durable interactions", async () => {
+    const agent = pendingAgentSnapshot();
+    const interaction = {
+      id: "interaction-1",
+      workflowId: "agent-run-1",
+      stepId: null,
+      requestType: "single-choice" as const,
+      question: "Which outcome should be primary?",
+      options: [
+        { value: "accuracy", label: "accuracy" },
+        { value: "latency", label: "latency" },
+      ],
+      required: true,
+      status: "pending" as const,
+      responseSchema: { type: "string" },
+      workflowRevision: 3,
+      latestResponse: null,
+      createdAt: "2026-07-16T08:00:01Z",
+      answeredAt: null,
+    };
+    core.listAgentRuns.mockResolvedValue([agent]);
+    core.getAgentRun.mockResolvedValue(agent);
+    core.listWorkflowInteractions.mockResolvedValue([interaction]);
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+
+    await waitFor(() => expect(result.current.snapshot?.workflow.id).toBe("agent-run-1"));
+    await waitFor(() => expect(result.current.interactions).toEqual([interaction]));
+    expect(core.getAgentRun).toHaveBeenCalledWith(
+      "agent-run-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(core.listAgentRuns).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({
+        activeOnly: true,
+        limit: 100,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(core.getWorkflow).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("selects the newest workflow across fixed and autonomous lists", async () => {
+    const fixed = snapshot("completed", {
+      workflowId: "fixed-workflow-1",
+    });
+    const agent = pendingAgentSnapshot();
+    core.listWorkflows.mockResolvedValue([fixed]);
+    core.listAgentRuns.mockResolvedValue([agent]);
+    core.getAgentRun.mockResolvedValue(agent);
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+
+    await waitFor(() =>
+      expect(result.current.selectedWorkflowId).toBe("agent-run-1"),
+    );
+    expect(result.current.workflows.map((item) => item.workflow.id)).toEqual([
+      "agent-run-1",
+      "fixed-workflow-1",
+    ]);
+    expect(core.getAgentRun).toHaveBeenCalled();
+    expect(core.getWorkflow).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("restores a valid saved workflow instead of replacing it with the newest item", async () => {
+    const older = snapshot("completed", { workflowId: "workflow-older" });
+    const newer = snapshot("completed", { workflowId: "workflow-newer" });
+    newer.workflow.updatedAt = "2026-07-15T08:00:00Z";
+    window.localStorage.setItem("spark.research.lastWorkflowId", "workflow-older");
+    core.listWorkflows.mockResolvedValue([newer, older]);
+    core.getWorkflow.mockImplementation(async (workflowId: string) =>
+      workflowId === "workflow-older" ? older : newer,
+    );
+
+    const { result, unmount } = renderHook(() => useResearchWorkflow("project-1"));
+    await waitFor(() => expect(result.current.selectedWorkflowId).toBe("workflow-older"));
+    expect(window.localStorage.getItem("spark.research.lastWorkflowId")).toBe("workflow-older");
+    unmount();
+  });
+
+  it("falls back to the newest valid workflow when the saved id no longer exists", async () => {
+    const current = snapshot("completed", { workflowId: "workflow-current" });
+    window.localStorage.setItem("spark.research.lastWorkflowId", "workflow-deleted");
+    core.listWorkflows.mockResolvedValue([current]);
+    core.getWorkflow.mockResolvedValue(current);
+
+    const { result, unmount } = renderHook(() => useResearchWorkflow("project-1"));
+    await waitFor(() => expect(result.current.selectedWorkflowId).toBe("workflow-current"));
+    await waitFor(() => expect(window.localStorage.getItem("spark.research.lastWorkflowId")).toBe("workflow-current"));
+    unmount();
+  });
+
+  it("creates Auto research from a canonical set of selected source IDs", async () => {
+    const agent = pendingAgentSnapshot();
+    core.createAgentRun.mockResolvedValue(agent);
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(core.listAgentRuns).toHaveBeenCalled());
+
+    await act(async () => {
+      await result.current.create("  Compare sources  ", {
+        mode: "autonomous",
+        sourceIds: ["paper-1", "dataset-1", "paper-1"],
+        remoteDataApproved: true,
+      });
+    });
+
+    expect(core.createAgentRun).toHaveBeenCalledWith(
+      "project-1",
+      {
+        goal: "Compare sources",
+        sourceIds: ["dataset-1", "paper-1"],
+        mode: "autonomous",
+        remoteDataApproved: true,
+      },
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    expect(core.createWorkflow).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it("rejects an Auto request without a ready source before calling the API", async () => {
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(core.listAgentRuns).toHaveBeenCalled());
+
+    await act(async () => {
+      await result.current.create("Investigate this question", {
+        mode: "autonomous",
+        sourceIds: [],
+        remoteDataApproved: false,
+      });
+    });
+
+    expect(core.createAgentRun).not.toHaveBeenCalled();
+    expect(result.current.error).toMatch(/Choose at least one ready PDF or CSV/i);
+    unmount();
+  });
+
+  it("binds clarification answers to the current workflow revision", async () => {
+    const agent = pendingAgentSnapshot();
+    const interaction = {
+      id: "interaction-1",
+      workflowId: "agent-run-1",
+      stepId: null,
+      requestType: "text" as const,
+      question: "What is the primary outcome?",
+      options: [],
+      required: true,
+      status: "pending" as const,
+      responseSchema: { type: "string" },
+      workflowRevision: 3,
+      latestResponse: null,
+      createdAt: "2026-07-16T08:00:01Z",
+      answeredAt: null,
+    };
+    core.listAgentRuns.mockResolvedValue([agent]);
+    core.getAgentRun.mockResolvedValue(agent);
+    core.listWorkflowInteractions.mockResolvedValue([interaction]);
+    core.respondToInteraction.mockResolvedValue({
+      ...agent,
+      workflow: { ...agent.workflow, revision: 4, status: "routing" },
+      interactions: [{ ...interaction, status: "answered" }],
+    });
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.interactions).toEqual([interaction]));
+
+    await act(async () => {
+      await result.current.respondToInteraction("interaction-1", "accuracy");
+    });
+
+    expect(core.respondToInteraction).toHaveBeenCalledWith(
+      "interaction-1",
+      { response: "accuracy", expectedWorkflowRevision: 3 },
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    unmount();
+  });
+
+  it("binds method revision approval to the exact pending decision", async () => {
+    const base = pendingAgentSnapshot();
+    const pendingDecision = {
+      id: "decision-1",
+      status: "waiting-user-confirmation" as const,
+      requiresUserConfirmation: true,
+      outputSha256: "d".repeat(64),
+    };
+    const agent = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        workflowType: "dataset-analysis",
+        status: "failed",
+        revision: 8,
+      },
+      intentDecision: {
+        ...base.intentDecision,
+        intent: "dataset-analysis",
+        proposedWorkflowType: "dataset-analysis",
+        selectedSourceIds: ["dataset-1"],
+      },
+      pendingDecision,
+      allowedActions: [
+        "approve-agent-decision",
+        "reject-agent-decision",
+        "cancel",
+      ],
+    } as unknown as AgentResearchWorkflowSnapshot;
+    core.listAgentRuns.mockResolvedValue([agent]);
+    core.getAgentRun.mockResolvedValue(agent);
+    core.resolveAgentDecision.mockResolvedValue({
+      ...agent,
+      pendingDecision: { ...pendingDecision, status: "proposed" },
+      allowedActions: ["cancel"],
+    });
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot?.workflow.id).toBe("agent-run-1"));
+
+    await act(async () => {
+      await result.current.resolveAgentDecision("approved");
+    });
+
+    expect(core.resolveAgentDecision).toHaveBeenCalledWith(
+      "agent-run-1",
+      "decision-1",
+      {
+        decision: "approved",
+        decisionOutputSha256: "d".repeat(64),
+        expectedWorkflowRevision: 8,
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    unmount();
+  });
+
+  it("submits an answered clarification again before plan approval", async () => {
+    const pending = pendingAgentSnapshot();
+    const interaction = {
+      id: "interaction-1",
+      workflowId: "agent-run-1",
+      stepId: null,
+      requestType: "single-choice" as const,
+      question: "Which outcome should be primary?",
+      options: [
+        { value: "accuracy", label: "accuracy" },
+        { value: "latency", label: "latency" },
+      ],
+      required: true,
+      status: "answered" as const,
+      responseSchema: { type: "string" },
+      workflowRevision: 3,
+      latestResponse: {
+        id: "response-1",
+        interactionId: "interaction-1",
+        revision: 1,
+        response: "accuracy",
+        responseSha256: "a".repeat(64),
+        createdAt: "2026-07-16T08:00:02Z",
+      },
+      createdAt: "2026-07-16T08:00:01Z",
+      answeredAt: "2026-07-16T08:00:02Z",
+    };
+    const agent: AgentResearchWorkflowSnapshot = {
+      ...pending,
+      workflow: {
+        ...pending.workflow,
+        workflowType: "literature-synthesis",
+        status: "waiting-plan-approval",
+        revision: 6,
+        planVersion: 1,
+      },
+      interactions: [interaction],
+      allowedActions: ["approve-plan", "cancel"],
+    };
+    const rerouting: AgentResearchWorkflowSnapshot = {
+      ...agent,
+      workflow: {
+        ...agent.workflow,
+        workflowType: null,
+        status: "routing",
+        revision: 7,
+        planVersion: null,
+      },
+      interactions: [
+        {
+          ...interaction,
+          latestResponse: {
+            ...interaction.latestResponse,
+            revision: 2,
+            response: "latency",
+          },
+        },
+      ],
+      plan: null,
+      pendingApprovals: [],
+      allowedActions: ["cancel"],
+    };
+    core.listAgentRuns.mockResolvedValue([agent]);
+    core.getAgentRun.mockResolvedValue(agent);
+    core.listWorkflowInteractions.mockResolvedValue([interaction]);
+    core.respondToInteraction.mockResolvedValue(rerouting);
+
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.interactions).toEqual([interaction]));
+
+    await act(async () => {
+      await result.current.respondToInteraction("interaction-1", "latency");
+    });
+
+    expect(core.respondToInteraction).toHaveBeenCalledWith(
+      "interaction-1",
+      { response: "latency", expectedWorkflowRevision: 6 },
+      expect.objectContaining({
+        idempotencyKey: expect.any(String),
+        signal: expect.any(AbortSignal),
+      }),
+    );
     unmount();
   });
 

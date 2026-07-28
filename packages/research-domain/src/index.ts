@@ -14,11 +14,14 @@ export type ResearchTaskStatus =
 
 /** Canonical workflow states owned by science-core. */
 export type ResearchWorkflowStatus =
+  | "routing"
+  | "waiting-clarification"
   | "planning"
   | "waiting-plan-approval"
   | "running"
   | "reviewing"
   | "completed"
+  | "unsupported"
   | "blocked"
   | "failed"
   | "cancelled";
@@ -28,6 +31,9 @@ export type ResearchWorkflowAllowedAction =
   | "approve-plan"
   | "approve-analysis"
   | "reject-analysis"
+  | "approve-agent-decision"
+  | "reject-agent-decision"
+  | "respond-interaction"
   | "accept-review-warnings"
   | "cancel"
   | "retry"
@@ -42,6 +48,102 @@ export type LiteratureResearchWorkflowAllowedAction =
 export type ResearchWorkflowType =
   | "literature-synthesis"
   | "dataset-analysis";
+
+/** Strict autonomous-router decision vocabulary. */
+export type ResearchIntent =
+  | "literature-synthesis"
+  | "dataset-analysis"
+  | "mixed-research"
+  | "clarification-required"
+  | "unsupported";
+
+export type ProposedResearchWorkflowType =
+  | "literature-synthesis"
+  | "dataset-analysis"
+  | "mixed-research";
+
+export interface IntentDecision {
+  id: string;
+  workflowId: string;
+  intent: ResearchIntent;
+  confidence: number;
+  reasoningSummary: string;
+  selectedSourceIds: string[];
+  missingInputs: string[];
+  proposedWorkflowType: ProposedResearchWorkflowType | null;
+  promptVersion: string;
+  inputSha256: string;
+  outputSha256: string;
+  createdAt: string;
+}
+
+export interface CreateAgentRunInput {
+  goal: string;
+  sourceIds: string[];
+  mode: "autonomous";
+  remoteDataApproved?: boolean;
+}
+
+export type InteractionRequestType =
+  | "single-choice"
+  | "multi-choice"
+  | "text"
+  | "number"
+  | "boolean"
+  | "column-selection"
+  | "method-confirmation"
+  | "assumption-confirmation";
+
+export type InteractionRequestStatus =
+  | "pending"
+  | "answered"
+  | "superseded"
+  | "cancelled";
+
+export type InteractionResponseValue = string | number | boolean | string[];
+
+export interface InteractionOption {
+  value: string;
+  label: string;
+  description?: string | null;
+}
+
+export interface InteractionUserResponse {
+  id: string;
+  interactionId: string;
+  revision: number;
+  response: InteractionResponseValue;
+  responseSha256: string;
+  createdAt: string;
+}
+
+/** Durable science-core request; it is never a skippable runtime prompt. */
+export interface InteractionRequest {
+  id: string;
+  workflowId: string;
+  stepId: string | null;
+  requestType: InteractionRequestType;
+  question: string;
+  options: InteractionOption[];
+  required: boolean;
+  status: InteractionRequestStatus;
+  responseSchema: Record<string, unknown>;
+  workflowRevision: number;
+  latestResponse: InteractionUserResponse | null;
+  createdAt: string;
+  answeredAt: string | null;
+}
+
+export interface RespondToInteractionInput {
+  response: InteractionResponseValue;
+  expectedWorkflowRevision: number;
+}
+
+export interface ResolveAgentDecisionInput {
+  decision: "approved" | "rejected";
+  decisionOutputSha256: string;
+  expectedWorkflowRevision: number;
+}
 
 export type WorkflowRiskLevel = "low" | "medium" | "high";
 
@@ -97,6 +199,7 @@ export interface WorkflowApiErrorDetail {
   code: string;
   userMessage: string;
   retryable: boolean;
+  details?: Record<string, unknown>;
 }
 
 export interface WorkflowBlockingReason {
@@ -121,7 +224,35 @@ interface ResearchWorkflowBase {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  /** Present for workflows created through the autonomous agent entry point. */
+  mode?: "autonomous" | "advanced";
+  sourceIds?: string[];
 }
+
+export interface AgentResearchWorkflow
+  extends Omit<ResearchWorkflowBase, "blockingReason"> {
+  mode: "autonomous";
+  sourceIds: string[];
+  workflowType: ProposedResearchWorkflowType | null;
+  generationMode: ResearchGenerationMode;
+  status: ResearchWorkflowStatus;
+  statusReason?: {
+    code: string;
+    userMessage: string;
+  } | null;
+  /** Legacy workflow snapshots use blockingReason; autonomous snapshots use statusReason. */
+  blockingReason?: null;
+  datasetSourceId?: null;
+  datasetContentHash?: null;
+}
+
+export type PendingAgentResearchWorkflow = Omit<
+  AgentResearchWorkflow,
+  "workflowType" | "status"
+> & {
+  workflowType: null;
+  status: "routing" | "waiting-clarification" | "unsupported";
+};
 
 export interface LiteratureResearchWorkflow extends ResearchWorkflowBase {
   workflowType: "literature-synthesis";
@@ -140,7 +271,8 @@ export interface DatasetAnalysisWorkflow extends ResearchWorkflowBase {
 
 export type ResearchWorkflow =
   | LiteratureResearchWorkflow
-  | DatasetAnalysisWorkflow;
+  | DatasetAnalysisWorkflow
+  | AgentResearchWorkflow;
 
 export type ResearchWorkflowPlanStatus =
   | "pending-approval"
@@ -172,7 +304,8 @@ export type DatasetAnalysisTaskType =
 
 export type ResearchWorkflowTaskType =
   | LiteratureResearchWorkflowTaskType
-  | DatasetAnalysisTaskType;
+  | DatasetAnalysisTaskType
+  | "paper-discovery";
 
 export interface FrozenResearchSource {
   sourceId: string;
@@ -227,9 +360,55 @@ export interface ResearchWorkflowStepSpec {
 
 export interface ResearchWorkflowPlanSpec {
   schemaVersion: "1";
+  /** Keeps paper-discovery recognition explicit and exhaustive at the UI boundary. */
+  planType?: never;
   goal: string;
   steps: ResearchWorkflowStepSpec[];
 }
+
+/** Strict public-search plan. It is not a literature-synthesis plan or source set. */
+export interface PaperDiscoveryStepInput {
+  schemaVersion: "1";
+  discoverySpecId: string;
+  discoverySpecRevision: number;
+  discoverySpecSha256: string;
+  queryId: string;
+  query: string;
+  provider: DiscoveryProvider;
+  yearFrom: number | null;
+  yearTo: number | null;
+  sort: DiscoverySort;
+  maxResultsPerProvider: number;
+  derivedMaximumResults: number;
+  stopPolicy: DiscoveryStopPolicy;
+  downloadOpenAccessPdfs: false;
+  maxPdfDownloads: 0;
+}
+
+export interface PaperDiscoveryPlanStep {
+  key: string;
+  orderIndex: number;
+  objective: string;
+  taskType: "paper-discovery";
+  inputs: PaperDiscoveryStepInput;
+  expectedOutputs: ["discovery-observation"];
+  acceptanceCriteria: ["persist-structured-discovery-observation"];
+  permissions: ["remote-paper-search"];
+  riskLevel: "medium";
+  timeoutSeconds: 120;
+}
+
+export interface PaperDiscoveryPlanSpec {
+  schemaVersion: "1";
+  planType: "paper-discovery";
+  goal: string;
+  discoverySpecId: string;
+  discoverySpecRevision: number;
+  discoverySpecSha256: string;
+  steps: PaperDiscoveryPlanStep[];
+}
+
+export type WorkflowPlanSpec = ResearchWorkflowPlanSpec | PaperDiscoveryPlanSpec;
 
 export type DatasetAnalysisStepKey =
   | "inspect-dataset"
@@ -548,10 +727,13 @@ export const DATASET_ANALYSIS_RUNTIME_ARTIFACT_REQUIREMENTS = {
  */
 interface DatasetAnalysisPlanSpecBase {
   schemaVersion: "1";
+  planType?: never;
   workflowType: "dataset-analysis";
   goal: string;
   datasetSourceId: string;
   datasetContentHash: string;
+  analysisSpecId: string | null;
+  analysisSpecSha256: string | null;
   assumptions: string[];
   questionsForUser: string[];
 }
@@ -713,7 +895,7 @@ export interface LiteratureResearchWorkflowPlan {
   promptVersion?: string | null;
   /** Exact model identifier when a remote model generated the plan. */
   model?: string | null;
-  spec: ResearchWorkflowPlanSpec;
+  spec: WorkflowPlanSpec;
   steps: ResearchWorkflowMaterializedStep[];
   createdAt: string;
   approvedAt: string | null;
@@ -765,14 +947,13 @@ export interface DatasetWorkflowPlanPendingApproval
   datasetContentHash: string;
 }
 
-export interface WorkflowAnalysisExecutionPendingApproval
+interface WorkflowAnalysisExecutionPendingApprovalBase
   extends WorkflowPendingApprovalBase {
   taskId: string;
   kind: "analysis-execution";
   subjectType: "analysis-intent";
   action: "execute-python-data-analysis";
   riskLevel: "high";
-  approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
   expectedWorkflowRevision: number;
   analysisIntentId: string;
   planStepId: "execute-analysis";
@@ -783,6 +964,26 @@ export interface WorkflowAnalysisExecutionPendingApproval
   code: string;
   codeDiff: string | null;
 }
+
+export type WorkflowAnalysisExecutionPendingApproval =
+  | (WorkflowAnalysisExecutionPendingApprovalBase & {
+      approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
+      analysisSpecId: null;
+      specSha256: null;
+      datasetProfileSha256: null;
+      compilerVersion: null;
+      codeSha256: null;
+      runtimePolicyId: null;
+    })
+  | (WorkflowAnalysisExecutionPendingApprovalBase & {
+      approvalSchemaVersion: "analysis-intent-v4";
+      analysisSpecId: string;
+      specSha256: string;
+      datasetProfileSha256: string;
+      compilerVersion: string;
+      codeSha256: string;
+      runtimePolicyId: string;
+    });
 
 export type WorkflowPendingApproval =
   | WorkflowPlanPendingApproval
@@ -835,6 +1036,64 @@ export interface ResearchWorkflowResult {
   integrityStatus: "verified-frozen-v2" | "unfrozen";
   claims: WorkflowClaim[];
   unresolvedQuestions: string[];
+}
+
+export type ReportDraftStatus = "draft" | "needs-review" | "reviewed";
+
+export interface ReportDraftRecord {
+  id: string;
+  projectId: string;
+  workflowId: string;
+  schemaVersion: "1";
+  revision: number;
+  contentMarkdown: string;
+  contentSha256: string;
+  baseWorkflowSha256: string;
+  baseResultSha256: string;
+  baseEvidenceSha256: string;
+  status: ReportDraftStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateReportDraftInput {
+  schemaVersion: "1";
+}
+
+export interface SaveReportDraftInput {
+  expectedRevision: number;
+  expectedContentSha256: string;
+  contentMarkdown: string;
+}
+
+export interface ReportCitationRebaseInput {
+  previousEvidenceId: string;
+  previousQuoteHash: string;
+  currentEvidenceId: string;
+  currentQuoteHash: string;
+}
+
+export interface ReviewReportDraftInput {
+  expectedRevision: number;
+  expectedContentSha256: string;
+  citationRebases: ReportCitationRebaseInput[];
+}
+
+export interface ExportReportDraftInput {
+  expectedRevision: number;
+  expectedContentSha256: string;
+}
+
+export interface ReportDraftExport {
+  draftId: string;
+  projectId: string;
+  workflowId: string;
+  revision: number;
+  contentMarkdown: string;
+  contentSha256: string;
+  baseWorkflowSha256: string;
+  baseResultSha256: string;
+  baseEvidenceSha256: string;
 }
 
 export type LiteratureWorkflowReviewVerdict =
@@ -957,8 +1216,12 @@ interface ActiveDatasetAnalysisWorkflowSnapshot
   result: null;
   latestReview: DatasetAnalysisReview | null;
   datasetProfile: DatasetProfile | null;
+  /** Optional only while reading snapshots emitted before AnalysisSpec v1. */
+  analysisSpec?: WorkflowAnalysisSpec | null;
   analysisIntent: WorkflowAnalysisIntent | null;
   analysisRun: WorkflowAnalysisRun | null;
+  /** Optional only while reading snapshots emitted before structured results v1. */
+  structuredResult?: WorkflowStructuredAnalysisResult | null;
   reviewWarningAcceptance: DatasetReviewWarningAcceptance | null;
 }
 
@@ -983,11 +1246,13 @@ interface CompletedDatasetAnalysisWorkflowSnapshotBase {
   pendingApprovals: [];
   result: null;
   datasetProfile: DatasetProfile;
+  analysisSpec?: WorkflowAnalysisSpec | null;
   analysisIntent: WorkflowAnalysisIntent & {
     status: "completed";
     decision: "approved";
   };
   analysisRun: CompletedWorkflowAnalysisRun;
+  structuredResult?: WorkflowStructuredAnalysisResult | null;
   allowedActions: [];
   eventCursor: number;
 }
@@ -1012,9 +1277,313 @@ export type DatasetAnalysisWorkflowSnapshot =
   | PassedDatasetAnalysisWorkflowSnapshot
   | WarningAcceptedDatasetAnalysisWorkflowSnapshot;
 
-export type ResearchWorkflowSnapshot =
+export type AgentAction =
+  | "continue"
+  | "request-clarification"
+  | "revise-analysis-spec"
+  | "retry-step"
+  | "complete"
+  | "stop";
+
+export type AgentLoopJsonScalar = string | number | boolean;
+export type AgentLoopJsonValue =
+  | AgentLoopJsonScalar
+  | null
+  | AgentLoopJsonValue[]
+  | { [key: string]: AgentLoopJsonValue };
+
+export type ObservationSourceType =
+  | "dataset-profile"
+  | "analysis-spec"
+  | "preflight"
+  | "run"
+  | "structured-result"
+  | "artifact"
+  | "review"
+  | "workflow";
+
+export interface ObservationFact {
+  code: string;
+  statement: string;
+  value: AgentLoopJsonValue;
+  sourceType: ObservationSourceType;
+  sourceId: string;
+}
+
+export interface ObservationWarning {
+  code: string;
+  message: string;
+  severity: "info" | "warning" | "error";
+  sourceId: string | null;
+}
+
+export interface UnresolvedQuestion {
+  code: string;
+  question: string;
+  answerType:
+    | "single-choice"
+    | "multi-choice"
+    | "column-selection"
+    | "method-confirmation"
+    | "assumption-confirmation"
+    | "boolean"
+    | "text";
+}
+
+export type StepObservationStatus =
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "needs-review";
+
+export type ObservationType =
+  | "pre-plan"
+  | "step-output"
+  | "analysis-execution"
+  | "review";
+
+export type ObservationFailureCategory =
+  | "none"
+  | "input"
+  | "method"
+  | "runtime"
+  | "artifact"
+  | "review"
+  | "unsupported"
+  | "unknown";
+
+/** Immutable structured facts for one durable job attempt. */
+export interface StepObservation {
+  schemaVersion: "1";
+  workflowId: string;
+  planId: string | null;
+  /** Null only for a pre-plan or reviewer observation with no materialized task. */
+  taskId: string | null;
+  /** Durable source job; never inferred from the current in-memory worker. */
+  sourceJobId: string;
+  runId: string | null;
+  reviewId: string | null;
+  observationType: ObservationType;
+  stepKey: string;
+  attempt: number;
+  status: StepObservationStatus;
+  facts: [ObservationFact, ...ObservationFact[]];
+  warnings: ObservationWarning[];
+  unresolvedQuestions: UnresolvedQuestion[];
+  artifactIds: string[];
+  failureCategory: ObservationFailureCategory;
+  recommendedActions: [AgentAction, ...AgentAction[]];
+}
+
+export interface StepObservationOut extends StepObservation {
+  id: string;
+  inputSha256: string;
+  outputSha256: string;
+  generator: string;
+  promptVersion: string | null;
+  model: string | null;
+  modelInvocationId: string | null;
+  createdAt: string;
+}
+
+export interface AnalysisSpecDiff {
+  changedFields: string[];
+  previousValues: Record<string, AgentLoopJsonValue>;
+  proposedValues: Record<string, AgentLoopJsonValue>;
+  reason: string;
+}
+
+interface AgentDecisionCore {
+  schemaVersion: "1";
+  action: AgentAction;
+  reasonCode: string;
+  reason: string;
+  targetStepKey: string | null;
+  clarificationRequests: ScientificClarification[];
+  proposedAnalysisSpec: AnalysisSpec | null;
+  analysisSpecDiff: AnalysisSpecDiff | null;
+  requiresUserConfirmation: boolean;
+}
+
+export type AgentDecision =
+  | (AgentDecisionCore & {
+      action: "continue";
+      targetStepKey: string;
+      clarificationRequests: [];
+      proposedAnalysisSpec: null;
+      analysisSpecDiff: null;
+      requiresUserConfirmation: false;
+    })
+  | (AgentDecisionCore & {
+      action: "request-clarification";
+      targetStepKey: null;
+      clarificationRequests: [
+        ScientificClarification,
+        ...ScientificClarification[],
+      ];
+      proposedAnalysisSpec: null;
+      analysisSpecDiff: null;
+      requiresUserConfirmation: false;
+    })
+  | (AgentDecisionCore & {
+      action: "revise-analysis-spec";
+      targetStepKey: null;
+      clarificationRequests: [];
+      proposedAnalysisSpec: AnalysisSpec;
+      analysisSpecDiff: AnalysisSpecDiff;
+      requiresUserConfirmation: true;
+    })
+  | (AgentDecisionCore & {
+      action: "retry-step";
+      targetStepKey: string;
+      clarificationRequests: [];
+      proposedAnalysisSpec: null;
+      analysisSpecDiff: null;
+      requiresUserConfirmation: false;
+    })
+  | (AgentDecisionCore & {
+      action: "complete" | "stop";
+      targetStepKey: null;
+      clarificationRequests: [];
+      proposedAnalysisSpec: null;
+      analysisSpecDiff: null;
+      requiresUserConfirmation: false;
+    });
+
+export type AgentDecisionStatus =
+  | "proposed"
+  | "waiting-user-confirmation"
+  | "applied"
+  | "superseded"
+  | "rejected"
+  | "failed";
+
+export type AgentDecisionOut = AgentDecision & {
+  id: string;
+  workflowId: string;
+  observationId: string;
+  decisionRevision: number;
+  status: AgentDecisionStatus;
+  expectedWorkflowRevision: number;
+  generator: string;
+  promptVersion: string | null;
+  model: string | null;
+  modelInvocationId: string | null;
+  inputSha256: string;
+  outputSha256: string;
+  researchContextSnapshotId: string | null;
+  researchContextSnapshotSha256: string | null;
+  appliedAt: string | null;
+  createdAt: string;
+};
+
+export interface AgentDecisionSummary {
+  id: string;
+  observationId: string;
+  action: AgentAction;
+  reason: string;
+  status: AgentDecisionStatus;
+  requiresUserConfirmation: boolean;
+  researchContextSnapshotId: string | null;
+  researchContextSnapshotSha256: string | null;
+  createdAt: string;
+  appliedAt: string | null;
+}
+
+export type AgentLoopLimitName =
+  | "agent-steps"
+  | "plan-revisions"
+  | "analysis-spec-revisions"
+  | "step-retries"
+  | "clarification-rounds"
+  | "model-decisions"
+  | "invalid-model-decisions";
+
+export interface AgentLoopLimitUsage {
+  count: number;
+  limit: number;
+  reached: boolean;
+}
+
+/** Seven persisted counters; none depend on process-local memory. */
+export interface AgentLoopLimitState {
+  agentSteps: AgentLoopLimitUsage;
+  planRevisions: AgentLoopLimitUsage;
+  analysisSpecRevisions: AgentLoopLimitUsage;
+  stepRetries: AgentLoopLimitUsage;
+  clarificationRounds: AgentLoopLimitUsage;
+  modelDecisions: AgentLoopLimitUsage;
+  invalidModelDecisions: AgentLoopLimitUsage;
+}
+
+interface CurrentAgentLoopSnapshotFields {
+  latestObservation: StepObservationOut | null;
+  pendingDecision: AgentDecisionOut | null;
+  decisionHistory: AgentDecisionSummary[];
+  agentLoopLimits: AgentLoopLimitState;
+}
+
+/** Frozen pre-agent-loop snapshots remain readable, but fields cannot be partial. */
+interface LegacyAgentLoopSnapshotFields {
+  latestObservation?: never;
+  pendingDecision?: never;
+  decisionHistory?: never;
+  agentLoopLimits?: never;
+}
+
+export type AgentResearchWorkflowSnapshot = ResearchWorkflowSnapshotBase & {
+  workflow: AgentResearchWorkflow;
+  intentDecision: IntentDecision | null;
+  interactions: InteractionRequest[];
+  plan: ResearchWorkflowPlan | null;
+  pendingApprovals: WorkflowPendingApproval[];
+  latestReview: ResearchWorkflowReview | DatasetAnalysisReview | null;
+  datasetProfile: DatasetProfile | null;
+  analysisIntent: WorkflowAnalysisIntent | null;
+  analysisRun: WorkflowAnalysisRun | null;
+  analysisSpec: WorkflowAnalysisSpec | null;
+  structuredResult: WorkflowStructuredAnalysisResult | null;
+  reviewWarningAcceptance: DatasetReviewWarningAcceptance | null;
+} & (CurrentAgentLoopSnapshotFields | LegacyAgentLoopSnapshotFields);
+
+export type PendingAgentResearchWorkflowSnapshot = Omit<
+  AgentResearchWorkflowSnapshot,
+  | "workflow"
+  | "plan"
+  | "pendingApprovals"
+  | "result"
+  | "latestReview"
+  | "datasetProfile"
+  | "analysisIntent"
+  | "analysisRun"
+  | "analysisSpec"
+  | "structuredResult"
+  | "reviewWarningAcceptance"
+  | "latestObservation"
+  | "pendingDecision"
+  | "decisionHistory"
+  | "agentLoopLimits"
+> & {
+  workflow: PendingAgentResearchWorkflow;
+  plan: null;
+  pendingApprovals: [];
+  result: null;
+  latestReview: null;
+  datasetProfile: null;
+  analysisIntent: null;
+  analysisRun: null;
+  analysisSpec: null;
+  structuredResult: null;
+  reviewWarningAcceptance: null;
+} & (CurrentAgentLoopSnapshotFields | LegacyAgentLoopSnapshotFields);
+
+export type ResolvedResearchWorkflowSnapshot =
   | LiteratureResearchWorkflowSnapshot
   | DatasetAnalysisWorkflowSnapshot;
+
+export type ResearchWorkflowSnapshot =
+  | ResolvedResearchWorkflowSnapshot
+  | AgentResearchWorkflowSnapshot;
 
 export interface WorkflowCreatedEventData {
   workflowType: ResearchWorkflowType;
@@ -1040,9 +1609,15 @@ export interface DatasetRemoteDataApprovalEventData
   dataCategories: ["user-goal", "dataset-profile"];
 }
 
+export interface AgentRemoteDataApprovalEventData
+  extends WorkflowRemoteDataApprovalEventBase {
+  dataCategories: ["user-goal", "source-metadata", "user-answer"];
+}
+
 export type WorkflowRemoteDataApprovalEventData =
   | LiteratureRemoteDataApprovalEventData
-  | DatasetRemoteDataApprovalEventData;
+  | DatasetRemoteDataApprovalEventData
+  | AgentRemoteDataApprovalEventData;
 
 export interface WorkflowStatusChangedEventData {
   previousStatus: ResearchWorkflowStatus;
@@ -1112,7 +1687,10 @@ export interface AnalysisApprovalEventData {
   taskId: string;
   jobId: string | null;
   payloadSha256: string;
-  approvalSchemaVersion: "analysis-intent-v2" | "analysis-intent-v3";
+  approvalSchemaVersion:
+    | "analysis-intent-v2"
+    | "analysis-intent-v3"
+    | "analysis-intent-v4";
   expectedWorkflowRevision: number;
 }
 
@@ -1174,6 +1752,197 @@ export interface DatasetReviewWarningsAcceptedEventData {
   decision: "accepted";
 }
 
+export interface AgentRunCreatedEventData {
+  goalSha256: string;
+  sourceIds: string[];
+  mode: "autonomous";
+  generationMode: ResearchGenerationMode;
+}
+
+export interface IntentDecisionEventData {
+  intentDecisionId: string;
+  intent: ResearchIntent;
+  confidence: number;
+  outputSha256: string;
+}
+
+export interface AnalysisMethodSelectionStartedEventData {
+  datasetSourceId: string;
+  datasetContentHash: string;
+  datasetProfileSha256: string;
+}
+
+export interface AnalysisClarificationRequestedEventData {
+  interactionId: string;
+  clarificationType: string;
+  selectorInputSha256: string;
+  selectorOutputSha256: string;
+}
+
+export interface AnalysisSpecEventData {
+  analysisSpecId: string;
+  revision: number;
+  specSha256: string;
+  datasetProfileSha256: string;
+  selectorKind: "local-deterministic" | "remote-model-assisted";
+  promptVersion: string | null;
+}
+
+export interface AnalysisCompiledEventData {
+  analysisIntentId: string;
+  analysisSpecId: string;
+  specSha256: string;
+  datasetProfileSha256: string;
+  compilerVersion: string;
+  approvedCodeSha256: string;
+  runtimePolicyId: string;
+}
+
+export interface AnalysisStructuredResultEventData {
+  structuredResultId: string;
+  analysisSpecId: string;
+  analysisIntentId: string;
+  runId: string;
+  resultSha256: string;
+}
+
+export interface AnalysisUnsupportedEventData {
+  capability: string;
+  explanation: string;
+  supportedAlternatives: Array<
+    "descriptive" | "two-group-comparison" | "correlation"
+  >;
+  selectorInputSha256: string;
+  selectorOutputSha256: string;
+}
+
+interface InteractionEventDataBase {
+  interactionId: string;
+  requestType: InteractionRequestType;
+  required: boolean;
+  expectedWorkflowRevision: number;
+}
+
+export interface InteractionRequestedEventData
+  extends InteractionEventDataBase {
+  responseId: null;
+  responseRevision: null;
+}
+
+export interface InteractionAnsweredEventData
+  extends InteractionEventDataBase {
+  responseId: string;
+  responseRevision: number;
+}
+
+export type InteractionEventData =
+  | InteractionRequestedEventData
+  | InteractionAnsweredEventData;
+
+interface AgentLoopEventDataBase {
+  observationId: string | null;
+  decisionId: string | null;
+  action: AgentAction | null;
+  taskId: string | null;
+  targetStepKey: string | null;
+  previousAnalysisSpecId: string | null;
+  proposedAnalysisSpecId: string | null;
+  expectedWorkflowRevision: number;
+  reasonCode: string;
+}
+
+export interface AgentObservationCreatedEventData
+  extends AgentLoopEventDataBase {
+  observationId: string;
+  decisionId: null;
+  action: null;
+  targetStepKey: null;
+  previousAnalysisSpecId: null;
+  proposedAnalysisSpecId: null;
+}
+
+export interface AgentDiscoverySelectionOperationSignal {
+  operationKey: string;
+  stepKey: string;
+  queryId: string;
+  provider: DiscoveryProvider;
+  queryAttemptCount: number;
+  providerAttemptCount: number;
+  queryNoNoveltyCount: number;
+  queryNovelCandidateCount: number;
+  queryDuplicateCount: number;
+  tieBreakSha256: string;
+  rank: number;
+}
+
+export interface AgentDiscoverySelectionProjection {
+  schemaVersion: "1";
+  policyVersion: "discovery-next-operation-v1";
+  workflowId: string;
+  planId: string;
+  planSha256: string;
+  discoverySpecId: string;
+  discoverySpecRevision: number;
+  discoverySpecSha256: string;
+  eligibleOperations: AgentDiscoverySelectionOperationSignal[];
+  selectedOperationKey: string;
+  selectedStepKey: string;
+  selectionSnapshotSha256: string;
+  reasonCode:
+    | "only-eligible-operation"
+    | "query-coverage-gap"
+    | "provider-coverage-gap"
+    | "lower-query-no-novelty"
+    | "higher-observed-novelty"
+    | "lower-duplicate-burden"
+    | "stable-tie-break";
+  postcondition: "queue-selected-pending-approved-operation-only";
+}
+
+export interface AgentDecisionEventData extends AgentLoopEventDataBase {
+  observationId: string;
+  decisionId: string;
+  action: AgentAction;
+  researchContextSnapshotId: string | null;
+  researchContextSnapshotSha256: string | null;
+  discoverySelection: AgentDiscoverySelectionProjection | null;
+  discoverySelectionSha256: string | null;
+}
+
+export interface AgentStepRetryRequestedEventData
+  extends AgentLoopEventDataBase {
+  observationId: string;
+  decisionId: string;
+  action: "retry-step";
+  taskId: string;
+  targetStepKey: string;
+  previousAnalysisSpecId: null;
+  proposedAnalysisSpecId: null;
+}
+
+export interface AgentAnalysisSpecRevisionEventData
+  extends AgentLoopEventDataBase {
+  observationId: string;
+  decisionId: string;
+  action: "revise-analysis-spec";
+  previousAnalysisSpecId: string;
+  proposedAnalysisSpecId: string;
+}
+
+export interface AgentLoopLimitReachedEventData
+  extends AgentLoopEventDataBase {
+  action: "stop";
+  targetStepKey: null;
+  limitName: AgentLoopLimitName;
+}
+
+export interface AgentStoppedEventData extends AgentLoopEventDataBase {
+  observationId: string;
+  decisionId: string;
+  action: "stop";
+  targetStepKey: null;
+}
+
 export type WorkflowEventData =
   | WorkflowCreatedEventData
   | WorkflowRemoteDataApprovalEventData
@@ -1189,7 +1958,22 @@ export type WorkflowEventData =
   | AnalysisRunEventData
   | AnalysisRunProgressEventData
   | AnalysisArtifactCreatedEventData
-  | DatasetReviewWarningsAcceptedEventData;
+  | DatasetReviewWarningsAcceptedEventData
+  | AgentRunCreatedEventData
+  | IntentDecisionEventData
+  | AnalysisMethodSelectionStartedEventData
+  | AnalysisClarificationRequestedEventData
+  | AnalysisSpecEventData
+  | AnalysisCompiledEventData
+  | AnalysisStructuredResultEventData
+  | AnalysisUnsupportedEventData
+  | InteractionEventData
+  | AgentObservationCreatedEventData
+  | AgentDecisionEventData
+  | AgentStepRetryRequestedEventData
+  | AgentAnalysisSpecRevisionEventData
+  | AgentLoopLimitReachedEventData
+  | AgentStoppedEventData;
 
 interface WorkflowEventEnvelope<Type extends string, Data extends WorkflowEventData> {
   id: string;
@@ -1202,6 +1986,74 @@ interface WorkflowEventEnvelope<Type extends string, Data extends WorkflowEventD
 }
 
 export type WorkflowEvent =
+  | WorkflowEventEnvelope<
+      "agent.observation-created",
+      AgentObservationCreatedEventData
+    >
+  | WorkflowEventEnvelope<
+      | "agent.decision-proposed"
+      | "agent.decision-approved"
+      | "agent.decision-rejected"
+      | "agent.decision-applied",
+      AgentDecisionEventData
+    >
+  | WorkflowEventEnvelope<
+      "agent.step-retry-requested",
+      AgentStepRetryRequestedEventData
+    >
+  | WorkflowEventEnvelope<
+      | "agent.analysis-spec-revision-proposed"
+      | "agent.analysis-spec-revision-approved",
+      AgentAnalysisSpecRevisionEventData
+    >
+  | WorkflowEventEnvelope<
+      "agent.loop-limit-reached",
+      AgentLoopLimitReachedEventData
+    >
+  | WorkflowEventEnvelope<"agent.stopped", AgentStoppedEventData>
+  | WorkflowEventEnvelope<"agent-run.created", AgentRunCreatedEventData>
+  | WorkflowEventEnvelope<
+      "intent.decision-recorded",
+      IntentDecisionEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.method-selection-started",
+      AnalysisMethodSelectionStartedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.clarification-requested",
+      AnalysisClarificationRequestedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.spec-created" | "analysis.spec-superseded" | "analysis.spec-approved",
+      AnalysisSpecEventData
+    >
+  | WorkflowEventEnvelope<"analysis.compiled", AnalysisCompiledEventData>
+  | WorkflowEventEnvelope<
+      "analysis.execution-approval-requested",
+      AnalysisApprovalEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.execution-started",
+      AnalysisRunStartedEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.structured-result-created",
+      AnalysisStructuredResultEventData
+    >
+  | WorkflowEventEnvelope<
+      "analysis.review-completed",
+      WorkflowReviewEventData
+    >
+  | WorkflowEventEnvelope<"analysis.unsupported", AnalysisUnsupportedEventData>
+  | WorkflowEventEnvelope<
+      "interaction.requested",
+      InteractionRequestedEventData
+    >
+  | WorkflowEventEnvelope<
+      "interaction.answered",
+      InteractionAnsweredEventData
+    >
   | WorkflowEventEnvelope<"workflow.created", WorkflowCreatedEventData>
   | WorkflowEventEnvelope<
       "remote-data.approved",
@@ -1277,6 +2129,8 @@ export interface ResearchProject {
   projectPath: string;
   researchDomain: string | null;
   executionMode: "safe" | "trusted-local";
+  rowVersion: number;
+  archivedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1294,7 +2148,719 @@ export interface ResearchSource {
   ingestionStatus: "pending" | "processing" | "ready" | "failed";
   contentHash: string;
   pageCount: number | null;
+  pageManifestHash?: string | null;
+  discoveryLineage?: DiscoverySourceLineage | null;
   createdAt: string;
+}
+
+export interface DiscoverySourceLineage {
+  schemaVersion: "1";
+  workflowId: string;
+  candidateId: string;
+  candidateSha256: string;
+  occurrenceInvocationId: string;
+  queryId: string;
+  provider: DiscoveryProvider;
+  rawItemSha256: string;
+  sourceContentHash: string;
+}
+
+export interface AttachDiscoveryCandidatePdfInput {
+  workflowId: string;
+  candidateId: string;
+  candidateSha256: string;
+  occurrenceInvocationId: string;
+  confirmIdentityMismatch?: boolean;
+}
+
+/**
+ * Public paper-discovery output is deliberately separate from ResearchSource.
+ * It is provider metadata only: it has not been imported, screened, or
+ * verified against a local full text.
+ */
+export type RemoteDiscoveryProvider = "arxiv" | "crossref" | "openalex" | "pubmed";
+export type DiscoveryProvider = RemoteDiscoveryProvider;
+export type DiscoveryCandidateProvider = DiscoveryProvider | "csl-json-file";
+export type DiscoverySort = "relevance" | "newest";
+export type DiscoveryOperationStatus =
+  | "not-started"
+  | "prepared"
+  | "pending"
+  | "succeeded"
+  | "failed"
+  | "outcome-unknown"
+  | "cancelled";
+export type DiscoveryRetryClassification =
+  | "safe-to-retry"
+  | "never-retry"
+  | "manual-review";
+
+export interface DiscoveryQueryScope {
+  id: string;
+  query: string;
+  providers: DiscoveryProvider[];
+  yearFrom: number | null;
+  yearTo: number | null;
+  sort: DiscoverySort;
+  maxResultsPerProvider: number;
+}
+
+export interface DiscoveryStopPolicy {
+  minUniqueCandidates: number;
+  maxAttempts: number;
+  maxConsecutiveNoNovelty: number;
+}
+
+export interface DiscoveryExactScope {
+  schemaVersion: "1";
+  question: string;
+  queries: DiscoveryQueryScope[];
+  stopPolicy: DiscoveryStopPolicy;
+  downloadOpenAccessPdfs: false;
+  maxPdfDownloads: 0;
+}
+
+/** Public Crossref metadata query. */
+export interface CreateCrossrefDiscoveryQueryInput {
+  id: string;
+  query: string;
+  providers: ["crossref"];
+  yearFrom: number | null;
+  yearTo: number | null;
+  sort: DiscoverySort;
+  maxResultsPerProvider: number;
+}
+
+/** Narrow OpenAlex metadata query accepted by the discovery backend. */
+export interface CreateOpenAlexDiscoveryQueryInput {
+  id: string;
+  query: string;
+  providers: ["openalex"];
+  yearFrom: null;
+  yearTo: null;
+  sort: "relevance";
+  maxResultsPerProvider: number;
+}
+
+export interface CreateCrossrefOpenAlexDiscoveryQueryInput {
+  id: string;
+  query: string;
+  providers: ["crossref", "openalex"];
+  yearFrom: null;
+  yearTo: null;
+  sort: "relevance";
+  maxResultsPerProvider: number;
+}
+
+export type CreateDiscoveryQueryInput =
+  | CreateCrossrefDiscoveryQueryInput
+  | CreateOpenAlexDiscoveryQueryInput
+  | CreateCrossrefOpenAlexDiscoveryQueryInput;
+
+export interface CreateDiscoveryRunInput {
+  goal: string;
+  discoverySpec: {
+    schemaVersion: "1";
+    question: string;
+    queries: [CreateDiscoveryQueryInput, ...CreateDiscoveryQueryInput[]];
+    stopPolicy: DiscoveryStopPolicy;
+    downloadOpenAccessPdfs: false;
+    maxPdfDownloads: 0;
+  };
+}
+
+export interface DiscoveryOperationProgress {
+  operationKey: string;
+  queryId: string;
+  provider: DiscoveryProvider;
+  status: DiscoveryOperationStatus;
+  attempt: number | null;
+  invocationId: string | null;
+  returnedCount: number;
+  novelCandidateCount: number;
+  duplicateCount: number;
+  candidateSetSha256: string | null;
+  errorCode: string | null;
+  retryClassification: DiscoveryRetryClassification | null;
+  createdAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface DiscoverySummary {
+  totalOperations: number;
+  notStartedOperations: number;
+  inProgressOperations: number;
+  succeededOperations: number;
+  failedOperations: number;
+  outcomeUnknownOperations: number;
+  cancelledOperations: number;
+  returnedCount: number;
+  novelCandidateCount: number;
+  duplicateCount: number;
+  uniqueCandidateCount: number;
+  occurrenceCount: number;
+}
+
+export interface DiscoveryCandidateOccurrence {
+  invocationId: string;
+  queryId: string;
+  provider: DiscoveryCandidateProvider;
+  attempt: number;
+  rank: number;
+  rawItemSha256: string;
+}
+
+export interface DiscoveryCandidate {
+  id: string;
+  provider: DiscoveryCandidateProvider;
+  providerId: string;
+  title: string;
+  authors: string[];
+  abstract: string | null;
+  publicationDate: string | null;
+  doi: string | null;
+  arxivId: string | null;
+  pmid: string | null;
+  candidateSha256: string;
+  trustClassification: "untrusted-metadata";
+  fullTextVerification: "not-verified";
+  importAvailability: "manual-pdf-required";
+  landingPageAvailability: "reported" | "not-reported";
+  openAccessPdfAvailability: "reported" | "not-reported";
+  attachmentStatus?: "manual-pdf-required" | "verified-local-source";
+  attachedSourceId?: string | null;
+  occurrences: DiscoveryCandidateOccurrence[];
+}
+
+export type CandidateTriageDecisionValue = "keep" | "reject" | "uncertain";
+
+/**
+ * A human project-scoped judgment over untrusted discovery metadata.
+ * It is not a source, screening decision, evidence record, or report input.
+ */
+export interface CandidateTriageDecision {
+  id: string;
+  projectId: string;
+  candidateId: string;
+  decision: CandidateTriageDecisionValue;
+  reason: string | null;
+  criteriaVersion: string;
+  evidenceStatus: "not-evidence";
+  rowVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpsertCandidateTriageDecisionInput {
+  decision: CandidateTriageDecisionValue;
+  reason?: string | null;
+  criteriaVersion?: string;
+  /** Zero creates the first judgment; updates require the current row version. */
+  expectedVersion: number;
+}
+
+export interface DiscoveryCandidatePage {
+  offset: number;
+  limit: number;
+  total: number;
+  hasMore: boolean;
+  items: DiscoveryCandidate[];
+}
+
+export interface CslJsonCandidateImport {
+  schemaVersion: "1";
+  projectId: string;
+  workflowId: string;
+  invocationId: string;
+  fileSha256: string;
+  parserVersion: "csl-json-file-v1";
+  importedCount: number;
+  unchangedCount: number;
+  candidateIds: string[];
+  replayed: boolean;
+}
+
+export interface DiscoveryAgentSelection {
+  decisionId: string;
+  selectedOperationKey: string;
+  selectedStepKey: string;
+  queryId: string;
+  provider: DiscoveryCandidateProvider;
+  reasonCode:
+    | "only-eligible-operation"
+    | "query-coverage-gap"
+    | "provider-coverage-gap"
+    | "lower-query-no-novelty"
+    | "higher-observed-novelty"
+    | "lower-duplicate-burden"
+    | "stable-tie-break";
+  eligibleOperationCount: number;
+  queryAttemptCount: number;
+  providerAttemptCount: number;
+  queryNoNoveltyCount: number;
+  queryNovelCandidateCount: number;
+  queryDuplicateCount: number;
+  selectionSnapshotSha256: string;
+}
+
+/** Bounded, workflow-scoped read model; it contains no URL, local path, source, or evidence. */
+export interface WorkflowDiscoverySnapshot {
+  workflowId: string;
+  projectId: string;
+  workflowStatus:
+    | "waiting-plan-approval"
+    | "running"
+    | "blocked"
+    | "failed"
+    | "cancelled"
+    | "completed";
+  /** Durable approved-policy stop; failures remain on the affected operation. */
+  stopReason:
+    | "discovery-candidate-target-reached"
+    | "discovery-no-novelty-limit"
+    | "discovery-attempt-budget-reached"
+    | null;
+  discoverySpecId: string;
+  discoverySpecRevision: number;
+  discoverySpecSha256: string;
+  discoverySpecStatus: "pending-approval" | "approved" | "rejected" | "superseded";
+  exactScope: DiscoveryExactScope;
+  operations: DiscoveryOperationProgress[];
+  summary: DiscoverySummary;
+  candidates: DiscoveryCandidatePage;
+  /** Latest applied Agent choice; null until a completed operation triggers the loop. */
+  latestAgentSelection: DiscoveryAgentSelection | null;
+}
+
+/** Structural coverage of confirmed local extraction evidence; never a scientific score. */
+export interface EvidenceCoverageSourceBreadth {
+  frozenSourceCount: number;
+  sourcesWithCoveredEvidenceCount: number;
+  sourcesWithoutCoveredEvidenceCount: number;
+  verifiedReferencedSpanCount: number;
+}
+
+export interface EvidenceCoverageFacet {
+  columnId: string;
+  name: string;
+  state: "complete" | "partial" | "unverified" | "missing";
+  sourceCount: number;
+  coveredSourceCount: number;
+  awaitingConfirmationSourceCount: number;
+  unverifiedSourceCount: number;
+  missingSourceCount: number;
+}
+
+export interface EvidenceCoverageClaimCoverage {
+  state: "not-generated" | "not-verified" | "verified-frozen";
+  totalClaimCount: number;
+  /** Structural relationship count; never a scientific support score. */
+  evidenceLinkedClaimCount: number;
+  /** Schema-v1 compatibility only. New UI must not present this as coverage. */
+  supportedClaimCount: number;
+  unresolvedQuestionCount: number;
+}
+
+export interface WorkflowEvidenceCoverage {
+  schemaVersion: "1";
+  workflowId: string;
+  projectId: string;
+  planId: string | null;
+  planVersion: number | null;
+  planSha256: string | null;
+  state: "not-ready" | "available" | "reviewed";
+  sourceSetSha256: string | null;
+  sourceBreadth: EvidenceCoverageSourceBreadth;
+  facets: EvidenceCoverageFacet[];
+  claimCoverage: EvidenceCoverageClaimCoverage;
+  contradictionAssessment: "not-assessed";
+}
+
+export type ResearchMemoryType =
+  | "user-decision"
+  | "assumption"
+  | "open-question"
+  | "failure-lesson"
+  | "operational-fact";
+export type ResearchMemoryStatus =
+  | "candidate"
+  | "committed"
+  | "rejected"
+  | "superseded"
+  | "invalidated";
+export type ResearchMemoryAction =
+  | "accept"
+  | "reject"
+  | "invalidate";
+
+export type ResearchMemoryReferenceType =
+  | "step-observation"
+  | "user-response"
+  | "source"
+  | "evidence"
+  | "artifact";
+
+export interface ResearchMemoryReference {
+  id: string;
+  sha256: string;
+  type: ResearchMemoryReferenceType;
+}
+
+export type ResearchMemoryContext =
+  | {
+      state: "selected";
+      reasonCode: "selected-in-latest-snapshot";
+      snapshotId: string;
+      snapshotSha256: string;
+    }
+  | {
+      state: "eligible";
+      reasonCode: "eligible-for-future-snapshot";
+      snapshotId: string | null;
+      snapshotSha256: string | null;
+    }
+  | {
+      state: "excluded";
+      reasonCode:
+        | "bounded-context-excluded"
+        | "candidate-excluded"
+        | "rejected-excluded"
+        | "superseded-excluded"
+        | "invalidated-excluded"
+        | "source-missing"
+        | "source-not-ready"
+        | "source-stale"
+        | "evidence-missing"
+        | "evidence-invalid";
+      snapshotId: string | null;
+      snapshotSha256: string | null;
+    };
+
+export interface ResearchMemoryRecord {
+  id: string;
+  projectId: string;
+  scopeWorkflowId: string | null;
+  subjectKey: string;
+  revision: number;
+  previousId: string | null;
+  schemaVersion: "1";
+  type: ResearchMemoryType;
+  contentJson: Record<string, unknown>;
+  sourceRefs: ResearchMemoryReference[];
+  artifactRefs: ResearchMemoryReference[];
+  invalidationRule: string | null;
+  createdBy: string;
+  memorySha256: string;
+  createdAt: string;
+  updatedAt: string;
+  status: ResearchMemoryStatus;
+}
+
+interface ResearchMemoryWorkspaceItemBase extends ResearchMemoryRecord {
+  subjectHeadId: string;
+  subjectHeadRevision: number;
+  context: ResearchMemoryContext;
+}
+
+export type ResearchMemory =
+  | (ResearchMemoryWorkspaceItemBase & {
+      status: "candidate";
+      availableActions: ["accept", "reject"];
+    })
+  | (ResearchMemoryWorkspaceItemBase & {
+      status: "committed";
+      availableActions: ["invalidate"];
+    })
+  | (ResearchMemoryWorkspaceItemBase & {
+      status: "rejected" | "superseded" | "invalidated";
+      availableActions: [];
+    });
+
+export interface ResearchMemoryWorkspaceCounts {
+  candidate: number;
+  committed: number;
+  rejected: number;
+  superseded: number;
+  invalidated: number;
+}
+
+export interface ResearchMemoryWorkspace {
+  schemaVersion: "1";
+  projectId: string;
+  workflowId: string;
+  latestContextSnapshotId: string | null;
+  latestContextSnapshotSha256: string | null;
+  counts: ResearchMemoryWorkspaceCounts;
+  items: ResearchMemory[];
+  workspaceSha256: string;
+}
+
+export interface ResolveResearchMemoryCandidateInput {
+  decision: "accept" | "reject";
+  expectedContentHash: string;
+  expectedStatus: "candidate";
+  expectedRevision: number;
+  expectedSubjectHeadId: string;
+  expectedSubjectHeadRevision: number;
+}
+
+export interface InvalidateResearchMemoryInput {
+  expectedContentHash: string;
+  expectedStatus: "committed";
+  expectedRevision: number;
+  expectedSubjectHeadId: string;
+  expectedSubjectHeadRevision: number;
+}
+
+export interface CreateEvidenceMemoryCandidateInput {
+  evidenceId: string;
+  expectedSourceContentHash: string;
+  expectedQuoteHash: string;
+}
+
+export interface VerifiedEpisode {
+  episodeId: string;
+  episodeSha256: string;
+  action: "remembered-evidence-action-v1";
+  schemaVersion: "1";
+}
+
+export type CreateEvidenceMemoryCandidateResult = {
+  outcome:
+    | "candidate-created"
+    | "candidate-reopened"
+    | "already-remembered";
+  memory: ResearchMemoryRecord;
+  verifiedEpisode: VerifiedEpisode;
+};
+
+export type SkillReplayName =
+  | "happy"
+  | "malformed"
+  | "tool-failure"
+  | "permission-denial"
+  | "prompt-injection"
+  | "restart-recovery";
+
+export interface SkillReplayResult {
+  name: SkillReplayName;
+  fixtureSha256: string;
+  outcome: string;
+  passed: boolean;
+  postconditionSha256: string;
+  resultSha256: string;
+}
+
+export interface SkillCandidate {
+  id: string;
+  projectId: string;
+  workflowId: string;
+  schemaVersion: "1";
+  name: "remember-verified-evidence";
+  description: string;
+  scope: "project";
+  triggerJson: Record<string, unknown>;
+  inputsJson: Record<string, unknown>;
+  preconditionsJson: Array<Record<string, unknown>>;
+  allowedToolsJson: ["spark.research_memory.remember_verified_evidence@1"];
+  requiredPermissionsJson: ["project-memory:candidate-write"];
+  procedureJson: Array<Record<string, unknown>>;
+  postconditionsJson: Array<Record<string, unknown>>;
+  failurePolicyJson: Record<string, unknown>;
+  provenanceRequirementsJson: string[];
+  originTraceIds: [string];
+  sanitizedSourceHash: string;
+  parentSkillId: null;
+  version: number;
+  contentHash: string;
+  status: "failed-validation" | "awaiting-approval";
+  generatedSkillMd: string;
+  evaluationJson: {
+    schemaVersion: "1";
+    runner: "isolated-sqlite-capability-replay-v1";
+    results: SkillReplayResult[];
+    passed: boolean;
+  };
+  createdAt: string;
+}
+
+export interface CreateSkillCandidateInput {
+  memoryId: string;
+  expectedMemoryContentHash: string;
+  episodeId?: string;
+  expectedEpisodeSha256?: string;
+}
+
+export interface CreateSkillCandidateResult {
+  outcome: "candidate-created" | "already-exists";
+  candidate: SkillCandidate;
+}
+
+export type SkillActivationStatus =
+  | "installing"
+  | "active"
+  | "rollback-pending"
+  | "rolled-back"
+  | "blocked";
+
+export interface SkillActivation {
+  id: string;
+  projectId: string;
+  workflowId: string;
+  candidateId: string;
+  schemaVersion: "1";
+  targetRelativePath: ".opencode/skills/remember-verified-evidence/SKILL.md";
+  candidateContentHash: string;
+  templateSha256: string;
+  evaluationSha256: string;
+  approvalSha256: string;
+  priorPresent: boolean;
+  priorSha256: string | null;
+  installedSha256: string;
+  createdDirectory: boolean;
+  status: SkillActivationStatus;
+  createdAt: string;
+  updatedAt: string;
+  activatedAt: string | null;
+  rolledBackAt: string | null;
+}
+
+export interface SkillActivationPreview {
+  schemaVersion: "1";
+  projectId: string;
+  workflowId: string;
+  candidateId: string;
+  expectedStatus: "awaiting-approval";
+  targetRelativePath: ".opencode/skills/remember-verified-evidence/SKILL.md";
+  candidateContentHash: string;
+  templateSha256: string;
+  evaluationSha256: string;
+  approvalSha256: string;
+  priorPresent: boolean;
+  priorSha256: string | null;
+  targetDirectoryPresent: boolean;
+  latestActivation: SkillActivation | null;
+}
+
+export interface ApproveSkillActivationInput {
+  expectedStatus: "awaiting-approval";
+  expectedCandidateContentHash: string;
+  expectedTemplateSha256: string;
+  expectedEvaluationSha256: string;
+  expectedApprovalSha256: string;
+  expectedPriorPresent: boolean;
+  expectedPriorSha256: string | null;
+  expectedTargetDirectoryPresent: boolean;
+}
+
+export interface RollbackSkillActivationInput {
+  expectedStatus: "active";
+  expectedActivationId: string;
+  expectedApprovalSha256: string;
+  expectedInstalledSha256: string;
+  expectedCurrentTargetSha256: string;
+}
+
+export interface InvokeActiveRememberEvidenceResult {
+  memoryCandidateId: string;
+  memoryContentHash: string;
+  revision: number;
+  episodeId: string;
+  episodeHash: string;
+  outcome:
+    | "candidate-created"
+    | "candidate-reopened"
+    | "already-remembered";
+}
+
+export type ScreeningDecisionValue = "include" | "exclude";
+
+export interface ScreeningDecision {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  decision: ScreeningDecisionValue;
+  reason: string | null;
+  criteriaVersion: string;
+  rowVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpsertScreeningDecisionInput {
+  decision: ScreeningDecisionValue;
+  reason?: string | null;
+  criteriaVersion?: string;
+  /** Zero creates the first decision; updates require the current row version. */
+  expectedVersion: number;
+}
+
+export type EvidenceDirectionValue = "supporting" | "mixed" | "insufficient";
+
+/**
+ * A human-confirmed direction judgment for one source in one persisted answer.
+ * It is deliberately separate from model-generated claim relationships.
+ */
+export interface EvidenceDirectionJudgment {
+  id: string;
+  projectId: string;
+  answerId: string;
+  sourceId: string;
+  direction: EvidenceDirectionValue;
+  rowVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface UpsertEvidenceDirectionJudgmentInput {
+  direction: EvidenceDirectionValue;
+  /** Zero creates the first judgment; updates require the current row version. */
+  expectedVersion: number;
+}
+
+export type ExtractionCellReviewStatus = "unreviewed" | "confirmed";
+
+export interface ExtractionColumn {
+  id: string;
+  projectId: string;
+  name: string;
+  instructions: string | null;
+  orderIndex: number;
+  rowVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExtractionCell {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  columnId: string;
+  value: string;
+  /** Human review only; this is deliberately independent from EvidenceSpan.verified. */
+  reviewStatus: ExtractionCellReviewStatus;
+  evidenceIds: string[];
+  rowVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExtractionMatrix {
+  columns: ExtractionColumn[];
+  cells: ExtractionCell[];
+}
+
+export interface CreateExtractionColumnInput {
+  name: string;
+  instructions?: string | null;
+}
+
+export interface UpsertExtractionCellInput {
+  value: string;
+  reviewStatus?: ExtractionCellReviewStatus;
+  evidenceIds?: string[];
+  /** Zero creates the first cell; updates require the current row version. */
+  expectedVersion: number;
 }
 
 export interface EvidenceBoundingBox {
@@ -1316,6 +2882,13 @@ export interface EvidenceSpan {
   extractionMethod: string;
   confidence: number;
   verified: boolean;
+}
+
+export interface CreateExactEvidenceSpanInput {
+  pageIndex: number;
+  quoteText: string;
+  expectedSourceContentHash: string;
+  expectedPageManifestHash: string;
 }
 
 export interface ResearchClaim {
@@ -1428,6 +3001,276 @@ export interface DatasetProfile {
   warnings: DatasetInspectionWarning[];
 }
 
+/** JSON contract mirrored from science-core analysis_spec/schemas.py. */
+export type DescriptiveStatistic =
+  | "count"
+  | "missing"
+  | "mean"
+  | "std"
+  | "median"
+  | "min"
+  | "max"
+  | "q1"
+  | "q3"
+  | "iqr"
+  | "unique"
+  | "frequency";
+
+export interface DescriptiveOperation {
+  type: "descriptive";
+  columns: string[];
+  statistics: DescriptiveStatistic[];
+  plot: "none" | "histogram" | "bar";
+}
+
+interface TwoGroupComparisonOperationBase {
+  type: "two-group-comparison";
+  outcomeColumn: string;
+  groupColumn: string;
+  groups: [string, string];
+  checkAssumptions: boolean;
+  plot: "boxplot" | "violin" | "none";
+}
+
+/** Method/effect-size pairs rejected by science-core are also unrepresentable here. */
+export type TwoGroupComparisonOperation =
+  | (TwoGroupComparisonOperationBase & {
+      method: "auto";
+      effectSize: "hedges-g" | "rank-biserial";
+    })
+  | (TwoGroupComparisonOperationBase & {
+      method: "welch-t-test";
+      effectSize: "hedges-g";
+    })
+  | (TwoGroupComparisonOperationBase & {
+      method: "mann-whitney-u";
+      effectSize: "rank-biserial";
+    });
+
+export interface CorrelationOperation {
+  type: "correlation";
+  xColumn: string;
+  yColumn: string;
+  method: "auto" | "pearson" | "spearman";
+  confidenceInterval: boolean;
+  plot: "scatter" | "none";
+}
+
+export type AnalysisOperation =
+  | DescriptiveOperation
+  | TwoGroupComparisonOperation
+  | CorrelationOperation;
+
+interface AnalysisSpecBase {
+  schemaVersion: "1";
+  objective: string;
+  datasetSourceId: string;
+  datasetContentHash: string;
+  datasetProfileHash: string;
+  missingValuePolicy: "drop-per-operation" | "report-only";
+  confidenceLevel: number;
+  randomSeed: number;
+  assumptions: string[];
+  limitations: string[];
+}
+
+export type AnalysisSpec =
+  | (AnalysisSpecBase & { operation: DescriptiveOperation })
+  | (AnalysisSpecBase & { operation: TwoGroupComparisonOperation })
+  | (AnalysisSpecBase & { operation: CorrelationOperation });
+
+/** Durable, revisioned method selection bound to the approved workflow plan. */
+export interface WorkflowAnalysisSpec {
+  id: string;
+  revision: number;
+  status: "pending-approval" | "approved" | "superseded" | "rejected";
+  selectorKind: "local-deterministic" | "remote-model-assisted";
+  selectorReason: string;
+  promptVersion: string | null;
+  specSha256: string;
+  datasetProfileSha256: string;
+  spec: AnalysisSpec;
+  createdAt: string;
+}
+
+export type ScientificClarificationType =
+  | "outcome-column"
+  | "group-column"
+  | "group-values"
+  | "x-column"
+  | "y-column"
+  | "analysis-objective"
+  | "method-confirmation"
+  | "independence-assumption"
+  | "missing-value-policy";
+
+export interface ScientificClarificationOption {
+  value: string;
+  label: string;
+  description: string | null;
+}
+
+export interface ScientificClarification {
+  type: ScientificClarificationType;
+  question: string;
+  options: ScientificClarificationOption[];
+}
+
+export interface ScientificClarificationProposal {
+  reason: string;
+  requests: ScientificClarification[];
+}
+
+export interface UnsupportedAnalysis {
+  capability: string;
+  explanation: string;
+  supportedAlternatives: Array<
+    "descriptive" | "two-group-comparison" | "correlation"
+  >;
+}
+
+export interface CompiledAnalysis {
+  compilerVersion: string;
+  specSha256: string;
+  code: string;
+  codeSha256: string;
+  expectedOutputs: string[];
+  runtimePolicyId: string;
+}
+
+export interface AnalysisSampleSummary {
+  totalRows: number;
+  analyzedRows: number;
+  missingRows: number;
+}
+
+export interface DescriptiveColumnResult {
+  column: string;
+  sampleSize: number;
+  missingCount: number;
+  statistics: Record<string, number | string | null>;
+}
+
+export interface DescriptiveAnalysisResult {
+  type: "descriptive";
+  columns: DescriptiveColumnResult[];
+}
+
+export interface TwoGroupComparisonResult {
+  type: "two-group-comparison";
+  groupColumn: string;
+  outcomeColumn: string;
+  groups: [string, string];
+  sampleSizes: Record<string, number>;
+  missingCounts: Record<string, number>;
+  descriptiveStatistics: Record<string, Record<string, number | null>>;
+  testStatistic: number;
+  pValue: number;
+  effectSizeName: "hedges-g" | "rank-biserial";
+  effectSize: number;
+  confidenceInterval: [number, number];
+}
+
+export interface CorrelationAnalysisResult {
+  type: "correlation";
+  xColumn: string;
+  yColumn: string;
+  sampleSize: number;
+  missingPairs: number;
+  correlation: number;
+  pValue: number;
+  confidenceInterval: [number, number] | null;
+}
+
+export type OperationResult =
+  | DescriptiveAnalysisResult
+  | TwoGroupComparisonResult
+  | CorrelationAnalysisResult;
+
+export type RequestedMethod =
+  | "descriptive"
+  | "auto"
+  | "welch-t-test"
+  | "mann-whitney-u"
+  | "pearson"
+  | "spearman";
+
+export type ResolvedMethod =
+  | "descriptive"
+  | "welch-t-test"
+  | "mann-whitney-u"
+  | "pearson"
+  | "spearman";
+
+interface StructuredAnalysisResultBase {
+  schemaVersion: "1";
+  objective: string;
+  datasetSourceId: string;
+  datasetContentHash: string;
+  datasetProfileHash: string;
+  methodSelectionReason: string;
+  sampleSummary: AnalysisSampleSummary;
+  warnings: string[];
+  limitations: string[];
+}
+
+type DescriptiveStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "descriptive";
+  requestedMethod: "descriptive";
+  resolvedMethod: "descriptive";
+  result: DescriptiveAnalysisResult;
+};
+
+type WelchStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "two-group-comparison";
+  requestedMethod: "auto" | "welch-t-test";
+  resolvedMethod: "welch-t-test";
+  result: TwoGroupComparisonResult & { effectSizeName: "hedges-g" };
+};
+
+type MannWhitneyStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "two-group-comparison";
+  requestedMethod: "auto" | "mann-whitney-u";
+  resolvedMethod: "mann-whitney-u";
+  result: TwoGroupComparisonResult & { effectSizeName: "rank-biserial" };
+};
+
+type PearsonStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "correlation";
+  requestedMethod: "auto" | "pearson";
+  resolvedMethod: "pearson";
+  result: CorrelationAnalysisResult;
+};
+
+type SpearmanStructuredAnalysisResult = StructuredAnalysisResultBase & {
+  operationType: "correlation";
+  requestedMethod: "auto" | "spearman";
+  resolvedMethod: "spearman";
+  result: CorrelationAnalysisResult;
+};
+
+/**
+ * JSON result union mirrored from analysis_spec/results.py, including its
+ * method/result compatibility validation.
+ */
+export type StructuredAnalysisResult =
+  | DescriptiveStructuredAnalysisResult
+  | WelchStructuredAnalysisResult
+  | MannWhitneyStructuredAnalysisResult
+  | PearsonStructuredAnalysisResult
+  | SpearmanStructuredAnalysisResult;
+
+/** Persisted structured result and the exact Spec/Intent/Run lineage it attests. */
+export interface WorkflowStructuredAnalysisResult {
+  id: string;
+  analysisSpecId: string;
+  analysisIntentId: string;
+  runId: string;
+  resultSha256: string;
+  result: StructuredAnalysisResult;
+  createdAt: string;
+}
+
 export type AnalysisIntentStatus =
   | "waiting-approval"
   | "approved"
@@ -1456,6 +3299,13 @@ export interface AnalysisIntent {
   expectedOutputs?: DatasetAnalysisExpectedOutput[] | null;
   timeoutSeconds?: number | null;
   repairAttempt?: 0 | 1 | 2 | null;
+  /** All six fields are present together for compiler-produced AnalysisSpec intents. */
+  analysisSpecId?: string | null;
+  specSha256?: string | null;
+  datasetProfileSha256?: string | null;
+  compilerVersion?: string | null;
+  codeSha256?: string | null;
+  runtimePolicyId?: string | null;
   errorSummary?: AnalysisErrorSummary | null;
   codeDiff?: string | null;
   createdAt: string;
@@ -1523,8 +3373,31 @@ interface InitialWorkflowAnalysisIntentLineage {
   codeDiff: null;
 }
 
+interface LegacyWorkflowAnalysisIntentProvenance {
+  analysisSpecId?: null;
+  specSha256?: null;
+  datasetProfileSha256?: null;
+  compilerVersion?: null;
+  codeSha256?: null;
+  runtimePolicyId?: null;
+}
+
+interface CompiledWorkflowAnalysisIntentProvenance {
+  analysisSpecId: string;
+  specSha256: string;
+  datasetProfileSha256: string;
+  compilerVersion: string;
+  codeSha256: string;
+  runtimePolicyId: string;
+}
+
+type WorkflowAnalysisIntentProvenance =
+  | LegacyWorkflowAnalysisIntentProvenance
+  | CompiledWorkflowAnalysisIntentProvenance;
+
 export type InitialWorkflowAnalysisIntent = WorkflowAnalysisIntentBase &
   InitialWorkflowAnalysisIntentLineage &
+  WorkflowAnalysisIntentProvenance &
   (
     | (NonFailedWorkflowAnalysisIntentLifecycle & { errorSummary: null })
     | (FailedWorkflowAnalysisIntentLifecycle & {
@@ -1541,6 +3414,7 @@ interface RepairWorkflowAnalysisIntentLineage {
 
 export type RepairWorkflowAnalysisIntent = WorkflowAnalysisIntentBase &
   RepairWorkflowAnalysisIntentLineage &
+  LegacyWorkflowAnalysisIntentProvenance &
   WorkflowAnalysisIntentLifecycle;
 
 /** Fully bound AnalysisIntent created by a dataset workflow step. */
@@ -1670,6 +3544,10 @@ export interface DatasetAnalysisReviewResult {
   runId: string;
   analysisIntentId: string;
   inputDatasetContentHash: string;
+  /** Compiled reviewer conclusion and lineage; all null for legacy fixed analyses. */
+  conclusion?: string | null;
+  analysisSpecId?: string | null;
+  structuredResultSha256?: string | null;
 }
 
 interface DatasetAnalysisReviewBase<

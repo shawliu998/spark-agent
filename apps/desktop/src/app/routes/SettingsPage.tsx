@@ -37,9 +37,13 @@ import {
   type JupyterStatus,
   type PythonInterpreter,
   getProxySetting,
+  saveScienceModelConfig,
+  scienceModelConfig,
+  type ScienceModelConfigStatus,
   type ProxyMode,
   type ProxySetting,
 } from "@/lib/tauri";
+import { retryScienceCoreRuntime } from "@/lib/scienceCore";
 import { useSetupStore } from "@/lib/setup";
 import { RemoteComputeCard } from "@/components/settings/RemoteComputeCard";
 import { ModalCard } from "@/components/settings/ModalCard";
@@ -48,10 +52,15 @@ import { SCIENCE_CONNECTORS } from "@/lib/scienceConnectors";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/cn";
 import { RUNTIME_POLICY } from "@/lib/runtimePolicy";
+import {
+  RESEARCH_MODEL_PROVIDERS,
+  researchModelProvider,
+  type ResearchModelProtocol,
+} from "@/lib/researchModelProviders";
 
 /**
- * Settings. ONE configuration surface: everything talks to the bundled
- * OpenCode's own config/auth API — no separate "model key" concept.
+ * Settings. OpenCode provider credentials remain owned by OpenCode; the
+ * Research model connection is separately owned by packaged Science Core.
  */
 export function SettingsPage() {
   const theme = useUiStore((s) => s.theme);
@@ -70,6 +79,7 @@ export function SettingsPage() {
   const connect = useRuntimeStore((s) => s.connect);
   const disconnect = useRuntimeStore((s) => s.disconnect);
   const defaultModel = useRuntimeStore((s) => s.defaultModel);
+  const catalogLoading = useRuntimeStore((s) => s.catalogLoading);
   const loadCatalog = useRuntimeStore((s) => s.loadCatalog);
   const removeConfigEntry = useRuntimeStore((s) => s.removeConfigEntry);
   const importOpenCodeLogin = useRuntimeStore((s) => s.importOpenCodeLogin);
@@ -116,6 +126,15 @@ export function SettingsPage() {
   const [savingPy, setSavingPy] = useState(false);
   // API keys typed for key-requiring connectors, keyed by connector id.
   const [connectorKeys, setConnectorKeys] = useState<Record<string, string>>({});
+  const [researchModel, setResearchModel] = useState<ScienceModelConfigStatus | null>(null);
+  const [researchProviderId, setResearchProviderId] = useState("openai");
+  const [researchProtocol, setResearchProtocol] =
+    useState<ResearchModelProtocol>("openai-compatible");
+  const [researchEndpoint, setResearchEndpoint] = useState("");
+  const [researchModelName, setResearchModelName] = useState("");
+  const [researchEmbeddingModel, setResearchEmbeddingModel] = useState("");
+  const [researchApiKey, setResearchApiKey] = useState("");
+  const [researchModelBusy, setResearchModelBusy] = useState(false);
 
   // Add-MCP-server form.
   const [mName, setMName] = useState("");
@@ -264,6 +283,66 @@ export function SettingsPage() {
     });
   }, []);
   useEffect(refreshProxy, [refreshProxy]);
+
+  useEffect(() => {
+    if (!isTauri) return;
+    void scienceModelConfig()
+      .then((config) => {
+        if (!config) return;
+        setResearchModel(config);
+        setResearchProviderId(config.providerId);
+        setResearchProtocol(config.protocol);
+        setResearchEndpoint(config.apiBase);
+        setResearchModelName(config.llmModel);
+        setResearchEmbeddingModel(config.embeddingModel);
+      })
+      .catch(() => {
+        toast.error(t("researchModel.readFailed"));
+      });
+  }, [t]);
+
+  const selectedResearchProvider = researchModelProvider(researchProviderId);
+  const existingResearchCredentialMatches =
+    Boolean(researchModel?.credentialStored) &&
+    researchModel?.apiBase === researchEndpoint &&
+    researchModel?.providerId === researchProviderId;
+  const researchCredentialReady =
+    !selectedResearchProvider.requiresApiKey ||
+    Boolean(researchApiKey.trim()) ||
+    existingResearchCredentialMatches;
+
+  const selectResearchProvider = (providerId: string) => {
+    const provider = researchModelProvider(providerId);
+    setResearchProviderId(provider.id);
+    setResearchProtocol(provider.protocol);
+    setResearchEndpoint(provider.apiBase);
+    setResearchModelName(provider.modelSuggestions[0] ?? "");
+    setResearchEmbeddingModel(provider.defaultEmbeddingModel);
+    setResearchApiKey("");
+  };
+
+  const saveResearchModel = async (clearCredential = false) => {
+    setResearchModelBusy(true);
+    try {
+      const saved = await saveScienceModelConfig({
+        providerId: researchProviderId,
+        protocol: researchProtocol,
+        apiBase: researchEndpoint,
+        llmModel: researchModelName,
+        embeddingModel: researchEmbeddingModel,
+        apiKey: researchApiKey.trim() || undefined,
+        clearCredential,
+      });
+      if (saved) setResearchModel(saved);
+      setResearchApiKey("");
+      await retryScienceCoreRuntime();
+      toast.success(t("researchModel.saved"));
+    } catch {
+      toast.error(t("researchModel.saveFailed"));
+    } finally {
+      setResearchModelBusy(false);
+    }
+  };
 
   const applyProxy = (mode: ProxyMode, url: string) =>
     run(t("toast.couldNotSetProxy"), async () => {
@@ -630,10 +709,194 @@ export function SettingsPage() {
           )}
         </Card>
 
+        <Card
+          title={t("researchModel.title")}
+          hint={t("researchModel.hint")}
+        >
+          {!isTauri ? (
+            <p className="text-[13px] text-muted">
+              {t("researchModel.desktopOnly")}
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs text-muted">
+                    {t("researchModel.provider")}
+                  </span>
+                  <div className="relative">
+                    <select
+                      value={researchProviderId}
+                      onChange={(event) => selectResearchProvider(event.target.value)}
+                      className={inputCls("w-full appearance-none pr-9")}
+                    >
+                      {RESEARCH_MODEL_PROVIDERS.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.name}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      aria-hidden
+                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+                    />
+                  </div>
+                </label>
+                {researchProviderId === "custom" ? (
+                  <label className="block">
+                    <span className="mb-1 block text-xs text-muted">
+                      {t("researchModel.protocol")}
+                    </span>
+                    <div className="relative">
+                      <select
+                        value={researchProtocol}
+                        onChange={(event) =>
+                          setResearchProtocol(event.target.value as ResearchModelProtocol)
+                        }
+                        className={inputCls("w-full appearance-none pr-9")}
+                      >
+                        <option value="openai-compatible">
+                          {t("researchModel.openaiCompatible")}
+                        </option>
+                        <option value="anthropic">{t("researchModel.anthropicNative")}</option>
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        aria-hidden
+                        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-muted"
+                      />
+                    </div>
+                  </label>
+                ) : (
+                  <div>
+                    <span className="mb-1 block text-xs text-muted">
+                      {t("researchModel.protocol")}
+                    </span>
+                    <div className={inputCls("flex w-full items-center text-[13px] text-muted")}>
+                      {researchProtocol === "anthropic"
+                        ? t("researchModel.anthropicNative")
+                        : t("researchModel.openaiCompatible")}
+                    </div>
+                  </div>
+                )}
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs text-muted">{t("researchModel.endpoint")}</span>
+                <input
+                  value={researchEndpoint}
+                  onChange={(event) => setResearchEndpoint(event.target.value)}
+                  placeholder={t("researchModel.endpointPlaceholder")}
+                  autoComplete="url"
+                  spellCheck={false}
+                  className={inputCls("w-full font-mono")}
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs text-muted">{t("researchModel.model")}</span>
+                  <input
+                    list="research-model-suggestions"
+                    value={researchModelName}
+                    onChange={(event) => setResearchModelName(event.target.value)}
+                    placeholder={t("researchModel.modelPlaceholder")}
+                    spellCheck={false}
+                    className={inputCls("w-full font-mono")}
+                  />
+                  <datalist id="research-model-suggestions">
+                    {selectedResearchProvider.modelSuggestions.map((model) => (
+                      <option key={model} value={model} />
+                    ))}
+                  </datalist>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs text-muted">
+                    {t("researchModel.embedding")} {" "}
+                    <span className="opacity-70">({t("researchModel.optional")})</span>
+                  </span>
+                  <input
+                    value={researchEmbeddingModel}
+                    onChange={(event) => setResearchEmbeddingModel(event.target.value)}
+                    placeholder={t("researchModel.embeddingPlaceholder")}
+                    spellCheck={false}
+                    className={inputCls("w-full font-mono")}
+                  />
+                </label>
+              </div>
+              {selectedResearchProvider.embeddingSupport === "not-available" && (
+                <p className="rounded-lg border border-border bg-subtle px-3 py-2 text-xs leading-relaxed text-muted">
+                  {t("researchModel.embeddingUnavailable")}
+                </p>
+              )}
+              <label className="block">
+                <span className="mb-1 block text-xs text-muted">
+                  {t("researchModel.apiKey")}{" "}
+                  {!selectedResearchProvider.requiresApiKey && (
+                    <span className="opacity-70">({t("researchModel.optional")})</span>
+                  )}
+                </span>
+                <input
+                  type="password"
+                  value={researchApiKey}
+                  onChange={(event) => setResearchApiKey(event.target.value)}
+                  placeholder={
+                    existingResearchCredentialMatches
+                      ? t("researchModel.keyStoredPlaceholder")
+                      : selectedResearchProvider.requiresApiKey
+                        ? t("researchModel.keyPlaceholder")
+                        : t("researchModel.keyOptionalPlaceholder")
+                  }
+                  autoComplete="new-password"
+                  className={inputCls("w-full font-mono")}
+                />
+              </label>
+              <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+                <p className="text-xs text-muted" role="status" aria-live="polite">
+                  {!selectedResearchProvider.requiresApiKey
+                    ? t("researchModel.credentialNotRequired")
+                    : existingResearchCredentialMatches
+                      ? t("researchModel.credentialStored")
+                      : t("researchModel.credentialMissing")}
+                </p>
+                <div className="flex shrink-0 items-center gap-2">
+                  {existingResearchCredentialMatches && (
+                    <button
+                      type="button"
+                      className={btnGhost()}
+                      disabled={researchModelBusy}
+                      onClick={() => void saveResearchModel(true)}
+                    >
+                      {t("researchModel.removeKey")}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={btnAccent()}
+                    disabled={
+                      researchModelBusy ||
+                      !researchEndpoint.trim() ||
+                      !researchModelName.trim() ||
+                      !researchCredentialReady
+                    }
+                    onClick={() => void saveResearchModel(false)}
+                  >
+                    {researchModelBusy ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                    {t("common:actions.save")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </Card>
+
         {/* ---- Models & providers ---- */}
         <Card title={t("model.title")} hint={t("model.hint")}>
           {!connected ? (
             <p className="text-[13px] text-muted">{t("model.connectPrompt")}</p>
+          ) : catalogLoading ? (
+            <p className="text-[13px] text-muted" role="status" aria-live="polite">
+              {t("model.loading")}
+            </p>
           ) : (
             <>
               <div className="relative">

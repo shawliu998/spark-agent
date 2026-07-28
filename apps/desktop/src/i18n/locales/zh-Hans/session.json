@@ -5,9 +5,9 @@
   },
   "composer": {
     "placeholder": {
-      "default": "尽情提问",
-      "arguments": "参数（可选）— 按 Enter 运行",
-      "shell": "在工作区文件夹中运行 shell 命令"
+      "default": "描述你的研究问题",
+      "arguments": "参数（可选）— 按 Enter 执行",
+      "shell": "在工作区文件夹中执行 shell 命令"
     },
     "commandsAria": "命令",
     "source": {
@@ -19,7 +19,7 @@
     },
     "attach": {
       "addAria": "添加文件",
-      "title": "将本地文件添加到工作区"
+      "title": "添加本地文件到工作区"
     },
     "command": {
       "chipTitle": "运行此命令 — 输入参数，或按 Backspace 编辑名称",
@@ -27,7 +27,7 @@
     },
     "shellMode": {
       "badge": "shell",
-      "title": "直接在此会话的工作区文件夹中运行"
+      "title": "直接在此会话的工作区文件夹中执行"
     },
     "stop": {
       "aria": "停止",
@@ -38,16 +38,16 @@
     },
     "approval": {
       "aria": "审批模式",
-      "title": "代理操作如何获得批准",
+      "title": "Agent 操作审批方式",
       "menuAria": "审批模式",
-      "menuTitle": "代理操作应如何获得批准？",
+      "menuTitle": "Agent 操作如何获得批准？",
       "approve": {
-        "label": "由我批准",
-        "description": "在删除、安装或访问远程资源前询问"
+        "label": "操作前询问",
+        "description": "删除、安装或访问远程资源前请求批准"
       },
       "full": {
         "label": "完全访问",
-        "description": "不询问即运行所有命令"
+        "description": "无需询问即可执行所有命令"
       }
     },
     "error": {
@@ -62,23 +62,23 @@
   },
   "starters": {
     "newSession": "新建会话",
-    "heading": "我们该研究什么？",
-    "subheading": "在下方描述您的分析——或从以下选项开始。",
+    "heading": "想探索什么问题？",
+    "subheading": "描述你的分析任务，或从以下示例开始。",
     "demo": {
-      "title": "端到端运行一次演示分析",
-      "description": "模拟一份数据集，拟合模型，并生成图表和可追溯的报告。"
+      "title": "试用完整分析流程",
+      "description": "模拟数据、拟合模型，并生成图表与分析报告。"
     },
     "analyze": {
       "title": "分析我的数据",
-      "description": "让代理处理您添加的文件；获取图表和报告。"
+      "description": "选择已添加的文件，由 Agent 分析数据并生成图表与报告。"
     },
     "audit": {
-      "title": "审查报告的可追溯性",
-      "description": "检查引用、无来源数字，以及图表与代码的一致性。"
+      "title": "检查报告引用与一致性",
+      "description": "检查引用、缺少出处的数字，以及图表与代码是否一致。"
     },
     "example-climate": {
       "title": "探索示例：气候趋势",
-      "description": "真实的 NASA GISTEMP 数据——趋势、十年对比、图表和报告。"
+      "description": "使用真实 NASA GISTEMP 数据分析趋势、比较年代变化，并生成图表与报告。"
     },
     "error": {
       "setup": "无法设置示例：{{message}}"
@@ -86,9 +86,9 @@
   },
   "live": {
     "runtime": {
-      "title": "OpenCode 运行时",
-      "bodyPrefix": "桌面应用会自动运行一个内置的 OpenCode。在浏览器中，请使用以下命令启动一个",
-      "bodySuffix": "并连接。"
+      "title": "OpenCode 环境",
+      "bodyPrefix": "桌面应用会自动启动内置 OpenCode。若在浏览器中使用，请执行以下命令：",
+      "bodySuffix": "，然后连接。"
     },
     "connect": "连接",
     "subagentFallback": "一个子代理",
@@ -117,12 +117,12 @@
       }
     },
     "status": {
-      "paused": "已暂停——代理需要您在下方回答",
-      "startingSession": "正在其文件夹中启动会话…",
+      "paused": "已暂停——Agent 需要你的输入",
+      "startingSession": "正在文件夹中启动会话…",
       "working": "正在处理…"
     },
     "placeholder": {
-      "disconnected": "连接以开始聊天",
+      "disconnected": "连接后开始对话",
       "waiting": "等待回复…"
     }
   },
@@ -201,13 +201,13 @@
   },
   "interaction": {
     "question": {
-      "heading": "代理需要您的输入",
-      "customPlaceholder": "或输入您自己的答案…"
+      "heading": "Agent 需要你的输入",
+      "customPlaceholder": "或输入你的答案…"
     },
     "permission": {
       "heading": "代理请求权限："
     },
-    "askedBy": "由 {{origin}} 请求",
+    "askedBy": "请求来源：{{origin}}",
     "skip": "跳过",
     "submit": "提交",
     "reject": "拒绝",
@@ -223,8 +223,8 @@
   },
   "workspaceChip": {
     "fallbackName": "工作区",
-    "titlePinned": "{{workspace}} — 点击选择其他文件夹",
-    "titleUnpinned": "将在新建的日期文件夹（{{name}}）中启动 — 点击改为选择文件夹",
+    "titlePinned": "当前文件夹：{{workspace}}。点击可选择其他文件夹",
+    "titleUnpinned": "将使用新建的日期文件夹（{{name}}）；点击可选择其他文件夹",
     "chooseAria": "选择会话文件夹",
     "switching": "切换中…"
   },

@@ -30,7 +30,7 @@ describe("Settings page strings (i18n)", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Agent runtime")).toBeInTheDocument();
     expect(screen.getByText("MCP servers")).toBeInTheDocument();
-    expect(screen.getByText("Workspace")).toBeInTheDocument();
+    expect(within(screen.getByRole("main")).getByText("Workspace")).toBeInTheDocument();
   });
 
   it("renders the disconnected-runtime prompts and the Workspace fallback text", async () => {

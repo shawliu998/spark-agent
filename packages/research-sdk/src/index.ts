@@ -1,22 +1,100 @@
 import type {
   AcceptWorkflowReviewWarningsInput,
+  AgentResearchWorkflowSnapshot,
   AnalysisIntent,
   AnalysisRun,
+  AttachDiscoveryCandidatePdfInput,
+  CandidateTriageDecision,
+  CslJsonCandidateImport,
+  CreateAgentRunInput,
+  CreateDiscoveryRunInput,
+  CreateEvidenceMemoryCandidateInput,
+  CreateEvidenceMemoryCandidateResult,
+  CreateSkillCandidateInput,
+  CreateSkillCandidateResult,
+  ApproveSkillActivationInput,
   CreateResearchWorkflowInput as DomainCreateResearchWorkflowInput,
+  CreateReportDraftInput,
   DecideWorkflowAnalysisIntentInput,
+  EvidenceDirectionJudgment,
+  ExportReportDraftInput,
+  InteractionRequest,
+  InvalidateResearchMemoryInput,
+  ResearchMemoryRecord,
+  ResearchMemoryWorkspace,
+  SkillCandidate,
+  SkillActivation,
+  SkillActivationPreview,
+  RollbackSkillActivationInput,
+  InvokeActiveRememberEvidenceResult,
+  ResolveResearchMemoryCandidateInput,
+  ResolveAgentDecisionInput,
+  RespondToInteractionInput,
   ResearchAnswer,
+  EvidenceSpan,
+  CreateExactEvidenceSpanInput,
   ResearchProject,
+  ReportDraftExport,
+  ReportDraftRecord,
+  ReviewReportDraftInput,
   ResearchSource,
+  ExtractionCell,
+  ExtractionColumn,
+  ExtractionMatrix,
+  CreateExtractionColumnInput,
+  UpsertExtractionCellInput,
+  UpsertEvidenceDirectionJudgmentInput,
+  UpsertCandidateTriageDecisionInput,
+  ScreeningDecision,
+  UpsertScreeningDecisionInput,
   ResearchWorkflowSnapshot,
+  ResearchWorkflowResult,
+  SaveReportDraftInput,
   ScienceCoreHealth,
   WorkflowAnalysisIntentDecision,
   WorkflowApiErrorDetail,
+  WorkflowDiscoverySnapshot,
+  WorkflowEvidenceCoverage,
   WorkflowEventsPage,
 } from "@spark/research-domain";
 
 export type {
   AcceptWorkflowReviewWarningsInput,
+  AgentResearchWorkflowSnapshot,
+  CandidateTriageDecision,
+  CreateAgentRunInput,
+  CreateEvidenceMemoryCandidateInput,
+  CreateEvidenceMemoryCandidateResult,
+  CreateSkillCandidateInput,
+  CreateSkillCandidateResult,
+  ApproveSkillActivationInput,
+  CreateDiscoveryRunInput,
+  CreateReportDraftInput,
   DecideWorkflowAnalysisIntentInput,
+  EvidenceDirectionJudgment,
+  ExportReportDraftInput,
+  InteractionRequest,
+  InteractionResponseValue,
+  IntentDecision,
+  ResolveAgentDecisionInput,
+  InvalidateResearchMemoryInput,
+  ResearchMemory,
+  ResearchMemoryRecord,
+  ResearchMemoryWorkspace,
+  ReportDraftExport,
+  ReportDraftRecord,
+  ReviewReportDraftInput,
+  SkillCandidate,
+  SkillActivation,
+  SkillActivationPreview,
+  RollbackSkillActivationInput,
+  InvokeActiveRememberEvidenceResult,
+  ResolveResearchMemoryCandidateInput,
+  VerifiedEpisode,
+  RespondToInteractionInput,
+  SaveReportDraftInput,
+  UpsertCandidateTriageDecisionInput,
+  UpsertEvidenceDirectionJudgmentInput,
 } from "@spark/research-domain";
 
 export interface ScienceCoreClientOptions {
@@ -30,6 +108,20 @@ export interface CreateResearchProjectInput {
   title: string;
   description?: string;
   researchDomain?: string;
+}
+
+export interface CreateResearchProjectOptions {
+  signal?: AbortSignal;
+}
+
+export interface ListResearchProjectsOptions {
+  includeArchived?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface ProjectMutationOptions {
+  signal?: AbortSignal;
+  idempotencyKey: string;
 }
 
 export interface AskResearchQuestionInput {
@@ -68,6 +160,12 @@ export interface ResearchWorkflowEventsOptions {
   signal?: AbortSignal;
 }
 
+export interface WorkflowDiscoveryOptions {
+  offset?: number;
+  limit?: number;
+  signal?: AbortSignal;
+}
+
 export interface ScienceCoreRequestOptions {
   signal?: AbortSignal;
   idempotencyKey?: string;
@@ -85,6 +183,7 @@ export class ScienceCoreApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly retryable: boolean;
+  readonly details: Record<string, unknown> | undefined;
 
   constructor(status: number, detail: WorkflowApiErrorDetail) {
     super(detail.userMessage);
@@ -92,6 +191,7 @@ export class ScienceCoreApiError extends Error {
     this.status = status;
     this.code = detail.code;
     this.retryable = detail.retryable;
+    this.details = detail.details;
   }
 }
 
@@ -114,15 +214,72 @@ export class ScienceCoreClient {
     return this.request<ScienceCoreHealth>("/health");
   }
 
-  async listProjects(): Promise<ResearchProject[]> {
-    return this.request<ResearchProject[]>("/v1/projects");
+  async listProjects(options: ListResearchProjectsOptions = {}): Promise<ResearchProject[]> {
+    const query = options.includeArchived ? "?includeArchived=true" : "";
+    return this.request<ResearchProject[]>(`/v1/projects${query}`, {
+      signal: options.signal,
+    });
   }
 
-  async createProject(input: CreateResearchProjectInput): Promise<ResearchProject> {
+  async createProject(
+    input: CreateResearchProjectInput,
+    options: CreateResearchProjectOptions = {},
+  ): Promise<ResearchProject> {
     return this.request<ResearchProject>("/v1/projects", {
       method: "POST",
       body: JSON.stringify(input),
+      signal: options.signal,
     });
+  }
+
+  async renameProject(
+    projectId: string,
+    title: string,
+    expectedRowVersion: number,
+    options: ProjectMutationOptions,
+  ): Promise<ResearchProject> {
+    return this.request<ResearchProject>(
+      `/v1/projects/${encodeURIComponent(projectId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ title, expectedRowVersion }),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async archiveProject(
+    projectId: string,
+    expectedRowVersion: number,
+    options: ProjectMutationOptions,
+  ): Promise<ResearchProject> {
+    return this.projectStateMutation(projectId, "archive", expectedRowVersion, options);
+  }
+
+  async restoreProject(
+    projectId: string,
+    expectedRowVersion: number,
+    options: ProjectMutationOptions,
+  ): Promise<ResearchProject> {
+    return this.projectStateMutation(projectId, "restore", expectedRowVersion, options);
+  }
+
+  private async projectStateMutation(
+    projectId: string,
+    action: "archive" | "restore",
+    expectedRowVersion: number,
+    options: ProjectMutationOptions,
+  ): Promise<ResearchProject> {
+    return this.request<ResearchProject>(
+      `/v1/projects/${encodeURIComponent(projectId)}/${action}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ expectedRowVersion }),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
   }
 
   async listSources(projectId: string): Promise<ResearchSource[]> {
@@ -131,12 +288,205 @@ export class ScienceCoreClient {
     );
   }
 
-  async importPdf(projectId: string, file: File): Promise<ResearchSource> {
+  async listScreeningDecisions(
+    projectId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ScreeningDecision[]> {
+    return this.request<ScreeningDecision[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/screening-decisions`,
+      { signal: options.signal },
+    );
+  }
+
+  async listCandidateTriageDecisions(
+    projectId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<CandidateTriageDecision[]> {
+    return this.request<CandidateTriageDecision[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/candidate-triage-decisions`,
+      { signal: options.signal },
+    );
+  }
+
+  async upsertCandidateTriageDecision(
+    projectId: string,
+    candidateId: string,
+    input: UpsertCandidateTriageDecisionInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<CandidateTriageDecision> {
+    return this.request<CandidateTriageDecision>(
+      `/v1/projects/${encodeURIComponent(projectId)}/candidate-triage-decisions/${encodeURIComponent(candidateId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+  }
+
+  async upsertScreeningDecision(
+    projectId: string,
+    sourceId: string,
+    input: UpsertScreeningDecisionInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ScreeningDecision> {
+    return this.request<ScreeningDecision>(
+      `/v1/projects/${encodeURIComponent(projectId)}/screening-decisions/${encodeURIComponent(sourceId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+  }
+
+  async listEvidenceDirectionJudgments(
+    projectId: string,
+    answerId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<EvidenceDirectionJudgment[]> {
+    return this.request<EvidenceDirectionJudgment[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/answers/${encodeURIComponent(answerId)}/evidence-directions`,
+      { signal: options.signal },
+    );
+  }
+
+  async upsertEvidenceDirectionJudgment(
+    projectId: string,
+    answerId: string,
+    sourceId: string,
+    input: UpsertEvidenceDirectionJudgmentInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<EvidenceDirectionJudgment> {
+    return this.request<EvidenceDirectionJudgment>(
+      `/v1/projects/${encodeURIComponent(projectId)}/answers/${encodeURIComponent(answerId)}/evidence-directions/${encodeURIComponent(sourceId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+  }
+
+  async getExtractionMatrix(
+    projectId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ExtractionMatrix> {
+    return this.request<ExtractionMatrix>(
+      `/v1/projects/${encodeURIComponent(projectId)}/extraction`,
+      { signal: options.signal },
+    );
+  }
+
+  async createExtractionColumn(
+    projectId: string,
+    input: CreateExtractionColumnInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ExtractionColumn> {
+    return this.request<ExtractionColumn>(
+      `/v1/projects/${encodeURIComponent(projectId)}/extraction/columns`,
+      { method: "POST", body: JSON.stringify(input), signal: options.signal },
+    );
+  }
+
+  async upsertExtractionCell(
+    projectId: string,
+    sourceId: string,
+    columnId: string,
+    input: UpsertExtractionCellInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ExtractionCell> {
+    return this.request<ExtractionCell>(
+      `/v1/projects/${encodeURIComponent(projectId)}/extraction/cells/${encodeURIComponent(sourceId)}/${encodeURIComponent(columnId)}`,
+      { method: "PUT", body: JSON.stringify(input), signal: options.signal },
+    );
+  }
+
+  async createExactEvidenceSpan(
+    projectId: string,
+    sourceId: string,
+    input: CreateExactEvidenceSpanInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<EvidenceSpan> {
+    return this.request<EvidenceSpan>(
+      `/v1/projects/${encodeURIComponent(projectId)}/sources/${encodeURIComponent(sourceId)}/evidence-spans`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async createConfirmedExtractionCitedBrief(
+    projectId: string,
+    options: ScienceCoreRequestOptions,
+  ): Promise<ResearchWorkflowResult> {
+    return this.request<ResearchWorkflowResult>(
+      `/v1/projects/${encodeURIComponent(projectId)}/extraction/cited-brief`,
+      {
+        method: "POST",
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async deleteExtractionCell(
+    projectId: string,
+    sourceId: string,
+    columnId: string,
+    expectedVersion: number,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<void> {
+    await this.fetchResponse(
+      `/v1/projects/${encodeURIComponent(projectId)}/extraction/cells/${encodeURIComponent(sourceId)}/${encodeURIComponent(columnId)}`,
+      { method: "DELETE", body: JSON.stringify({ expectedVersion }), signal: options.signal },
+      true,
+    );
+  }
+
+  async importPdf(
+    projectId: string,
+    file: File,
+    attachment?: AttachDiscoveryCandidatePdfInput,
+  ): Promise<ResearchSource> {
     const body = new FormData();
     body.append("file", file, file.name);
+    if (attachment) {
+      body.append("workflowId", attachment.workflowId);
+      body.append("candidateId", attachment.candidateId);
+      body.append("candidateSha256", attachment.candidateSha256);
+      body.append("occurrenceInvocationId", attachment.occurrenceInvocationId);
+      body.append(
+        "confirmIdentityMismatch",
+        attachment.confirmIdentityMismatch ? "true" : "false",
+      );
+    }
     return this.request<ResearchSource>(
       `/v1/projects/${encodeURIComponent(projectId)}/sources`,
       { method: "POST", body },
+      false,
+    );
+  }
+
+  async importCslJsonCandidates(
+    projectId: string,
+    workflowId: string,
+    file: File,
+    options: ScienceCoreRequestOptions,
+  ): Promise<CslJsonCandidateImport> {
+    const body = new FormData();
+    body.append("file", file, file.name);
+    return this.request<CslJsonCandidateImport>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/discovery/csl-json`,
+      {
+        method: "POST",
+        body,
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
       false,
     );
   }
@@ -205,6 +555,104 @@ export class ScienceCoreClient {
     );
   }
 
+  async listAgentRuns(
+    projectId: string,
+    options: ResearchWorkflowListOptions = {},
+  ): Promise<AgentResearchWorkflowSnapshot[]> {
+    const query = new URLSearchParams();
+    if (options.activeOnly != null) query.set("activeOnly", String(options.activeOnly));
+    if (options.limit != null) query.set("limit", String(options.limit));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request<AgentResearchWorkflowSnapshot[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/agent-runs${suffix}`,
+      { signal: options.signal },
+    );
+  }
+
+  async createAgentRun(
+    projectId: string,
+    input: CreateAgentRunInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/projects/${encodeURIComponent(projectId)}/agent-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async createDiscoveryRun(
+    projectId: string,
+    input: CreateDiscoveryRunInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/projects/${encodeURIComponent(projectId)}/discovery-runs`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async getAgentRun(
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/agent-runs/${encodeURIComponent(workflowId)}`,
+      { signal: options.signal },
+    );
+  }
+
+  async listWorkflowInteractions(
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<InteractionRequest[]> {
+    return this.request<InteractionRequest[]>(
+      `/v1/workflows/${encodeURIComponent(workflowId)}/interactions`,
+      { signal: options.signal },
+    );
+  }
+
+  async respondToInteraction(
+    interactionId: string,
+    input: RespondToInteractionInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/interactions/${encodeURIComponent(interactionId)}/respond`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async resolveAgentDecision(
+    workflowId: string,
+    decisionId: string,
+    input: ResolveAgentDecisionInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<AgentResearchWorkflowSnapshot> {
+    return this.request<AgentResearchWorkflowSnapshot>(
+      `/v1/agent-runs/${encodeURIComponent(workflowId)}/decisions/${encodeURIComponent(decisionId)}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+  }
+
   async createWorkflow(
     projectId: string,
     input: CreateResearchWorkflowInput,
@@ -228,6 +676,302 @@ export class ScienceCoreClient {
     return this.request<ResearchWorkflowSnapshot>(
       `/v1/workflows/${encodeURIComponent(workflowId)}`,
       { signal: options.signal },
+    );
+  }
+
+  async getReportDraft(
+    projectId: string,
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ReportDraftRecord> {
+    return this.request<ReportDraftRecord>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/report-draft`,
+      { signal: options.signal },
+    );
+  }
+
+  async createReportDraft(
+    projectId: string,
+    workflowId: string,
+    input: CreateReportDraftInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<ReportDraftRecord> {
+    return this.request<ReportDraftRecord>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/report-draft`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async saveReportDraft(
+    projectId: string,
+    workflowId: string,
+    draftId: string,
+    input: SaveReportDraftInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<ReportDraftRecord> {
+    return this.request<ReportDraftRecord>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/report-drafts/${encodeURIComponent(draftId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async reviewReportDraft(
+    projectId: string,
+    workflowId: string,
+    draftId: string,
+    input: ReviewReportDraftInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<ReportDraftRecord> {
+    return this.request<ReportDraftRecord>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/report-drafts/${encodeURIComponent(draftId)}/review`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async exportReportDraft(
+    projectId: string,
+    workflowId: string,
+    draftId: string,
+    input: ExportReportDraftInput,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ReportDraftExport> {
+    return this.request<ReportDraftExport>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/report-drafts/${encodeURIComponent(draftId)}/export`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+      },
+    );
+  }
+
+  async getWorkflowDiscovery(
+    workflowId: string,
+    options: WorkflowDiscoveryOptions = {},
+  ): Promise<WorkflowDiscoverySnapshot> {
+    const query = new URLSearchParams();
+    if (options.offset != null) query.set("offset", String(options.offset));
+    if (options.limit != null) query.set("limit", String(options.limit));
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request<WorkflowDiscoverySnapshot>(
+      `/v1/workflows/${encodeURIComponent(workflowId)}/discovery${suffix}`,
+      { signal: options.signal },
+    );
+  }
+
+  async getWorkflowEvidenceCoverage(
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<WorkflowEvidenceCoverage> {
+    return this.request<WorkflowEvidenceCoverage>(
+      `/v1/workflows/${encodeURIComponent(workflowId)}/evidence-coverage`,
+      { signal: options.signal },
+    );
+  }
+
+  async getResearchMemoryWorkspace(
+    projectId: string,
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<ResearchMemoryWorkspace> {
+    return this.request<ResearchMemoryWorkspace>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/research-memory-workspace`,
+      { signal: options.signal },
+    );
+  }
+
+  async createEvidenceMemoryCandidate(
+    projectId: string,
+    workflowId: string,
+    input: CreateEvidenceMemoryCandidateInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<CreateEvidenceMemoryCandidateResult> {
+    return this.request<CreateEvidenceMemoryCandidateResult>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/research-memory-candidates/from-evidence`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async createSkillCandidate(
+    projectId: string,
+    workflowId: string,
+    input: CreateSkillCandidateInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<CreateSkillCandidateResult> {
+    return this.request<CreateSkillCandidateResult>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/skill-candidates`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async listSkillCandidates(
+    projectId: string,
+    workflowId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<SkillCandidate[]> {
+    return this.request<SkillCandidate[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/skill-candidates`,
+      { signal: options.signal },
+    );
+  }
+
+  async getSkillCandidate(
+    projectId: string,
+    workflowId: string,
+    candidateId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<SkillCandidate> {
+    return this.request<SkillCandidate>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/skill-candidates/${encodeURIComponent(candidateId)}`,
+      { signal: options.signal },
+    );
+  }
+
+  async getSkillActivationPreview(
+    projectId: string,
+    workflowId: string,
+    candidateId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<SkillActivationPreview> {
+    return this.request<SkillActivationPreview>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/skill-candidates/${encodeURIComponent(candidateId)}/activation-preview`,
+      { signal: options.signal },
+    );
+  }
+
+  async approveSkillActivation(
+    projectId: string,
+    workflowId: string,
+    candidateId: string,
+    input: ApproveSkillActivationInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<SkillActivation> {
+    return this.request<SkillActivation>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/skill-candidates/${encodeURIComponent(candidateId)}/approve-and-activate`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async listSkillActivations(
+    projectId: string,
+    options: ScienceCoreRequestOptions & { workflowId?: string } = {},
+  ): Promise<SkillActivation[]> {
+    const query = options.workflowId
+      ? `?workflow_id=${encodeURIComponent(options.workflowId)}`
+      : "";
+    return this.request<SkillActivation[]>(
+      `/v1/projects/${encodeURIComponent(projectId)}/skill-activations${query}`,
+      { signal: options.signal },
+    );
+  }
+
+  async getSkillActivation(
+    projectId: string,
+    activationId: string,
+    options: ScienceCoreRequestOptions = {},
+  ): Promise<SkillActivation> {
+    return this.request<SkillActivation>(
+      `/v1/projects/${encodeURIComponent(projectId)}/skill-activations/${encodeURIComponent(activationId)}`,
+      { signal: options.signal },
+    );
+  }
+
+  async rollbackSkillActivation(
+    projectId: string,
+    activationId: string,
+    input: RollbackSkillActivationInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<SkillActivation> {
+    return this.request<SkillActivation>(
+      `/v1/projects/${encodeURIComponent(projectId)}/skill-activations/${encodeURIComponent(activationId)}/rollback`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async invokeActiveRememberVerifiedEvidence(
+    projectId: string,
+    input: CreateEvidenceMemoryCandidateInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<InvokeActiveRememberEvidenceResult> {
+    return this.request<InvokeActiveRememberEvidenceResult>(
+      `/v1/projects/${encodeURIComponent(projectId)}/active-skill-capabilities/remember-verified-evidence/invoke`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async resolveResearchMemoryCandidate(
+    projectId: string,
+    workflowId: string,
+    memoryId: string,
+    input: ResolveResearchMemoryCandidateInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<ResearchMemoryRecord> {
+    return this.request<ResearchMemoryRecord>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/research-memories/${encodeURIComponent(memoryId)}/resolve`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
+    );
+  }
+
+  async invalidateResearchMemory(
+    projectId: string,
+    workflowId: string,
+    memoryId: string,
+    input: InvalidateResearchMemoryInput,
+    options: ScienceCoreRequestOptions,
+  ): Promise<ResearchMemoryRecord> {
+    return this.request<ResearchMemoryRecord>(
+      `/v1/projects/${encodeURIComponent(projectId)}/workflows/${encodeURIComponent(workflowId)}/research-memories/${encodeURIComponent(memoryId)}/invalidate`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        signal: options.signal,
+        headers: this.idempotencyHeaders(options.idempotencyKey),
+      },
     );
   }
 
@@ -463,6 +1207,10 @@ export class ScienceCoreClient {
             typeof payload.detail.retryable === "boolean"
               ? payload.detail.retryable
               : detail.retryable,
+          details:
+            payload.detail.details && typeof payload.detail.details === "object"
+              ? payload.detail.details as Record<string, unknown>
+              : detail.details,
         };
       }
     } catch {

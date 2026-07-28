@@ -1,7 +1,5 @@
 import { BarChart3, Library, type LucideIcon } from "lucide-react";
 import type { RouteObject } from "react-router-dom";
-import { AnalysisPage } from "@/app/routes/AnalysisPage";
-import { ResearchPage } from "@/app/routes/ResearchPage";
 
 export interface ProductNavigationItem {
   id: string;
@@ -11,8 +9,14 @@ export interface ProductNavigationItem {
 }
 
 export const productRoutes: RouteObject[] = [
-  { path: "research", element: <ResearchPage /> },
-  { path: "analysis", element: <AnalysisPage /> },
+  {
+    path: "research",
+    lazy: async () => ({ Component: (await import("@/app/routes/ResearchPage")).ResearchPage }),
+  },
+  {
+    path: "analysis",
+    lazy: async () => ({ Component: (await import("@/app/routes/AnalysisPage")).AnalysisPage }),
+  },
 ];
 
 export const productNavigation: ProductNavigationItem[] = [

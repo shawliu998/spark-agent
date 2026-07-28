@@ -6,15 +6,85 @@ import type {
   WorkflowEvent,
 } from "@spark/research-domain";
 
-export interface WorkflowCreateIntent {
+/**
+ * The immutable literature input identity. This intentionally contains only
+ * the user question and canonical PDF set; extraction drafts are not evidence
+ * and must never change a workflow's source identity.
+ */
+export interface AutonomousLiteratureIdentity {
   projectId: string;
   goal: string;
+  sourceIds: string[];
+}
+
+export function canonicalAutonomousLiteratureIdentity(
+  projectId: string,
+  goal: string,
+  sourceIds: readonly string[],
+): AutonomousLiteratureIdentity | null {
+  const normalizedGoal = goal.trim();
+  const normalizedSourceIds = [...new Set(sourceIds)].sort();
+  if (!projectId || !normalizedGoal || normalizedSourceIds.length === 0) return null;
+  return { projectId, goal: normalizedGoal, sourceIds: normalizedSourceIds };
+}
+
+/** True only for the local autonomous literature run for this exact input. */
+export function matchesAutonomousLiteratureIdentity(
+  snapshot: ResearchWorkflowSnapshot | null | undefined,
+  identity: AutonomousLiteratureIdentity | null,
+): boolean {
+  if (!snapshot || !identity) return false;
+  const workflow = snapshot.workflow;
+  if (
+    workflow.projectId !== identity.projectId ||
+    workflow.goal.trim() !== identity.goal ||
+    workflow.mode !== "autonomous" ||
+    workflow.generationMode !== "local-deterministic"
+  ) {
+    return false;
+  }
+  // Only an actively routing run is allowed to have no resolved type. A
+  // completed/reviewable result must be an explicit literature synthesis.
+  if (
+    workflow.workflowType !== "literature-synthesis" &&
+    !(workflow.workflowType === null && workflow.status === "routing")
+  ) {
+    return false;
+  }
+  const sourceIds = [...new Set(workflow.sourceIds ?? [])].sort();
+  return sourceIds.length === identity.sourceIds.length &&
+    sourceIds.every((sourceId, index) => sourceId === identity.sourceIds[index]);
+}
+
+interface WorkflowCreateIntentBase {
+  projectId: string;
+  goal: string;
+  idempotencyKey: string;
+}
+
+export interface AutonomousWorkflowCreateIntent extends WorkflowCreateIntentBase {
+  mode: "autonomous";
+  sourceIds: string[];
+  remoteDataApproved: boolean;
+}
+
+export interface AdvancedWorkflowCreateIntent extends WorkflowCreateIntentBase {
+  mode: "advanced";
   workflowType: ResearchWorkflowType;
   datasetSourceId: string | null;
   generationMode: ResearchGenerationMode;
   remoteDataApproved: boolean;
-  idempotencyKey: string;
 }
+
+export type WorkflowCreateIntent =
+  | AutonomousWorkflowCreateIntent
+  | AdvancedWorkflowCreateIntent;
+
+export type WorkflowCreateCandidate = WorkflowCreateIntent extends infer Intent
+  ? Intent extends WorkflowCreateIntent
+    ? Omit<Intent, "idempotencyKey">
+    : never
+  : never;
 
 export type WorkflowResultReviewState =
   | "passed"
@@ -87,11 +157,25 @@ export function mergeWorkflowEvents(
 
 export function sameCreateIntent(
   intent: WorkflowCreateIntent | null,
-  candidate: Omit<WorkflowCreateIntent, "idempotencyKey">,
+  candidate: WorkflowCreateCandidate,
 ): intent is WorkflowCreateIntent {
+  if (
+    intent?.projectId !== candidate.projectId ||
+    intent.goal !== candidate.goal ||
+    intent.mode !== candidate.mode
+  ) {
+    return false;
+  }
+  if (intent.mode === "autonomous" && candidate.mode === "autonomous") {
+    return (
+      intent.remoteDataApproved === candidate.remoteDataApproved &&
+      intent.sourceIds.length === candidate.sourceIds.length &&
+      intent.sourceIds.every((sourceId, index) => sourceId === candidate.sourceIds[index])
+    );
+  }
   return (
-    intent?.projectId === candidate.projectId &&
-    intent.goal === candidate.goal &&
+    intent.mode === "advanced" &&
+    candidate.mode === "advanced" &&
     intent.workflowType === candidate.workflowType &&
     intent.datasetSourceId === candidate.datasetSourceId &&
     intent.generationMode === candidate.generationMode &&

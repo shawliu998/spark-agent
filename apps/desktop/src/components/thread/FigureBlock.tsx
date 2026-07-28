@@ -63,6 +63,13 @@ export function FigureBlock({
         <div
           className="relative cursor-crosshair"
           onClick={onImageClick}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              setDraft({ x: 50, y: 50 });
+              setNote("");
+            }
+          }}
           role="button"
           tabIndex={0}
           aria-label={t("figure.addAnnotationAria")}

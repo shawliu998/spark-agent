@@ -23,11 +23,12 @@ fn approve_permission() -> Value {
         "bash": "ask",
         "webfetch": "ask",
         "websearch": "ask",
-        // The first curated research connector is read-only at the policy
-        // boundary: metadata/search and remote reads are allowed, while every
-        // download tool (which writes a PDF locally) is unavailable.
-        "paper-search_search_*": "allow",
-        "paper-search_read_*": "allow",
+        // Paper discovery must go through the future Science Core broker, where
+        // an approved DiscoverySpec and per-run remote-data approval are bound
+        // before send.  Do not let ambient OpenCode permissions bypass that
+        // control plane; `read_*` may also resolve or write remote content.
+        "paper-search_search_*": "deny",
+        "paper-search_read_*": "deny",
         "paper-search_download_*": "deny",
         "external_directory": "deny"
     })
@@ -66,6 +67,50 @@ pub fn seed_default_permission(existing: &str) -> Option<String> {
         return None;
     }
     set_permission_mode(existing, MODE_APPROVE).ok()
+}
+
+/// Install the one product-owned local MCP bridge into the app-private
+/// OpenCode profile. The descriptor path is the sole environment value; the
+/// bridge derives project identity from its inherited working directory.
+pub fn seed_skill_mcp(
+    existing: &str,
+    executable: &str,
+    descriptor_path: &str,
+) -> Result<String, String> {
+    if executable.is_empty()
+        || descriptor_path.is_empty()
+        || executable.contains(['\n', '\r'])
+        || descriptor_path.contains(['\n', '\r'])
+    {
+        return Err("invalid Science Skill MCP path".into());
+    }
+    let mut root: Value = if existing.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(existing)
+            .map_err(|error| format!("invalid existing config: {error}"))?
+    };
+    if !root.is_object() {
+        root = json!({});
+    }
+    let object = root.as_object_mut().unwrap();
+    let mcp = object.entry("mcp").or_insert_with(|| json!({}));
+    if !mcp.is_object() {
+        *mcp = json!({});
+    }
+    mcp.as_object_mut().unwrap().insert(
+        "spark-skill-mcp".into(),
+        json!({
+            "type": "local",
+            "command": [executable, "--spark-skill-mcp"],
+            "environment": {
+                "SPARK_SKILL_MCP_DESCRIPTOR": descriptor_path
+            },
+            "enabled": true,
+            "timeout": 5000
+        }),
+    );
+    serde_json::to_string_pretty(&root).map_err(|error| error.to_string())
 }
 
 /// The approval mode a config encodes: None when the `permission` key was
@@ -185,7 +230,8 @@ mod tests {
         assert_eq!(v["permission"]["bash"], "ask");
         assert_eq!(v["permission"]["webfetch"], "ask");
         assert_eq!(v["permission"]["websearch"], "ask");
-        assert_eq!(v["permission"]["paper-search_search_*"], "allow");
+        assert_eq!(v["permission"]["paper-search_search_*"], "deny");
+        assert_eq!(v["permission"]["paper-search_read_*"], "deny");
         assert_eq!(v["permission"]["paper-search_download_*"], "deny");
         assert_eq!(v["permission"]["external_directory"], "deny");
     }
@@ -235,5 +281,48 @@ mod tests {
         let approved = set_permission_mode("", MODE_APPROVE).unwrap();
         assert_eq!(permission_mode_of(&approved), Some(MODE_APPROVE));
         assert_eq!(permission_mode_of(r#"{"permission":{}}"#), Some(MODE_FULL));
+    }
+
+    #[test]
+    fn seeds_fixed_skill_mcp_idempotently_and_preserves_existing_config() {
+        let existing = r#"{
+            "model":"provider/model",
+            "mcp":{"existing":{"type":"local","command":["existing"]}},
+            "permission":{"*":"ask"}
+        }"#;
+        let first = seed_skill_mcp(
+            existing,
+            "/Applications/Spark Agent.app/Contents/MacOS/Spark Agent",
+            "/private/app/science-core-runtime/session/spark-skill-mcp-connection.json",
+        )
+        .unwrap();
+        let second = seed_skill_mcp(
+            &first,
+            "/Applications/Spark Agent.app/Contents/MacOS/Spark Agent",
+            "/private/app/science-core-runtime/session/spark-skill-mcp-connection.json",
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        let value: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(value["model"], "provider/model");
+        assert_eq!(value["mcp"]["existing"]["command"][0], "existing");
+        assert_eq!(
+            value["mcp"]["spark-skill-mcp"],
+            json!({
+                "type": "local",
+                "command": [
+                    "/Applications/Spark Agent.app/Contents/MacOS/Spark Agent",
+                    "--spark-skill-mcp"
+                ],
+                "environment": {
+                    "SPARK_SKILL_MCP_DESCRIPTOR":
+                        "/private/app/science-core-runtime/session/spark-skill-mcp-connection.json"
+                },
+                "enabled": true,
+                "timeout": 5000
+            })
+        );
+        assert_eq!(value["permission"]["*"], "ask");
+        assert!(value["permission"]["spark-skill-mcp_*"].is_null());
     }
 }
