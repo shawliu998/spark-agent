@@ -1,5 +1,7 @@
 # Progress
 
+2026-07-28 13:33 · release(v0.2.0): published the first public Spark Agent release with Apple Silicon and Intel macOS DMGs, Windows EXE/MSI installers, Linux DEB/RPM packages, verified SHA-256 asset digests, a product-focused GitHub homepage, and green desktop, Rust, Python 3.12/3.13, migration, and Docker quality gates.
+
 2026-07-28 11:44 · release(v0.2.0-candidate): prepared the first public Spark Agent release with the question-first research loop, configurable model and source providers, page-level evidence and cited report surfaces, Finder-safe Docker/OrbStack recovery, a portfolio-grade README and GitHub metadata, and passed desktop lint/typecheck/build plus 928 frontend tests, Rust Clippy plus 163 tests, strict Core typecheck plus 759 tests, strict Runtime typecheck plus 86 tests, 46 macOS release fixtures, tracked-release integrity, and a live two-container Docker smoke.
 
 2026-07-28 02:11 · feat(first-run-research-closure): replaced project-name-first onboarding with an editable question-first flow that creates a local project then a bounded approval-gated Crossref/OpenAlex proposal, added exact Docker/OrbStack recovery and Finder-safe executable CLI resolution, restored public discovery for projects that already contain PDFs, removed the non-canonical paper-search connector, clarified packaged requirements, and passed 141 focused desktop assertions, TypeScript, targeted ESLint, 38 Rust runtime tests, and release-asset integrity; cross-crash atomic project-plus-proposal creation remains a protocol-level P1.
