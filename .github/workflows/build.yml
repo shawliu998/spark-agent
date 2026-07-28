@@ -280,6 +280,7 @@ jobs:
       - name: Verify release artifact contract and upload draft assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         shell: bash
         run: |
