@@ -107,10 +107,14 @@ def copy_dataset_from_safe_descriptor(
             raise RuntimeServiceError("dataset-content-hash-mismatch")
     except Exception:
         for destination in opened_destinations:
+            try:
+                identity = stat_identity(os.fstat(destination.descriptor))
+            except OSError:
+                identity = destination.identity
             unlink_if_same_inode(
                 destination.chain.leaf_descriptor,
                 destination.name,
-                destination.identity,
+                identity,
             )
         raise
     finally:
@@ -394,7 +398,7 @@ def unlink_if_same_inode(
         current = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
     except OSError:
         return
-    if (current.st_dev, current.st_ino) != (expected[0], expected[1]):
+    if stat_identity(current) != expected:
         return
     try:
         os.unlink(name, dir_fd=directory_descriptor)
@@ -582,6 +586,11 @@ def write_run_error_log(
         return relative_path.as_posix(), hashlib.sha256(content).hexdigest(), len(content)
     except Exception:
         if identity is not None:
+            if descriptor is not None:
+                try:
+                    identity = stat_identity(os.fstat(descriptor))
+                except OSError:
+                    pass
             unlink_if_same_inode(chain.leaf_descriptor, name, identity)
         raise
     finally:

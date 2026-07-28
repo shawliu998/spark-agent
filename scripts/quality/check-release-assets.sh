@@ -449,7 +449,12 @@ atomic_destination="$atomic_dir/sidecar"
 printf 'replacement' >"$atomic_source"
 install_sidecar_atomically "$atomic_source" "$atomic_destination"
 cmp -s "$atomic_source" "$atomic_destination" || fail "atomic sidecar install changed content"
-[[ -x "$atomic_destination" ]] || fail "atomic sidecar install did not preserve executability"
+# NTFS/MSYS does not expose a durable POSIX executable mode bit. Windows
+# sidecars are executable by their .exe format; retain this chmod assertion on
+# platforms where the mode bit is meaningful.
+if [[ "${OS:-}" != "Windows_NT" ]]; then
+  [[ -x "$atomic_destination" ]] || fail "atomic sidecar install did not preserve executability"
+fi
 
 printf 'preserved' >"$atomic_destination"
 printf 'preserved' >"$atomic_dir/expected"
