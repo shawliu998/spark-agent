@@ -253,8 +253,8 @@ details:focus-visible {
   }
 }
 
-/* Competitor-reproduction literature workspace. The selectors are scoped so
-   the existing workflow and inspector surfaces keep their current contracts. */
+/* Literature workspace. The selectors are scoped so the existing workflow and
+   inspector surfaces keep their current contracts. */
 .research-repro {
   container-type: inline-size;
   color: var(--text);
@@ -1529,7 +1529,7 @@ details:focus-visible {
   line-height: 1.5;
 }
 
-/* Consensus-style research answer. The main column carries the question,
+/* Research answer. The main column carries the question,
    evidence-linked synthesis, and source results; the right rail holds the
    local source filters and collapses below the main column at narrow
    container widths. Prose uses Source Serif; everything else uses the shared

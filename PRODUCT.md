@@ -67,8 +67,8 @@ The primary user-facing jobs are:
 
 An agent-powered research workspace for individual researchers that turns a bounded
 research question, papers, and local data into verifiable, reproducible research
-artifacts. It combines Elicit-style literature workflows, source-in-context paper
-reading, and reproducible dataset analysis in one desktop project.
+artifacts. It combines literature discovery, source-in-context paper reading, and
+reproducible dataset analysis in one desktop project.
 
 The customer-facing promise is:
 
@@ -191,21 +191,18 @@ chat application, or compliance dashboard.
 - A terminal, code editor, or chat transcript as the dominant workspace.
 - Large card walls, oversized empty states, ornamental metrics, and decorative AI
   gradients.
-- Combining unrelated visual patterns from several competitors on one screen.
-- Invented workflows or controls that are not grounded in a competitor reference,
-  an implemented capability, or an explicit user request.
+- Combining unrelated visual patterns on one screen.
+- Invented workflows or controls that are not grounded in an implemented
+  capability or an explicit user request.
 
 ## Design Principles
 
 1. **Research job first.** Organize the product around finding, screening, reading,
    extracting, comparing, analyzing, and writing.
-2. **Competitor fidelity before invention.** Use Elicit as the primary interaction
-   and layout reference. Use Consensus for question-first search and answer
-   synthesis, and SciSpace for PDF reading and extraction, only on the relevant
-   surfaces.
-3. **One primary reference per screen.** A screen must name the competitor screen or
-   captured reference it follows. Do not blend several products into a novel
-   composition without user approval.
+2. **Capability before decoration.** Make the implemented research workflow clear
+   before adding visual structure or controls.
+3. **One job per screen.** Give each screen a clear primary task and keep adjacent
+   actions subordinate to it.
 4. **Progressive trust details.** Show citations and source context where they help
    evaluate research. Put hashes, manifests, execution records, and detailed
    permissions in inspectors, details, and approval moments.
@@ -235,25 +232,12 @@ workflow lifecycle. They may appear as compact contextual progress while a task 
 running, but they are not the default global navigation or a mandatory full-page
 sequence.
 
-## Competitive Reference Hierarchy
-
-- **Elicit — primary:** home and workflow entry, paper search, screening tables,
-  extraction tables, supporting quotes, reports, and export.
-- **Consensus — secondary:** question-first search, synthesized answer, filters,
-  paper result presentation, and full-text passage reopening.
-- **SciSpace — secondary:** library, PDF reader, paper chat, custom extraction
-  columns, and side-by-side source context.
-- **Spark-owned:** dataset analysis, notebook and artifact continuity, desktop
-  integration, and trust infrastructure.
-
 ## Current Design Phase
 
 The active phase is **v1.3 Agent-native Discovery and Evidence Coverage**. The v1
-packaged research loop, the Elicit-led Home, Papers, Screening, Extraction, Reader,
-and Report surfaces, the Spark-owned Dataset workspace, the v1.1 single Research
-Agent model connection, and the bounded v1.2 Dataset and local Literature Agent
-loops are implemented. Do not resume the earlier competitive-capture or
-reproduction sequence.
+packaged research loop, the Home, Papers, Screening, Extraction, Reader, Report,
+and Dataset workspaces, the v1.1 single Research Agent model connection, and the
+bounded v1.2 Dataset and local Literature Agent loops are implemented.
 
 The approved visual and information-architecture surfaces remain frozen. Do not
 add a separate Agent destination, a multi-Agent interface, a chat-first shell, or
@@ -286,8 +270,8 @@ The v1.3 implementation sequence is deliberately narrow:
    explicit revision; screening judgments and scientific conclusions remain human
    decisions.
 4. Present real candidates, progress, failures, and inclusion in the existing
-   Elicit-led Papers and Screening surfaces. Do not add an Agent page or redesign
-   the frozen information architecture.
+   Papers and Screening surfaces. Do not add an Agent page or redesign the frozen
+   information architecture.
 5. Evaluate outcome, process, and trust with fixed local provider fixtures plus an
    explicitly approved public-network baseline and packaged restart QA.
 
@@ -303,5 +287,5 @@ source baseline and Apple Developer ID signing/notarization.
 
 Support keyboard operation, visible focus, readable contrast, non-color-only state
 communication, long academic titles, dense tables, narrow desktop windows, and
-reduced motion. Accessibility should be built into the reproduced interaction, not
-presented as a separate product feature.
+reduced motion. Accessibility should be built into every interaction, not presented
+as a separate product feature.

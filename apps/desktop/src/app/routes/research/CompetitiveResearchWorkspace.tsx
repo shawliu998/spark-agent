@@ -1693,7 +1693,7 @@ interface AnswerSurfaceProps {
 }
 
 /**
- * Consensus-style research answer. The identity-matched autonomous workflow
+ * Research answer. The identity-matched autonomous workflow
  * result is the only synthesis truth; a same-project legacy answer is a
  * clearly marked fallback. Evidence direction is counted only from persisted
  * human judgments for the current answer and source.
