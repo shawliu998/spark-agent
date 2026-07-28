@@ -1,65 +1,224 @@
-# Spark Agent
+<h1 align="center">Spark Agent</h1>
 
-Spark Agent is a local-first, evidence-first research agent for macOS. It joins
-papers, citations, datasets, Python analysis, execution approvals, artifacts,
-and provenance in one auditable desktop workspace.
+<p align="center">
+  <strong>From an approved research plan to screened papers, page-level evidence, and an editable cited report.</strong>
+</p>
 
-> Status: internal source MVP. The research and analysis loops run locally, but
-> the Python services are currently started with Docker Compose and are not yet
-> packaged as Tauri-managed sidecars.
+<p align="center">A local-first research workspace for macOS.</p>
 
-## What works today
+<p align="center">
+  <a href="https://github.com/shawliu998/spark-agent/releases/latest"><img alt="GitHub release" src="https://img.shields.io/github/v/release/shawliu998/spark-agent?style=flat-square"></a>
+  <a href="https://github.com/shawliu998/spark-agent/actions/workflows/build.yml"><img alt="Build status" src="https://img.shields.io/github/actions/workflow/status/shawliu998/spark-agent/build.yml?style=flat-square"></a>
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-4f46e5?style=flat-square"></a>
+</p>
 
-- Create local research projects and import PDF papers.
-- Start a durable literature-synthesis workflow from a research goal, inspect its
-  typed three-step plan, and explicitly approve or cancel it.
-- Start a durable dataset-analysis workflow from an immutable CSV, approve its
-  typed four-step plan and exact Python payload, then review verified run artifacts.
-- Extract page-addressable evidence across local papers, build atomic claims, and
-  require a deterministic evidence-integrity Reviewer pass before completion.
-- Bind approved remote sources to their PDF and parsed-page hashes, then freeze
-  the reviewed answer, ordered claims, citations, source identity, and result hash.
-- Recover persisted workflow jobs after restart, with revision-checked retry,
-  resume, cancel, and an auditable event timeline.
-- Ask PaperQA-backed questions with explicit remote-data approval and clearly
-  distinguish locally located quotations from unreviewed model claims.
-- Inspect claims, exact evidence spans, citations, and source PDF pages.
-- Import CSV datasets and prepare editable Python analyses.
-- Review an immutable execution payload before approving a run.
-- Execute with Jupyter in a no-network, resource-limited container.
-- Save notebooks, logs, figures, tables, environment metadata, and hashes.
-- Audit projects, sources, approvals, tasks, runs, artifacts, and events in SQLite.
+<p align="center">
+  <a href="#download">Download</a> ·
+  <a href="#what-you-do">Workflow</a> ·
+  <a href="#a-look-inside">Product tour</a> ·
+  <a href="#what-i-led">My role</a> ·
+  <a href="#build-from-source">Build from source</a>
+</p>
 
-## Architecture
+<p align="center">
+  <img
+    src="apps/desktop/design-qa/report-p2-citation-1280x720.jpg"
+    alt="Spark Agent report editor beside the exact verified source passage"
+    width="1120"
+  />
+</p>
+
+<p align="center"><sub>An editable report beside the exact source passage that supports it.</sub></p>
+
+## What is this, really?
+
+Spark Agent helps a researcher move from a question to a report without hiding
+the work inside a chat transcript. You approve the exact scope and plan; a
+durable, bounded research agent then executes one approved step at a time,
+preserves what happened, and stops when it needs a human decision.
+
+The result is not a single generated answer. It is a reviewable chain of
+discovery records, screening decisions, local PDFs, exact-page quotations, an
+extraction matrix, analysis artifacts, and an editable report with citations.
+
+## Why
+
+Research work is usually split across search tabs, spreadsheets, PDF readers,
+notebooks, and writing tools. The researcher carries the context between them,
+while a chat history is a weak record of what was searched, excluded, quoted,
+or changed.
+
+Spark makes the research artifacts the product record. The agent advances
+bounded work from real workspace state; the researcher remains responsible for
+scope, screening, interpretation, and conclusions.
+
+## What you do
 
 ```text
-Spark Agent Desktop (Tauri + React)
-  |-- OpenCode-compatible agent shell
-  |-- Research workflow, evidence, review, and Analysis workspaces
-  |-- explicit permission and approval UI
-  |
-  +-- science-core (FastAPI + SQLite + PaperQA2)
-        |-- canonical Workflow / Plan / Task / Approval / Job / Review / Event state
-        |-- leased background worker + restart recovery
-        |-- local evidence extraction + deterministic claim review
-        |
-        +-- Unix-domain socket
-              |
-              +-- science-runtime (Jupyter, no network, read-only root)
+Ask a bounded question
+  -> approve the exact providers, queries, budget, and stopping policy
+  -> review and screen the candidate papers
+  -> attach and read local PDFs
+  -> save verbatim evidence with the exact page
+  -> compare extracted findings
+  -> edit and export a cited report
 ```
 
-The desktop shell reuses MIT-licensed Open Science Desktop code. Spark-specific
-research pages, domain contracts, science services, approval state, and the
-isolated execution runtime are maintained in this repository.
+Inside that approved envelope, the Research Agent can choose the next allowed
+query, observe novelty and evidence coverage, retry a known-safe failure, stop
+early, or ask for a revised plan. It cannot add a provider, widen a query,
+increase a budget, grant itself a permission, screen a paper, or make the final
+scientific conclusion.
 
-## Run the internal MVP
+Every meaningful step is preserved as structured state rather than left in a
+transcript:
+
+```text
+understand -> plan -> act -> observe -> decide -> continue / ask / stop
+                                                        |
+                                                        v
+                                               verify and preserve
+```
+
+## Three research stories
+
+### Build a literature set without handing over screening
+
+Approve the exact question, query set, provider set, result budget, and stopping
+policy. Spark runs bounded Crossref and OpenAlex discovery, normalizes and
+deduplicates candidates, and lets the researcher mark each one as Include,
+Exclude, or Awaiting before it can enter the evidence set.
+
+### Trace a report sentence back to the page
+
+Save a verbatim passage from a local PDF with its exact page. Carry that evidence
+through extraction and writing, then reopen the supporting passage directly from
+the report citation.
+
+### Resume a study without reconstructing the session
+
+Approved plans, completed steps, artifacts, failures, and pending decisions are
+durable project state. A provider interruption or application restart does not
+turn the workflow into a guessing exercise.
+
+## A look inside
+
+<table>
+  <tr>
+    <td width="50%">
+      <img
+        src="apps/desktop/design-qa/react-real-source-e2e/reader-verified-citation-page-3.png"
+        alt="A local PDF open at the exact page beside its saved evidence passage"
+      />
+    </td>
+    <td width="50%">
+      <img
+        src="apps/desktop/design-qa/report-p2-exports-1280x720.jpg"
+        alt="An editable research synthesis with report and citation export controls"
+      />
+    </td>
+  </tr>
+  <tr>
+    <td valign="top">
+      <strong>Read with the evidence in view.</strong><br />
+      Save a verbatim passage from a local PDF with the exact page attached.
+    </td>
+    <td valign="top">
+      <strong>Write a report, not a chat answer.</strong><br />
+      Edit the synthesis and export the document and its citation records separately.
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img
+        src="apps/desktop/design-qa/react-dataset-workspace/results-chart-1280.png"
+        alt="A reproducible local dataset analysis with a chart, table, and preserved artifacts"
+      />
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <strong>Keep analysis beside the literature record.</strong>
+      When the question also needs local data, preserve the approved method,
+      figures, tables, notebook, logs, and artifact lineage in the same project.
+    </td>
+  </tr>
+</table>
+
+## What I led
+
+I led the product definition and orchestration of Spark Agent: positioning,
+competitor research, the agent-native operating model, workflow scope,
+information architecture, interaction trade-offs, acceptance criteria, and
+coordination across multiple models.
+
+Codex and other models produced a substantial share of the implementation under
+those constraints. I reviewed the resulting behavior against real workflows,
+redirected work that crossed the product boundary, and accepted features only
+when the UI, persistence, recovery, and evidence trail worked together.
+
+This project represents my product judgment and ability to direct AI-assisted
+implementation. It is not a claim that I manually wrote every line of code.
+
+## Works today
+
+- Exact plan and scope approval before remote literature discovery.
+- Bounded Crossref and OpenAlex discovery with normalization, deduplication,
+  coverage observations, durable operation identity, and restart recovery.
+- Human Include, Exclude, or Awaiting screening decisions.
+- Local PDF reading and verbatim evidence capture with exact-page reopening.
+- A persistent extraction matrix and editable cited report with separate document
+  and citation exports.
+- Local CSV analysis through approved Python and Jupyter execution, with figures,
+  tables, notebooks, logs, environment metadata, hashes, and artifact lineage.
+- Project-scoped research memory and a reviewed, replay-tested lifecycle for
+  project-local reusable procedures.
+
+## Deliberately bounded
+
+- The agent advances one approved research step at a time.
+- It may reorder approved queries or stop from novelty and evidence coverage.
+- It may not expand the provider, query, budget, method, permission, or disclosure
+  boundary without a revised approval.
+- Candidate metadata is not full-text evidence. A verified local PDF is required
+  before a source can support a claim.
+- Screening judgments, evidence interpretation, and scientific conclusions remain
+  human decisions.
+
+## What it is not
+
+- Not a chat-first research assistant.
+- Not a general coding agent or terminal.
+- Not an autonomous scientist.
+- Not a system that silently broadens a research question or source boundary.
+- Not a claim that citation structure proves scientific correctness.
+- Not a hosted document repository; the primary workspace lives on the local Mac.
+
+## Download
+
+Download the current macOS preview from
+[GitHub Releases](https://github.com/shawliu998/spark-agent/releases/latest).
+Spark Agent requires macOS 13 or newer and a running Docker Desktop or
+OrbStack installation. The preview is not yet Apple-notarized, so macOS may ask
+you to confirm that you trust the downloaded application.
+
+Model credentials are optional. Crossref/OpenAlex discovery, local PDF
+evidence, deterministic CSV analysis, and approval-gated workflows work without
+a model key.
+
+## Build from source
 
 Requirements:
 
-- macOS with Node.js 20+ and pnpm 9
+- macOS 13 or newer
+- Node.js 20 and pnpm 9
 - Docker Desktop or OrbStack
-- an OpenAI-compatible credential only for remote model-assisted workflows or
-  PaperQA questions
+
+The packaged `.dmg` does not require Node.js or pnpm. It currently does require
+Docker Desktop or OrbStack to be installed and running because Spark's bundled
+local research services run in pinned containers. If the container engine is
+not ready, Spark keeps the question editable in the current window and shows
+the exact recovery action before any search is started.
 
 ```bash
 git clone https://github.com/shawliu998/spark-agent.git
@@ -68,29 +227,25 @@ pnpm install
 pnpm mvp:dev
 ```
 
-`mvp:dev` performs the internal preflight, builds the two isolated services,
-applies verified Alembic migrations, allocates an available loopback port, creates
-an ephemeral 256-bit Bearer credential, waits for both services to become healthy,
-and injects the URL and credential into the desktop web client. The credential is
-not printed or placed in a URL. The first container build downloads the pinned
-Python dependencies and can take several minutes; later starts reuse Docker's
-cache.
+The first start builds two pinned local services and can take several minutes.
+Later starts reuse the container cache. Stop the scoped local services with
+`Ctrl-C` or:
 
-To enable the current PaperQA model gateway, store its credential in macOS
-Keychain. The secure prompt is handled by `security`; the launcher passes the key
-only to Compose's top-level secret source while creating the service, then clears
-its temporary variable. The key is not put in command arguments, persisted
-outside Keychain, rendered into Compose
-configuration, inherited by the desktop, placed in the service/container
-environment, or written to logs:
+```bash
+pnpm science:down
+```
+
+The default deterministic literature and dataset workflows, PDF import, CSV
+analysis, and Jupyter execution work without a model key. Optional
+model-assisted planning, synthesis, and PaperQA use an OpenAI-compatible
+credential stored in macOS Keychain:
 
 ```bash
 pnpm model-key:set
 pnpm model-key:status
 ```
 
-Select the non-secret provider model before launch. Set a compatible API base
-only when using a provider other than the default endpoint:
+Select the non-secret provider model before launch:
 
 ```bash
 export SPARK_AGENT_LLM_MODEL='your-provider-model-id'
@@ -99,41 +254,58 @@ export SPARK_AGENT_LLM_MODEL='your-provider-model-id'
 pnpm mvp:dev
 ```
 
-For this internal slice, both model variables are raw IDs accepted by the same
-OpenAI-compatible endpoint. PaperQA-native local embedding profiles are not wired
-to this launcher yet.
+Public and LAN endpoints must use HTTPS. Plain HTTP is accepted only for literal
+`localhost` or a loopback IP address.
 
-Public and LAN model endpoints must use HTTPS. Plain HTTP is accepted only for
-the literal `localhost` host or a loopback IP address.
+## Architecture
 
-Delete the credential with `pnpm model-key:delete`. At launch, Spark Agent reads
-the key into a non-exported variable and exposes it only as a Compose secret file
-inside `science-core`. An inherited `OPENAI_API_KEY` causes startup to fail rather
-than leaking the key to Vite or another child process; run `unset OPENAI_API_KEY`
-before `pnpm mvp:dev` if an existing shell profile exports it.
+```text
+Spark Agent Desktop (Tauri + React)
+  |
+  +-- research workspaces
+  +-- @spark/research-sdk
+  +-- approval and evidence surfaces
+  |
+  +-- science-core (FastAPI + SQLite)
+        +-- projects, plans, jobs, approvals, reports, memory
+        +-- bounded discovery and Research Agent decisions
+        +-- evidence and artifact integrity
+        |
+        +-- Unix-domain socket
+              |
+              +-- science-runtime
+                    +-- approved Python and Jupyter
+                    +-- no network
 
-Without a model key, the default deterministic workflow, PDF import, CSV analysis,
-and Jupyter execution remain available. A stored key also enables optional
-remote-model-assisted planning and synthesis as well as PaperQA answering. Remote
-workflows require approval of the research goal before planning and a second
-approval of the source-bound plan before execution.
-
-Stop the local services with:
-
-```bash
-pnpm science:down
+Bundled OpenCode sidecar
+  +-- replaceable model runtime behind packages/sdk
+  +-- project-local Skills and MCP capabilities
 ```
 
-Normally, pressing `Ctrl-C` in the `mvp:dev` terminal performs the same scoped
-cleanup. Project data remains under `.local/science-core`; the ephemeral runtime
-exchange and socket volumes are removed.
+The desktop UI never calls the model runtime directly. Product-owned domain
+contracts live behind the research SDK and Science Core; model providers, Skills,
+and MCP servers remain replaceable.
 
-## Quality checks
+<details>
+<summary><strong>Verification</strong></summary>
 
-Pull requests and pushes to `main` run independent Desktop, Rust, Science Core,
-Science Runtime, migration, and Docker integration jobs. To run the same complete
-gate locally, install Node.js 20 with pnpm 9, Python 3.12, the stable Rust
-toolchain with `rustfmt` and `clippy`, and Docker, then prepare the workspace:
+The interview-grade Research Agent story currently passes:
+
+- 3 focused backend acceptance tests;
+- 138 focused frontend contract tests;
+- 12 fixed v1.3 agent evaluation cases;
+- the full desktop TypeScript check;
+- targeted whitespace and repository checks; and
+- a live persisted page-2 evidence capture.
+
+Run the same focused evidence:
+
+```bash
+bash scripts/quality/validate-agent-interview-story.sh
+```
+
+This is an honest cross-layer acceptance bundle, not one packaged end-to-end run.
+The complete local quality gate remains:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -144,77 +316,60 @@ python -m pip install -e './services/science-core[literature,dev]' \
 pnpm quality
 ```
 
-Every check also has a focused root command: `lint:desktop`,
-`typecheck:desktop`, `test:desktop`, `fmt:rust`, `lint:rust`, `test:rust`,
-`lint:core`, `typecheck:core`, `test:core`, `lint:runtime`,
-`typecheck:runtime`, `test:runtime`, and `test:integration`. Invoke one with
-`pnpm <command>`. `test:release-assets` verifies the fail-closed SHA-256 policy
-for every supported OpenCode and uv sidecar. Rust lint and test use a compile-only
-Tauri override that omits packaged sidecars; release builds fetch pinned binaries
-and verify their committed SHA-256 digests before unpacking them.
+</details>
 
-## Internal MVP boundary
+<details>
+<summary><strong>Current release boundary</strong></summary>
 
-- The durable orchestrator supports two coherent workflow types:
-  `literature-synthesis` (inspect sources → extract local evidence → synthesize
-  extractive claims → deterministic review) and `dataset-analysis` (profile an
-  immutable CSV → prepare and approve exact Python → execute in science-runtime
-  → verify artifacts and deterministic review).
-- The default plan is deterministic and local. The optional model-assisted mode
-  proposes a schema-validated plan and extractive claims, while the durable local
-  workflow remains canonical and evidence verification stays fail-closed.
-- The Reviewer verifies immutable result materialization, exact citation links,
-  local quote location, and source-file/page fingerprints. It does not establish
-  scientific correctness, methodological quality, entailment, or generalizability.
-- Dataset analysis currently provides a deterministic descriptive baseline. Its
-  Reviewer verifies input/run/artifact lineage and required output integrity, but
-  does not prove causal validity or that a requested inferential method was used.
-  Workflow execution accepts only the versioned baseline or bounded repair template
-  AST selected by science-core, with the same contract checked again by science-runtime;
-  standalone editable analyses retain their separate explicit-approval container policy.
-- Workflow activity uses authenticated cursor polling (1.5 seconds while active),
-  not SSE yet.
-- This remains a source-run internal build. Tauri-managed packaging of the Python
-  services is a later release step.
+Spark is an internal macOS release candidate. Earlier arm64 snapshots passed
+packaged workflow and restart QA; the latest source changes still need a new
+sealed package. Public distribution additionally needs a clean source baseline,
+Apple Developer ID signing, and notarization.
 
-## Safety defaults
+Crossref and OpenAlex relevance discovery are enabled. arXiv and PubMed remain
+disabled until their connectors preserve the same explicit failure and
+unknown-outcome semantics. Discovery does not automatically download PDFs.
 
-- Project-scoped file access and explicit approval for high-risk operations.
-- A generated Bearer credential on every internal launch, a dynamically allocated
-  loopback-only service port, and an allowlisted CORS boundary.
+The reviewer verifies result materialization, citation links, local quote
+location, and source-file/page fingerprints. It does not establish scientific
+correctness, methodological quality, entailment, or generalizability.
+
+</details>
+
+<details>
+<summary><strong>Trust boundaries</strong></summary>
+
+- Workspace-scoped file access and explicit approval for material scope and
+  high-risk operations.
+- Loopback-only authenticated local services and allowlisted CORS.
 - No arbitrary direct shell mode in the product UI.
-- Compare-and-set workflow revisions, idempotent workflow creation and enqueue
-  guards, immutable plan/approval envelopes and frozen reviewed-result hashes,
-  leased jobs, bounded recovery, and fail-closed Reviewer checks.
-- Immutable, hashed analysis intents with compare-and-set approval decisions.
-- Jupyter execution in a no-network container with a read-only root filesystem,
-  resource limits, and a Unix-domain socket instead of a TCP runtime port.
-- Artifact paths, regular files, source containment, and SHA-256 are verified
-  before files are served or accepted.
-- "Immutable" in this boundary means the content-addressed identity and its
-  approved or reviewed database record. Workspace materializations remain local
-  and user-editable, so every trusted read re-verifies SHA-256 and fails closed
-  instead of treating the workspace file as WORM storage.
+- Revision-checked, idempotent workflows with bounded recovery and fail-closed
+  review.
+- Python and Jupyter run in a no-network container with a read-only root
+  filesystem, resource limits, and a Unix-domain socket.
+- Trusted reads re-verify source containment and SHA-256 before accepting files
+  or artifacts.
 
-This is research software. Model answers and generated analyses must still be
-reviewed before publication or consequential use.
+This is research software. Model answers and generated analyses still require
+review before publication or consequential use.
 
-## Upstream and maintenance model
+</details>
 
-This GitHub repository is independent and is not registered as a GitHub Fork.
-Its source history is nevertheless derived from Open Science Desktop v0.1.9.
-The `upstream` Git remote is retained so selected upstream releases can be
-merged intentionally. Product-specific services and features are kept separate
-where practical to reduce merge conflicts.
+<details>
+<summary><strong>Brand, upstream, and attribution</strong></summary>
 
-Internal `@ai4s/*` and Rust crate names are temporarily retained for source
-compatibility. They are implementation details, not the Spark Agent brand.
+The canonical application icon is
+[`apps/desktop/src/assets/spark-app-icon.png`](apps/desktop/src/assets/spark-app-icon.png);
+the horizontal product wordmark is
+[`apps/desktop/src/assets/spark-wordmark.png`](apps/desktop/src/assets/spark-wordmark.png).
+Platform icon derivatives are generated from the application-icon master.
 
-## License and attribution
+The desktop shell reuses MIT-licensed portions of Open Science Desktop v0.1.9.
+Spark-specific research pages, domain contracts, science services, approval
+state, and isolated execution are maintained in this repository. Spark Agent is
+independent from Open Science Desktop and its maintainers.
 
-The inherited Open Science Desktop code is available under the MIT License; the
-required original notice is retained in [LICENSE](./LICENSE). See
-[THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md) for major reused components.
+See [LICENSE](LICENSE) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-Spark Agent is maintained and distributed independently from Open Science
-Desktop and its maintainers.
+</details>

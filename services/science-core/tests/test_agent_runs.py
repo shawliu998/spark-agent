@@ -21,6 +21,7 @@ import open_science_core._analysis_service.filesystem as filesystem_module
 import open_science_core.analysis as analysis_module
 from open_science_core.analysis import RuntimeExecutionResult
 from open_science_core.analysis_service import execute_workflow_analysis_intent
+from open_science_core.analysis_spec.schemas import AnalysisSpec
 from open_science_core.api import agent_runs as agent_runs_api
 from open_science_core.api.agent_runs import (
     get_agent_session,
@@ -37,26 +38,43 @@ from open_science_core.api.workflows import (
 from open_science_core.config import settings
 from open_science_core.db import Base
 from open_science_core.models import (
+    AgentDecisionRecord,
     AnalysisIntentRecord,
     AnalysisSpecRecord,
+    AnswerRecord,
     ApprovalRecord,
     ArtifactRecord,
+    ClaimEvidenceRecord,
+    ClaimRecord,
     EventRecord,
+    EvidenceSpanRecord,
     IntentDecisionRecord,
     InteractionRequestRecord,
     JobRecord,
     ModelInvocationRecord,
     PlanRecord,
     ProjectRecord,
+    ResearchMemoryRecord,
     SourcePageRecord,
     SourceRecord,
+    StepObservationRecord,
     StructuredAnalysisResultRecord,
+    TaskRecord,
     UserResponseRecord,
     WorkflowRecord,
     utc_now,
 )
 from open_science_core.schemas import AnalysisRunOut
 from open_science_core.workflow import agent_service, handlers
+from open_science_core.workflow._service.events import transition_workflow
+from open_science_core.workflow._service.integrity import content_sha256
+from open_science_core.workflow.agent_loop.decision import safe_analysis_spec_revision
+from open_science_core.workflow.agent_loop.schemas import (
+    AgentDecision,
+    StepObservation,
+    agent_decision_sha256,
+    step_observation_sha256,
+)
 from open_science_core.workflow.intent_router import (
     INTENT_ROUTER_PROMPT_VERSION,
     IntentSource,
@@ -322,13 +340,13 @@ def _add_pdf_source(
     *,
     source_id: str = "paper-1",
     project_id: str = "project-1",
+    passage: str = "Local evidence supports a bounded literature research workflow.",
 ) -> str:
     root = environment.project_roots[project_id]
     path = root / "sources" / f"{source_id}.pdf"
     content = f"%PDF-1.7 autonomous-agent-run-{source_id}".encode()
     path.write_bytes(content)
     content_hash = hashlib.sha256(content).hexdigest()
-    passage = "Local evidence supports a bounded literature research workflow."
     words = [
         {
             "text": word,
@@ -443,6 +461,209 @@ def _create_agent_run(
     return cast(dict[str, Any], response.json())
 
 
+def _seed_confirmable_method_revision(
+    environment: AgentRunEnvironment,
+    client: TypedTestClient,
+    *,
+    suffix: str,
+) -> tuple[str, str, dict[str, Any]]:
+    dataset_id = _add_dataset_source(
+        environment,
+        source_id=f"dataset-method-revision-{suffix}",
+    )
+    started = _create_agent_run(
+        client,
+        goal="Use Welch's t-test to compare outcome between the control and treated groups.",
+        source_ids=[dataset_id],
+        idempotency_key=f"agent-method-revision-{suffix}",
+    )
+    workflow_id = started["workflow"]["id"]
+    assert _run_once(environment.worker)  # route
+    assert _run_once(environment.worker)  # plan
+    planned = client.get(f"/v1/agent-runs/{workflow_id}").json()
+    approval = planned["pendingApprovals"][0]
+    approved = client.post(
+        f"/v1/workflows/{workflow_id}/approve-plan",
+        json={
+            "approvalId": approval["id"],
+            "planId": planned["plan"]["id"],
+            "planVersion": planned["plan"]["version"],
+            "planSha256": planned["plan"]["planSha256"],
+            "expectedWorkflowRevision": planned["workflow"]["revision"],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    with environment.session_factory.begin() as session:
+        workflow = session.get(WorkflowRecord, workflow_id)
+        plan = session.scalar(
+            select(PlanRecord).where(
+                PlanRecord.workflow_id == workflow_id,
+                PlanRecord.status == "approved",
+            )
+        )
+        spec_record = session.scalar(
+            select(AnalysisSpecRecord).where(
+                AnalysisSpecRecord.workflow_id == workflow_id,
+                AnalysisSpecRecord.status == "approved",
+            )
+        )
+        assert workflow is not None
+        assert plan is not None
+        assert spec_record is not None
+        current_spec = AnalysisSpec.model_validate_json(
+            json.dumps(spec_record.spec_json, allow_nan=False, ensure_ascii=False),
+            strict=True,
+        )
+        revision = safe_analysis_spec_revision(current_spec)
+        assert revision is not None
+        proposed_spec, spec_diff = revision
+        pending_jobs = list(
+            session.scalars(
+                select(JobRecord).where(
+                    JobRecord.workflow_id == workflow_id,
+                    JobRecord.status == "queued",
+                )
+            )
+        )
+        for pending_job in pending_jobs:
+            pending_job.status = "cancelled"
+            pending_job.finished_at = utc_now()
+        prepare_task = session.scalar(
+            select(TaskRecord).where(
+                TaskRecord.workflow_id == workflow_id,
+                TaskRecord.plan_id == plan.id,
+                TaskRecord.step_key == "prepare-analysis",
+            )
+        )
+        assert prepare_task is not None
+        prepare_task.status = "failed"
+        source_job = JobRecord(
+            id=f"method-revision-source-{suffix}",
+            workflow_id=workflow_id,
+            task_id=prepare_task.id,
+            kind="execute-task",
+            operation_key=f"workflow:{workflow_id}:method-revision:{suffix}",
+            attempt=1,
+            input_sha256="a" * 64,
+            handler_version="method-revision-test-v1",
+            status="failed",
+            error_code="welch-group-variance-zero",
+            error_message="The approved parametric method is unsuitable.",
+            finished_at=utc_now(),
+        )
+        session.add(source_job)
+        transition_workflow(
+            session,
+            workflow,
+            "failed",
+            reason_code="welch-group-variance-zero",
+            blocking_message="The approved parametric method is unsuitable.",
+        )
+        observation_value = StepObservation.model_validate(
+            {
+                "schemaVersion": "1",
+                "workflowId": workflow_id,
+                "planId": plan.id,
+                "taskId": prepare_task.id,
+                "sourceJobId": source_job.id,
+                "runId": None,
+                "reviewId": None,
+                "observationType": "step-output",
+                "stepKey": prepare_task.step_key,
+                "attempt": 1,
+                "status": "blocked",
+                "facts": [
+                    {
+                        "code": "failure-code",
+                        "statement": "The deterministic preflight rejected the approved method.",
+                        "value": "welch-group-variance-zero",
+                        "sourceType": "analysis-spec",
+                        "sourceId": spec_record.id,
+                    }
+                ],
+                "warnings": [],
+                "unresolvedQuestions": [],
+                "artifactIds": [],
+                "failureCategory": "method",
+                "recommendedActions": ["revise-analysis-spec", "stop"],
+            },
+            strict=True,
+        )
+        observation = StepObservationRecord(
+            id=f"method-revision-observation-{suffix}",
+            workflow_id=workflow_id,
+            plan_id=plan.id,
+            task_id=prepare_task.id,
+            source_job_id=source_job.id,
+            schema_version="1",
+            observation_type="step-output",
+            step_key=prepare_task.step_key,
+            attempt=1,
+            status="blocked",
+            facts_json=[
+                item.model_dump(mode="json", by_alias=True)
+                for item in observation_value.facts
+            ],
+            warnings_json=[],
+            unresolved_questions_json=[],
+            artifact_ids_json=[],
+            failure_category="method",
+            recommended_actions_json=["revise-analysis-spec", "stop"],
+            input_sha256=content_sha256(
+                {
+                    "attempt": 1,
+                    "sourceJobId": source_job.id,
+                    "workflowId": workflow_id,
+                }
+            ),
+            output_sha256=step_observation_sha256(observation_value),
+            generator="deterministic-observer-v1",
+        )
+        session.add(observation)
+        session.flush()
+        value = AgentDecision(
+            schema_version="1",
+            action="revise-analysis-spec",
+            reason_code="welch-group-variance-zero",
+            reason="Use the registered non-parametric alternative after user confirmation.",
+            proposed_analysis_spec=proposed_spec,
+            analysis_spec_diff=spec_diff,
+            requires_user_confirmation=True,
+        )
+        proposed_payload = proposed_spec.model_dump(mode="json", by_alias=True)
+        decision = AgentDecisionRecord(
+            id=f"method-revision-decision-{suffix}",
+            workflow_id=workflow_id,
+            observation_id=observation.id,
+            schema_version="1",
+            decision_revision=1,
+            expected_workflow_revision=workflow.row_version,
+            action=value.action,
+            reason_code=value.reason_code,
+            reason=value.reason,
+            target_step_key=None,
+            proposed_analysis_spec_json=proposed_payload,
+            proposed_analysis_spec_sha256=content_sha256(proposed_payload),
+            analysis_spec_diff_json=spec_diff.model_dump(mode="json", by_alias=True),
+            clarification_requests_json=[],
+            requires_user_confirmation=True,
+            generator="deterministic-policy-v1",
+            prompt_version=None,
+            model=None,
+            model_invocation_id=None,
+            input_sha256="d" * 64,
+            output_sha256=agent_decision_sha256(value),
+            status="waiting-user-confirmation",
+        )
+        session.add(decision)
+        payload = {
+            "decision": "approved",
+            "decisionOutputSha256": decision.output_sha256,
+            "expectedWorkflowRevision": workflow.row_version,
+        }
+    return workflow_id, decision.id, payload
+
+
 def test_create_list_get_and_create_idempotency(
     agent_run_environment: AgentRunEnvironment,
     agent_run_client: TypedTestClient,
@@ -507,6 +728,257 @@ def test_create_list_get_and_create_idempotency(
         )
     assert count == 1
     assert queued_routes == 1
+
+
+def test_confirmed_method_revision_creates_a_new_plan_with_existing_approvals(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+) -> None:
+    workflow_id, decision_id, payload = _seed_confirmable_method_revision(
+        agent_run_environment,
+        agent_run_client,
+        suffix="approve",
+    )
+    waiting = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert waiting["pendingDecision"]["id"] == decision_id
+    assert waiting["pendingDecision"]["status"] == "waiting-user-confirmation"
+    assert waiting["allowedActions"] == [
+        "approve-agent-decision",
+        "reject-agent-decision",
+        "cancel",
+    ]
+    mismatched = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json={**payload, "decisionOutputSha256": "0" * 64},
+    )
+    assert mismatched.status_code == 409, mismatched.text
+    assert mismatched.json()["detail"]["code"] == (
+        "agent-decision-resolution-mismatch"
+    )
+
+    resolved = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json=payload,
+    )
+    assert resolved.status_code == 202, resolved.text
+    assert resolved.json()["pendingDecision"]["status"] == "proposed"
+    replay = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json=payload,
+    )
+    assert replay.status_code == 202, replay.text
+    conflicting = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json={**payload, "decision": "rejected"},
+    )
+    assert conflicting.status_code == 409, conflicting.text
+    assert conflicting.json()["detail"]["code"] == "agent-decision-already-resolved"
+
+    restarted_worker = WorkflowWorker(
+        agent_run_environment.session_factory,
+        poll_interval_seconds=0.01,
+        lease_seconds=1.0,
+        heartbeat_seconds=0.1,
+    )
+    restarted_worker.recover()
+    assert _run_once(restarted_worker)  # apply confirmed revision after restart
+    assert _run_once(restarted_worker)  # generate revised plan
+    revised = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert revised["workflow"]["status"] == "waiting-plan-approval"
+    assert revised["workflow"]["planVersion"] == 2
+    assert revised["pendingDecision"] is None
+    assert revised["plan"]["generator"] == "goal-aware-dataset-plan-v1"
+    assert revised["analysisSpec"]["revision"] == 2
+    assert revised["analysisSpec"]["status"] == "pending-approval"
+    assert revised["analysisSpec"]["spec"]["operation"]["method"] == (
+        "mann-whitney-u"
+    )
+    assert "approve-plan" in revised["allowedActions"]
+
+    approval = revised["pendingApprovals"][0]
+    approved = agent_run_client.post(
+        f"/v1/workflows/{workflow_id}/approve-plan",
+        json={
+            "approvalId": approval["id"],
+            "planId": revised["plan"]["id"],
+            "planVersion": revised["plan"]["version"],
+            "planSha256": revised["plan"]["planSha256"],
+            "expectedWorkflowRevision": revised["workflow"]["revision"],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    with agent_run_environment.session_factory() as session:
+        specs = list(
+            session.scalars(
+                select(AnalysisSpecRecord)
+                .where(AnalysisSpecRecord.workflow_id == workflow_id)
+                .order_by(AnalysisSpecRecord.revision)
+            )
+        )
+        plans = list(
+            session.scalars(
+                select(PlanRecord)
+                .where(PlanRecord.workflow_id == workflow_id)
+                .order_by(PlanRecord.version)
+            )
+        )
+        decision = session.get(AgentDecisionRecord, decision_id)
+        revision_events = list(
+            session.scalars(
+                select(EventRecord).where(
+                    EventRecord.workflow_id == workflow_id,
+                    EventRecord.event_type.in_(
+                        [
+                            "agent.decision-approved",
+                            "agent.analysis-spec-revision-approved",
+                        ]
+                    ),
+                )
+            )
+        )
+    assert [item.status for item in specs] == ["superseded", "approved"]
+    assert specs[1].previous_spec_id == specs[0].id
+    assert specs[1].proposed_by_decision_id == decision_id
+    assert [item.status for item in plans] == ["superseded", "approved"]
+    assert decision is not None and decision.status == "applied"
+    assert len(revision_events) == 2
+
+
+def test_rejected_method_revision_does_not_change_spec_or_generate_plan(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+) -> None:
+    workflow_id, decision_id, approval_payload = _seed_confirmable_method_revision(
+        agent_run_environment,
+        agent_run_client,
+        suffix="reject",
+    )
+    payload = {**approval_payload, "decision": "rejected"}
+    rejected = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json=payload,
+    )
+    assert rejected.status_code == 202, rejected.text
+    assert rejected.json()["pendingDecision"] is None
+    assert rejected.json()["decisionHistory"][0]["status"] == "rejected"
+    replay = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json=payload,
+    )
+    assert replay.status_code == 202, replay.text
+    with agent_run_environment.session_factory() as session:
+        spec_count = session.scalar(
+            select(func.count())
+            .select_from(AnalysisSpecRecord)
+            .where(AnalysisSpecRecord.workflow_id == workflow_id)
+        )
+        plan_count = session.scalar(
+            select(func.count())
+            .select_from(PlanRecord)
+            .where(PlanRecord.workflow_id == workflow_id)
+        )
+        queued_replan = session.scalar(
+            select(func.count())
+            .select_from(JobRecord)
+            .where(
+                JobRecord.workflow_id == workflow_id,
+                JobRecord.kind.in_(["apply-agent-decision", "generate-plan"]),
+                JobRecord.status == "queued",
+            )
+        )
+    assert spec_count == 1
+    assert plan_count == 1
+    assert queued_replan == 0
+
+
+def test_method_revision_resolution_rejects_tampered_observation(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+) -> None:
+    workflow_id, decision_id, payload = _seed_confirmable_method_revision(
+        agent_run_environment,
+        agent_run_client,
+        suffix="ort",
+    )
+    with agent_run_environment.session_factory.begin() as session:
+        decision = session.get(AgentDecisionRecord, decision_id)
+        assert decision is not None
+        observation = session.get(StepObservationRecord, decision.observation_id)
+        assert observation is not None
+        observation.recommended_actions_json = ["stop"]
+
+    response = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json=payload,
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "agent-observation-integrity-failed"
+    with agent_run_environment.session_factory() as session:
+        decision = session.get(AgentDecisionRecord, decision_id)
+        apply_count = session.scalar(
+            select(func.count())
+            .select_from(JobRecord)
+            .where(
+                JobRecord.workflow_id == workflow_id,
+                JobRecord.kind == "apply-agent-decision",
+            )
+        )
+    assert decision is not None and decision.status == "waiting-user-confirmation"
+    assert apply_count == 0
+
+
+@pytest.mark.parametrize("tamper_target", ["decision", "observation"])
+def test_confirmed_method_revision_apply_revalidates_immutable_inputs(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+    tamper_target: str,
+) -> None:
+    workflow_id, decision_id, payload = _seed_confirmable_method_revision(
+        agent_run_environment,
+        agent_run_client,
+        suffix=f"a{tamper_target[0]}t",
+    )
+    resolved = agent_run_client.post(
+        f"/v1/agent-runs/{workflow_id}/decisions/{decision_id}/resolve",
+        json=payload,
+    )
+    assert resolved.status_code == 202, resolved.text
+    with agent_run_environment.session_factory.begin() as session:
+        decision = session.get(AgentDecisionRecord, decision_id)
+        assert decision is not None
+        if tamper_target == "decision":
+            decision.reason = "Tampered after the user approved the exact decision."
+        else:
+            observation = session.get(StepObservationRecord, decision.observation_id)
+            assert observation is not None
+            observation.recommended_actions_json = ["stop"]
+
+    assert _run_once(agent_run_environment.worker)
+    with agent_run_environment.session_factory() as session:
+        decision = session.get(AgentDecisionRecord, decision_id)
+        spec_count = session.scalar(
+            select(func.count())
+            .select_from(AnalysisSpecRecord)
+            .where(AnalysisSpecRecord.workflow_id == workflow_id)
+        )
+        plan_count = session.scalar(
+            select(func.count())
+            .select_from(PlanRecord)
+            .where(PlanRecord.workflow_id == workflow_id)
+        )
+        apply_job = session.scalar(
+            select(JobRecord)
+            .where(
+                JobRecord.workflow_id == workflow_id,
+                JobRecord.kind == "apply-agent-decision",
+            )
+            .order_by(JobRecord.created_at.desc())
+        )
+    assert decision is not None and decision.status == "proposed"
+    assert spec_count == 1
+    assert plan_count == 1
+    assert apply_job is not None and apply_job.status == "failed"
+    assert apply_job.error_code == f"agent-{tamper_target}-integrity-failed"
 
 
 def test_legacy_workflow_api_isolates_lists_and_returns_agent_mutation_snapshots(
@@ -822,11 +1294,27 @@ def test_answer_change_before_approval_supersedes_plan_and_creates_next_version(
                 .order_by(JobRecord.created_at)
             )
         )
+        memories = list(
+            session.scalars(
+                select(ResearchMemoryRecord)
+                .where(
+                    ResearchMemoryRecord.project_id == first_plan["workflow"]["projectId"],
+                    ResearchMemoryRecord.subject_key
+                    == f"interaction-response:{interaction['id']}",
+                )
+                .order_by(ResearchMemoryRecord.revision)
+            )
+        )
     assert [job.operation_key for job in plan_jobs] == [
         f"workflow:{workflow_id}:plan:1",
         f"workflow:{workflow_id}:plan:2",
     ]
     assert all(job.status == "succeeded" for job in plan_jobs)
+    assert [(memory.revision, memory.status) for memory in memories] == [
+        (1, "superseded"),
+        (2, "committed"),
+    ]
+    assert memories[1].previous_id == memories[0].id
 
 
 def test_answer_change_while_first_plan_job_is_queued_reserves_next_plan_version(
@@ -1056,6 +1544,345 @@ def test_single_source_kind_is_recognized_and_resolved(
         assert workflow.dataset_content_hash is None
 
 
+def test_autonomous_local_literature_completes_through_durable_agent_loop(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+) -> None:
+    source_id = _add_pdf_source(
+        agent_run_environment,
+        source_id="paper-agent-loop-literature",
+    )
+    started = _create_agent_run(
+        agent_run_client,
+        goal="Synthesize the selected paper evidence.",
+        source_ids=[source_id],
+        idempotency_key="agent-local-literature-loop-0001",
+    )
+    workflow_id = started["workflow"]["id"]
+
+    assert _run_once(agent_run_environment.worker)  # route intent
+    assert _run_once(agent_run_environment.worker)  # generate plan
+    planned = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert planned["workflow"]["status"] == "waiting-plan-approval"
+    approval = planned["pendingApprovals"][0]
+    approved = agent_run_client.post(
+        f"/v1/workflows/{workflow_id}/approve-plan",
+        json={
+            "approvalId": approval["id"],
+            "planId": planned["plan"]["id"],
+            "planVersion": planned["plan"]["version"],
+            "planSha256": planned["plan"]["planSha256"],
+            "expectedWorkflowRevision": planned["workflow"]["revision"],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+
+    # Restart after the first durable source step. The queued control job and
+    # every later transition must remain recoverable without replaying the step.
+    assert _run_once(agent_run_environment.worker)
+    restarted_worker = WorkflowWorker(
+        agent_run_environment.session_factory,
+        poll_interval_seconds=0.01,
+        lease_seconds=1.0,
+        heartbeat_seconds=0.1,
+    )
+    restarted_worker.recover()
+    for _ in range(20):
+        snapshot = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+        if snapshot["workflow"]["status"] == "completed":
+            break
+        assert _run_once(restarted_worker)
+    final = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+
+    assert final["workflow"]["status"] == "completed"
+    assert final["workflow"]["workflowType"] == "literature-synthesis"
+    assert final["workflow"]["generationMode"] == "local-deterministic"
+    assert final["intentDecision"]["selectedSourceIds"] == [source_id]
+    assert final["latestReview"]["reviewType"] == "deterministic-claims-v2"
+    assert final["latestReview"]["verdict"] == "passed"
+    assert final["result"]["integrityStatus"] == "verified-frozen-v2"
+    assert final["result"]["claims"]
+
+    with agent_run_environment.session_factory() as session:
+        observations = list(
+            session.scalars(
+                select(StepObservationRecord)
+                .where(StepObservationRecord.workflow_id == workflow_id)
+                .order_by(StepObservationRecord.created_at, StepObservationRecord.id)
+            )
+        )
+        decisions = list(
+            session.scalars(
+                select(AgentDecisionRecord)
+                .where(AgentDecisionRecord.workflow_id == workflow_id)
+                .order_by(AgentDecisionRecord.created_at, AgentDecisionRecord.id)
+            )
+        )
+        plan = session.scalar(
+            select(PlanRecord).where(
+                PlanRecord.workflow_id == workflow_id,
+                PlanRecord.status == "approved",
+            )
+        )
+        assert plan is not None
+        inspect_task = session.scalar(
+            select(TaskRecord).where(
+                TaskRecord.workflow_id == workflow_id,
+                TaskRecord.plan_id == plan.id,
+                TaskRecord.step_key == "inspect-sources",
+            )
+        )
+        answer = session.scalar(
+            select(AnswerRecord).where(AnswerRecord.workflow_id == workflow_id)
+        )
+        assert answer is not None
+        claims = list(
+            session.scalars(
+                select(ClaimRecord)
+                .where(ClaimRecord.answer_id == answer.id)
+                .order_by(ClaimRecord.id)
+            )
+        )
+        links = list(
+            session.scalars(
+                select(ClaimEvidenceRecord).where(
+                    ClaimEvidenceRecord.claim_id.in_([claim.id for claim in claims])
+                )
+            )
+        )
+        evidence = [session.get(EvidenceSpanRecord, link.evidence_id) for link in links]
+        model_invocations = session.scalar(
+            select(func.count())
+            .select_from(ModelInvocationRecord)
+            .where(ModelInvocationRecord.workflow_id == workflow_id)
+        )
+
+    assert [item.observation_type for item in observations] == [
+        "step-output",
+        "step-output",
+        "step-output",
+        "review",
+    ]
+    assert [item.recommended_actions_json for item in observations] == [
+        ["continue"],
+        ["continue"],
+        ["continue"],
+        ["complete"],
+    ]
+    assert [item.action for item in decisions] == [
+        "continue",
+        "continue",
+        "continue",
+        "complete",
+    ]
+    assert all(item.status == "applied" for item in decisions)
+    assert model_invocations == 0
+    assert "Local evidence supports" not in json.dumps(
+        [item.facts_json for item in observations]
+    )
+    assert inspect_task is not None
+    assert inspect_task.outputs["sourceIds"] == [source_id]
+    assert claims and links
+    assert all(item is not None for item in evidence)
+    assert all(
+        item is not None
+        and item.source_id == source_id
+        and item.quote_hash == hashlib.sha256(item.text.encode("utf-8")).hexdigest()
+        for item in evidence
+    )
+    assert set(answer.metadata_json["evidenceOrder"]) == {
+        link.evidence_id for link in links
+    }
+
+
+def test_literature_complete_revalidates_every_frozen_source_at_apply(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+) -> None:
+    relevant_source_id = _add_pdf_source(
+        agent_run_environment,
+        source_id="paper-z-agent-loop-relevant",
+        passage=(
+            "Randomized sleep intervention evidence reports improved sleep duration "
+            "in adults."
+        ),
+    )
+    uncited_source_id = _add_pdf_source(
+        agent_run_environment,
+        source_id="paper-a-agent-loop-uncited",
+        passage="Zebras migrate quietly across alpine valleys during winter.",
+    )
+    started = _create_agent_run(
+        agent_run_client,
+        goal="Synthesize sleep intervention evidence from the selected papers.",
+        source_ids=[relevant_source_id, uncited_source_id],
+        idempotency_key="agent-local-literature-all-sources-0001",
+    )
+    workflow_id = started["workflow"]["id"]
+
+    assert _run_once(agent_run_environment.worker)
+    assert _run_once(agent_run_environment.worker)
+    planned = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    approval = planned["pendingApprovals"][0]
+    approved = agent_run_client.post(
+        f"/v1/workflows/{workflow_id}/approve-plan",
+        json={
+            "approvalId": approval["id"],
+            "planId": planned["plan"]["id"],
+            "planVersion": planned["plan"]["version"],
+            "planSha256": planned["plan"]["planSha256"],
+            "expectedWorkflowRevision": planned["workflow"]["revision"],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+
+    pending_complete: dict[str, Any] | None = None
+    for _ in range(20):
+        snapshot = cast(
+            dict[str, Any],
+            agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json(),
+        )
+        pending_decision = cast(dict[str, Any] | None, snapshot["pendingDecision"])
+        if pending_decision is not None and pending_decision["action"] == "complete":
+            pending_complete = snapshot
+            break
+        assert _run_once(agent_run_environment.worker)
+    assert pending_complete is not None
+    cited_source_ids = {
+        evidence["sourceId"]
+        for claim in pending_complete["result"]["claims"]
+        for evidence in claim["evidence"]
+    }
+    assert relevant_source_id in cited_source_ids
+    assert uncited_source_id not in cited_source_ids
+
+    with agent_run_environment.session_factory() as session:
+        uncited_source = session.get(SourceRecord, uncited_source_id)
+        assert uncited_source is not None
+        uncited_path = Path(uncited_source.local_path)
+    uncited_path.write_bytes(b"%PDF-1.7 replaced-after-review")
+
+    assert _run_once(agent_run_environment.worker)  # apply complete fails closed
+    with agent_run_environment.session_factory() as session:
+        workflow = session.get(WorkflowRecord, workflow_id)
+        apply_job = session.scalar(
+            select(JobRecord)
+            .where(
+                JobRecord.workflow_id == workflow_id,
+                JobRecord.kind == "apply-agent-decision",
+            )
+            .order_by(JobRecord.created_at.desc())
+        )
+    assert workflow is not None
+    assert workflow.status == "failed"
+    assert workflow.finished_at is None
+    assert apply_job is not None
+    assert apply_job.status == "failed"
+    assert apply_job.error_code == "agent-completion-invariant-failed"
+
+
+def test_literature_failure_enters_agent_loop_without_worker_restart(
+    agent_run_environment: AgentRunEnvironment,
+    agent_run_client: TypedTestClient,
+) -> None:
+    source_id = _add_pdf_source(
+        agent_run_environment,
+        source_id="paper-agent-loop-failure",
+    )
+    started = _create_agent_run(
+        agent_run_client,
+        goal="Synthesize the selected paper evidence.",
+        source_ids=[source_id],
+        idempotency_key="agent-local-literature-failure-0001",
+    )
+    workflow_id = started["workflow"]["id"]
+
+    assert _run_once(agent_run_environment.worker)
+    assert _run_once(agent_run_environment.worker)
+    planned = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    approval = planned["pendingApprovals"][0]
+    approved = agent_run_client.post(
+        f"/v1/workflows/{workflow_id}/approve-plan",
+        json={
+            "approvalId": approval["id"],
+            "planId": planned["plan"]["id"],
+            "planVersion": planned["plan"]["version"],
+            "planSha256": planned["plan"]["planSha256"],
+            "expectedWorkflowRevision": planned["workflow"]["revision"],
+        },
+    )
+    assert approved.status_code == 200, approved.text
+
+    with agent_run_environment.session_factory() as session:
+        source = session.get(SourceRecord, source_id)
+        assert source is not None
+        source_path = Path(source.local_path)
+    source_path.write_bytes(b"%PDF-1.7 changed-before-inspection")
+
+    assert _run_once(agent_run_environment.worker)  # inspect fails and queues observe
+    with agent_run_environment.session_factory() as session:
+        source_jobs = list(
+            session.scalars(
+                select(JobRecord).where(
+                    JobRecord.workflow_id == workflow_id,
+                    JobRecord.kind == "execute-task",
+                )
+            )
+        )
+        observe_jobs = list(
+            session.scalars(
+                select(JobRecord).where(
+                    JobRecord.workflow_id == workflow_id,
+                    JobRecord.kind == "observe-step",
+                )
+            )
+        )
+    assert len(source_jobs) == 1
+    assert source_jobs[0].status == "failed"
+    assert len(observe_jobs) == 1
+    assert observe_jobs[0].status == "queued"
+
+    assert _run_once(agent_run_environment.worker)  # observe failure
+    observed = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert observed["workflow"]["status"] == "blocked"
+    assert observed["latestObservation"]["status"] == "failed"
+    assert observed["latestObservation"]["recommendedActions"] == ["stop"]
+    assert _run_once(agent_run_environment.worker)  # decide stop
+    decided = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert decided["pendingDecision"]["action"] == "stop"
+    assert _run_once(agent_run_environment.worker)  # apply stop
+
+    with agent_run_environment.session_factory() as session:
+        execute_count = session.scalar(
+            select(func.count())
+            .select_from(JobRecord)
+            .where(
+                JobRecord.workflow_id == workflow_id,
+                JobRecord.kind == "execute-task",
+            )
+        )
+        decision = session.scalar(
+            select(AgentDecisionRecord).where(
+                AgentDecisionRecord.workflow_id == workflow_id
+            )
+        )
+    assert execute_count == 1
+    assert decision is not None
+    assert decision.action == "stop"
+    assert decision.status == "applied"
+
+    events_response = agent_run_client.get(f"/v1/workflows/{workflow_id}/events")
+    assert events_response.status_code == 200, events_response.text
+    stopped_events = [
+        event
+        for event in events_response.json()["events"]
+        if event["type"] == "agent.stopped"
+    ]
+    assert len(stopped_events) == 1
+    assert stopped_events[0]["data"]["action"] == "stop"
+    assert stopped_events[0]["data"]["targetStepKey"] is None
+
+
 def test_scientific_clarification_restarts_planning_and_binds_analysis_spec(
     agent_run_environment: AgentRunEnvironment,
     agent_run_client: TypedTestClient,
@@ -1210,7 +2037,22 @@ def test_scientific_clarification_restarts_planning_and_binds_analysis_spec(
     )
     assert approved_plan.status_code == 200, approved_plan.text
     assert _run_once(restarted_worker)  # inspect-dataset
-    assert _run_once(restarted_worker)  # prepare-analysis
+    assert _run_once(restarted_worker)  # observe inspect-dataset
+    observed_inspection = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert observed_inspection["latestObservation"]["status"] == "succeeded"
+    assert observed_inspection["latestObservation"]["recommendedActions"] == ["continue"]
+    assert _run_once(restarted_worker)  # decide next action
+    inspection_decision = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert inspection_decision["pendingDecision"]["action"] == "continue"
+    assert _run_once(restarted_worker)  # apply continue
+    before_prepare = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert _run_once(restarted_worker), (
+        before_prepare["workflow"]["status"],
+        before_prepare["workflow"]["statusReason"],
+        before_prepare["latestObservation"],
+        before_prepare["decisionHistory"],
+        before_prepare["pendingDecision"],
+    )  # prepare-analysis
     execution_waiting = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
     assert execution_waiting["analysisIntent"] is not None, (
         execution_waiting["workflow"]["status"],
@@ -1357,6 +2199,13 @@ def test_scientific_clarification_restarts_planning_and_binds_analysis_spec(
             for error in execution_errors
         ],
     )
+    assert _run_once(execution_worker)  # observe execute-analysis
+    assert _run_once(execution_worker)  # decide to collect artifacts
+    execution_step_decision = agent_run_client.get(
+        f"/v1/agent-runs/{workflow_id}"
+    ).json()
+    assert execution_step_decision["pendingDecision"]["action"] == "continue"
+    assert _run_once(execution_worker)  # apply continue
     assert _run_once(execution_worker)  # collect artifacts
     result_snapshot = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
     assert result_snapshot["analysisRun"]["status"] == "completed"
@@ -1385,6 +2234,11 @@ def test_scientific_clarification_restarts_planning_and_binds_analysis_spec(
         result_artifact.metadata_json["structuredResultSha256"]
         == stored_result.result_sha256
     )
+    assert _run_once(execution_worker)  # observe collect-artifacts
+    assert _run_once(execution_worker)  # decide to continue to review
+    artifact_decision = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
+    assert artifact_decision["pendingDecision"]["action"] == "continue"
+    assert _run_once(execution_worker)  # apply continue
     assert _run_once(execution_worker)  # deterministic compiled-result review
     reviewed_snapshot = agent_run_client.get(f"/v1/agent-runs/{workflow_id}").json()
     assert reviewed_snapshot["workflow"]["status"] == "reviewing"
@@ -1596,7 +2450,7 @@ def test_local_pdf_and_dataset_require_a_supported_single_workflow_choice(
     )
 
 
-def test_model_mixed_decision_is_explicitly_unsupported(
+def test_model_mixed_decision_requests_a_supported_first_path(
     agent_run_environment: AgentRunEnvironment,
     agent_run_client: TypedTestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -1625,11 +2479,20 @@ def test_model_mixed_decision_is_explicitly_unsupported(
     )
     assert response.status_code == 200, response.text
     snapshot = response.json()
-    assert snapshot["workflow"]["status"] == "unsupported"
-    assert snapshot["intentDecision"]["intent"] == "mixed-research"
-    assert snapshot["workflow"]["statusReason"]["code"] == (
-        "mixed-workflow-not-yet-available"
+    assert snapshot["workflow"]["status"] == "waiting-clarification"
+    assert snapshot["workflow"]["workflowType"] is None
+    assert snapshot["intentDecision"]["intent"] == "clarification-required"
+    assert snapshot["intentDecision"]["missingInputs"] == [
+        "select-supported-single-workflow"
+    ]
+    assert snapshot["workflow"]["statusReason"] is None
+    assert snapshot["interactions"][0]["question"] == (
+        "Which single supported research path should this run use first?"
     )
+    assert [option["value"] for option in snapshot["interactions"][0]["options"]] == [
+        "literature-synthesis",
+        "dataset-analysis",
+    ]
     assert snapshot["intentDecision"]["generator"] == (
         "model-assisted-intent-router-v1"
     )
@@ -1637,6 +2500,29 @@ def test_model_mixed_decision_is_explicitly_unsupported(
     assert snapshot["intentDecision"]["model"] == gateway.default_model
     assert snapshot["intentDecision"]["endpointIdentity"] == gateway.endpoint_identity
     assert snapshot["intentDecision"]["parseResult"] == "valid"
+
+    interaction = snapshot["interactions"][0]
+    answered = agent_run_client.post(
+        f"/v1/interactions/{interaction['id']}/respond",
+        headers={"Idempotency-Key": "agent-route-model-mixed-choice-0001"},
+        json={
+            "response": "dataset-analysis",
+            "expectedWorkflowRevision": snapshot["workflow"]["revision"],
+        },
+    )
+    assert answered.status_code == 202, answered.text
+    assert _run_once(agent_run_environment.worker)
+    resolved = agent_run_client.get(
+        f"/v1/agent-runs/{started['workflow']['id']}"
+    ).json()
+    assert resolved["workflow"]["status"] == "planning"
+    assert resolved["workflow"]["workflowType"] == "dataset-analysis"
+    assert resolved["intentDecision"]["selectedSourceIds"] == [dataset_id]
+    assert resolved["intentDecision"]["parseResult"] == (
+        "deterministic-capability-guard"
+    )
+    assert resolved["intentDecision"]["usedModel"] is False
+    assert gateway.call_count == 1
 
 
 def test_sem_goal_is_deterministically_unsupported(

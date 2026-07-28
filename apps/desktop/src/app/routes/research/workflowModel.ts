@@ -6,6 +6,56 @@ import type {
   WorkflowEvent,
 } from "@spark/research-domain";
 
+/**
+ * The immutable literature input identity. This intentionally contains only
+ * the user question and canonical PDF set; extraction drafts are not evidence
+ * and must never change a workflow's source identity.
+ */
+export interface AutonomousLiteratureIdentity {
+  projectId: string;
+  goal: string;
+  sourceIds: string[];
+}
+
+export function canonicalAutonomousLiteratureIdentity(
+  projectId: string,
+  goal: string,
+  sourceIds: readonly string[],
+): AutonomousLiteratureIdentity | null {
+  const normalizedGoal = goal.trim();
+  const normalizedSourceIds = [...new Set(sourceIds)].sort();
+  if (!projectId || !normalizedGoal || normalizedSourceIds.length === 0) return null;
+  return { projectId, goal: normalizedGoal, sourceIds: normalizedSourceIds };
+}
+
+/** True only for the local autonomous literature run for this exact input. */
+export function matchesAutonomousLiteratureIdentity(
+  snapshot: ResearchWorkflowSnapshot | null | undefined,
+  identity: AutonomousLiteratureIdentity | null,
+): boolean {
+  if (!snapshot || !identity) return false;
+  const workflow = snapshot.workflow;
+  if (
+    workflow.projectId !== identity.projectId ||
+    workflow.goal.trim() !== identity.goal ||
+    workflow.mode !== "autonomous" ||
+    workflow.generationMode !== "local-deterministic"
+  ) {
+    return false;
+  }
+  // Only an actively routing run is allowed to have no resolved type. A
+  // completed/reviewable result must be an explicit literature synthesis.
+  if (
+    workflow.workflowType !== "literature-synthesis" &&
+    !(workflow.workflowType === null && workflow.status === "routing")
+  ) {
+    return false;
+  }
+  const sourceIds = [...new Set(workflow.sourceIds ?? [])].sort();
+  return sourceIds.length === identity.sourceIds.length &&
+    sourceIds.every((sourceId, index) => sourceId === identity.sourceIds[index]);
+}
+
 interface WorkflowCreateIntentBase {
   projectId: string;
   goal: string;

@@ -1,380 +1,391 @@
-# Spark Agent Desktop — Product Requirements
+# Spark Agent — Product Requirements
 
-> **Status (v0.1, 2026-07-02).** The runtime is **OpenCode**, bundled as an isolated
-> sidecar (one-click, auto-started, does not touch a user's own OpenCode). Built: the
-> three-column workbench UI, real multi-session chat with history, a real Skills/Agents
-> view, BYOK key config, and a macOS installer. Literature search, provenance/reviewer,
-> code-execution backends, and Science Packs below are the target scope, not all shipped.
+> **Status:** current product requirements, updated 2026-07-23.
+> **Product strategy source of truth:** [`../PRODUCT.md`](../PRODUCT.md).
+> **Agent delivery details:** [`AGENT_NATIVE_ROADMAP.md`](AGENT_NATIVE_ROADMAP.md).
+> **Technical contracts:** [`TECHNICAL_DESIGN.md`](TECHNICAL_DESIGN.md).
 
-## 1. Positioning
+This document translates the approved positioning into product behavior. It does not
+replace the technical, approval, sandbox, evidence, artifact, provenance, or release
+contracts defined elsewhere.
 
-**Spark Agent Desktop** is a local-first AI research workbench with macOS /
-Windows installers, positioned as an **open-source alternative to Claude Science
-style products**.
+## 1. Product Definition
 
-It is not an ordinary paper-summarization tool. It is a local-first, model-agnostic,
-reproducible, auditable research agent workbench that helps researchers do:
+Spark Agent is an agent-powered research workspace for individual researchers. A user
+provides a bounded research question, papers, and optionally a local dataset. Spark
+organizes the project, advances approved work, and produces verifiable, reproducible
+research artifacts.
 
-- Literature search
-- Paper parsing
-- Data analysis
-- Code execution
-- Figure generation
-- Report writing
-- Citation checking
-- Artifact provenance
-- Reusable research workflows
+The product has three distinct layers:
 
-Slogan:
+- **Product category:** Research Workspace.
+- **Interaction model:** Research Operator.
+- **Technical capability:** one durable, bounded Research Agent.
 
-> Open-source AI research workbench for reproducible science.
+The Research Workspace owns knowledge and continuity. The Agent performs work inside
+that workspace. OpenCode is a replaceable runtime, not the product or the source of
+research truth.
 
-## 2. Goals
+### 1.1 Customer-facing promise
 
-### 2.1 Phase 1 goal
+> Give Spark a bounded research question, confirm each immutable material-scope
+> revision once, and receive a research brief whose claims can be reopened in the
+> supporting source and whose analysis can be reproduced from the preserved project.
 
-Phase 1 must be a genuinely installable desktop app, not a CLI tool.
+### 1.2 Governing autonomy rule
 
-Required support:
+> High autonomy in execution; bounded autonomy in scientific decisions.
 
-| Platform | Installer | Priority |
-| --- | --- | --- |
-| macOS Apple Silicon | `.dmg` / `.app` | P0 |
-| macOS Intel | `.dmg` / `.app` | P1 |
-| Windows x64 | `.exe` NSIS installer | P0 |
-| Windows x64 | `.msi` installer | P1 |
+Spark is not a chatbot, coding IDE, multi-agent command center, compliance dashboard,
+or autonomous scientist.
 
-Tauri officially supports macOS and Windows and can package `dmg`, `app`, `nsis`,
-and `msi` targets; Windows can ship as `.msi` or an NSIS `setup.exe`.
+## 2. Target Users
 
-### 2.2 Differentiation
+### 2.1 Primary user
 
-Versus ordinary AI paper tools, Spark Agent is different because it is:
+The primary user repeatedly needs to turn a bounded question and a set of papers into
+one of the following:
 
-1. A research workbench, not a chat box.
-2. A generator of traceable artifacts, not just text.
-3. Model-agnostic (BYOK / OpenRouter / OpenAI-compatible / local), not tied to one model.
-4. Transparent — it keeps code, data, figures, reports, logs, and provenance — not a black box.
-5. Multi-domain — expanding from biology to AI4S, materials, chemistry, biology,
-   medicine, engineering, and industry.
+- an evidence-backed answer;
+- a paper comparison or extraction table;
+- a cited research brief or literature synthesis; or
+- a reproducible analysis package connected to the reviewed evidence.
 
-## 3. Target users
+Initial users include graduate students, research assistants, doctoral students,
+postdoctoral researchers, applied researchers, and research engineers. They are
+defined by the recurring research job, not by discipline or familiarity with agents.
 
-### 3.1 Core users
+### 2.2 Secondary user
 
-1. **Researchers** — fast literature reviews; organizing papers, data, figures,
-   reports; reproducibility and citation accuracy.
-2. **AI4S / AI-for-Science developers** — integrating scientific skills, MCP, and
-   database connectors into one workbench; an open-source Claude Science alternative.
-3. **Grad / PhD / postdoc students** — topic surveys, paper reading, experiment data
-   analysis, submission material prep.
-4. **Open-source AI agent users** — already using OpenCode, Codex, Claude Code, Cursor,
-   MCP, Agent Skills; want a research-focused desktop product.
+The adjacent user is a computational researcher who needs to continue a literature
+project into a local dataset, an approved analysis, a notebook, figures, and tables.
+Dataset analysis extends the same research project; it is not a standalone data
+science product.
 
-### 3.2 Non-target users (Phase 1)
+### 2.3 Ecosystem user, not product wedge
 
-- Complete beginners who cannot configure an API key.
-- Users needing clinical diagnosis or medical decisions.
-- Institutions needing multi-user collaborative SaaS.
-- Teams needing enterprise permissions, audit, or SSO.
+Skill authors, MCP developers, model-provider users, and agent-framework enthusiasts
+may extend Spark, but their tooling needs must not determine the primary navigation or
+first-run experience.
 
-## 4. Core product principles
+### 2.4 Non-target users
 
-### 4.1 Local-first
+The initial product does not target:
 
-Runs on the user's machine by default. Project files, corpora, figures, reports, and
-execution logs are stored in a local workspace.
+- casual web or homework question answering;
+- regulated systematic-review automation;
+- clinical diagnosis or medical decision making;
+- autonomous wet-lab work or an AI Scientist;
+- software-development tasks;
+- enterprise knowledge management, SSO, or team administration;
+- a general browser, coding, or workflow automation agent; or
+- users who expect the model to own final scientific judgment.
 
-### 4.2 Model-agnostic
+## 3. Core User Jobs
 
-No lock-in to Claude, OpenAI, or any single local model. Users can choose OpenRouter,
-OpenAI-compatible APIs, the Anthropic API, or local models; Ollama / vLLM / LM Studio
-support follows.
+Spark must help the user:
 
-### 4.3 Reproducibility-first
+1. state and scope a research question;
+2. discover or import relevant papers;
+3. screen and organize a candidate set;
+4. read a source and reopen the exact supporting passage;
+5. extract and compare structured information across sources;
+6. identify evidence gaps, limitations, and potential contradictions;
+7. produce and edit a cited answer, comparison, synthesis, or report;
+8. analyze a related local dataset and preserve the notebook, figures, and tables;
+9. understand current progress, the next action, and what remains unverified; and
+10. pause, recover, resume, review, and export the project without reconstructing it
+    from chat history.
 
-Every important artifact must be traceable:
+## 4. Primary Product Journey
 
-| Artifact | Must trace to |
-| --- | --- |
-| Figure | generating code, input data, parameters |
-| Report | citation sources, data sources, analysis steps |
-| Table | raw data, cleaning script |
-| Conclusion | citations, data, model output |
-| Agent action | time, tool, input, output, status |
-
-### 4.4 Human-in-the-loop
-
-High-risk actions — file writes, command execution, dependency installs, network
-access, file deletion, remote compute — require user approval. The bundled OpenCode runtime provides
-dangerous-command approval, container isolation, MCP credential filtering, and
-cross-session isolation.
-
-## 5. MVP scope
-
-### 5.1 P0 features
-
-#### 5.1.1 Install & first launch
-
-After downloading and first opening, the user enters onboarding:
-
-1. Choose a model provider.
-2. Enter an API key.
-3. Choose a workspace directory.
-4. Detect the local runtime environment.
-5. Use the bundled OpenCode runtime (auto-started; no separate install).
-6. Create the first research project.
-
-First launch must clearly tell the user: data is stored locally by default; the agent
-requests authorization before running commands; the user must supply their own model
-API key; research results need human verification and are not final conclusions.
-
-#### 5.1.2 Home
-
-Shows: recent projects, new project, example workflows, current runtime status, model
-connection status, local workspace status.
-
-Recommended default examples: Literature Review, Bibliometric Analysis,
-Paper-to-Report, Dataset Analysis, Citation Review, Reproducibility Audit.
-
-#### 5.1.3 Research agent workspace
-
-The main work area, in a three-column layout:
+The first adoption wedge is intentionally narrow:
 
 ```text
-Left:   projects / workflows / files
-Middle: agent chat + plan + execution progress
-Right:  artifacts / citations / review / run logs
+Bounded research question
+        |
+Material scope confirmation
+        |
+Paper discovery and verified import
+        |
+Human-owned screening
+        |
+Full-text evidence and comparison
+        |
+Editable cited research brief
 ```
 
-Core interaction: user submits a task → agent produces a plan → user confirms →
-agent runs tools → each step shows status → artifacts land in the Artifact panel →
-reviewer checks automatically → user exports the report.
+### 4.1 First-minute experience
 
-#### 5.1.4 Plan confirmation
+1. The user enters a question and intended deliverable.
+2. Spark asks only questions that materially change scope, method, cost, or data
+   disclosure.
+3. Spark creates or resumes a project and proposes an exact plan with boundaries,
+   budgets, stop conditions, and expected artifacts.
+4. The user confirms that immutable material-scope revision once.
+5. Spark begins work in the existing research workspace.
+6. The workspace shows the current action, completed work, evidence coverage,
+   remaining gaps, next decision, and reason for a pause or failure.
 
-For multi-step tasks the agent must produce a plan before executing.
+Chat may clarify intent, but plans, observations, decisions, evidence, artifacts, and
+reviews are the durable product record.
+
+Capability-specific execution, remote-data, installation, deletion, and other
+required approvals remain unchanged and are never implied by the scope confirmation.
+
+## 5. Functional Requirements
+
+### 5.1 Project and goal
+
+- A research task must belong to a durable project.
+- The project must preserve the question, objective, scope, constraints, source set,
+  analysis inputs, decisions, artifacts, and current workflow state.
+- Spark must resume from persisted state after cancellation, failure, app restart, or
+  runtime restart.
+- A material change to the goal or approved boundary creates a new plan revision; it
+  must not mutate an approved snapshot silently.
+
+### 5.2 Agent planning and operation
+
+- The Agent must propose typed, reviewable steps with inputs, allowed capabilities,
+  expected outputs, postconditions, budgets, and failure policies.
+- It must execute one bounded step at a time and validate the real state change before
+  marking the step complete.
+- Each observation must lead to one explicit outcome: continue, retry, ask, replan,
+  stop, block, or complete.
+- Transient retries must remain inside the approved scope and be idempotent where side
+  effects are possible.
+- Unknown external outcomes fail closed and must not be replayed as known failures.
+- Repeated actions without progress must stop with an understandable reason.
+- The user must be able to cancel, retry, resume, edit a proposed revision, or reject
+  an expanded plan.
+
+### 5.3 Literature discovery
+
+- Discovery must bind exact queries, providers, filters, per-provider result budgets,
+  download budgets, and stopping conditions to an approved specification.
+- Spark may select the order of approved queries and stop early from novelty and
+  coverage observations.
+- New queries, providers, filters, downloads, or budgets require an explicit revision.
+- Every external invocation requires durable pending-before-send identity, structured
+  results, retry classification, and restart recovery.
+- Results must be normalized and deduplicated deterministically where possible.
+- The workspace must show the query ledger, provider failures, duplicate handling,
+  result bounds, and remaining discovery coverage without exposing raw agent thought.
+- A discovery candidate is not a project Source. Promotion requires verified import,
+  content identity, and ingestion.
+
+### 5.4 Screening and extraction
+
+- Inclusion and exclusion decisions remain human-owned and persisted.
+- Spark may recommend, prioritize, or explain screening choices but must not present a
+  recommendation as a user decision.
+- Extraction must preserve source identity, field definition, extracted value, exact
+  supporting passage when available, and review state.
+- Tables must support dense comparison, long academic titles, missing values, source
+  reopening, filtering, and export.
+
+### 5.5 Evidence and claims
+
+- A claim must remain distinct from a source, passage, model suggestion, and review.
+- EvidenceSpan must bind source identity, page or location, exact text, and content
+  identity according to the existing contracts.
+- Citation review must distinguish structural integrity, semantic support, and
+  scientific validity.
+- A valid source identity or hash proves traceability, not scientific correctness.
+- Unsupported, partially supported, conflicting, and unverified claims must be visible
+  before final acceptance.
+- The user must be able to reopen the exact supporting context from a claim or report.
+
+### 5.6 Synthesis and report
+
+- Spark must produce editable cited answers, comparison tables, syntheses, and reports
+  from the current project and exact reviewed source set.
+- Reports must preserve claim-to-evidence links, limitations, unverified sections, and
+  artifact references.
+- A report must fail closed when its project, question, source set, review snapshot, or
+  evidence identity no longer matches the approved completed workflow.
+- Export must preserve readable output and the available evidence and artifact lineage.
+
+### 5.7 Computational research
+
+- A dataset must remain a project Source with stable identity and visible scope.
+- Analysis begins from a reviewable intent and method, not untracked generated code.
+- Python, Jupyter, package installation, network use, and other execution retain their
+  existing approval and sandbox requirements.
+- Results must preserve input data, analysis specification, executed code or notebook,
+  environment information, logs, figures, tables, and dependencies.
+- Figures and tables prioritize reading, comparison, source tracing, and export rather
+  than decorative visualization.
+- The product must not become a general code editor, terminal, or notebook IDE.
+
+### 5.8 Artifacts and provenance
+
+- Important outputs must become typed Artifacts rather than disappear into a response.
+- An Artifact must preserve content identity, producing activity, inputs, dependencies,
+  creator, review state, and available export actions.
+- Detailed hashes, manifests, permissions, and execution records belong in inspectors,
+  approval surfaces, and export metadata rather than the default hierarchy.
+- Logs and provenance may prove what ran; they do not prove the scientific conclusion.
+
+### 5.9 Research continuity
+
+Project-scoped Research Memory is a post-v1.3 capability. It may preserve validated:
+
+- facts with source references;
+- user decisions;
+- assumptions;
+- open questions;
+- evidence gaps; and
+- verified procedural lessons with explicit invalidation conditions.
+
+Memory candidates require validation before commitment. Free-form model reflection,
+cross-project leakage, and silent global memory are prohibited.
+
+### 5.10 Controlled skills
+
+Skills are procedural knowledge, not project facts and not a primary navigation
+destination. A learned procedure may become active only through:
 
 ```text
-Goal:
-Data sources:
-Steps:
-Expected artifacts:
-Risks & limitations:
-Actions requiring authorization:
+Verified repeated success
+        -> skill candidate
+        -> sanitization
+        -> fixture replay
+        -> human approval
+        -> versioned activation
+        -> rollback or retirement
 ```
 
-User options: Approve · Edit Plan · Run Step by Step · Cancel.
+Spark must not auto-activate generated skills, embed project secrets or private
+content in a skill, or use a skill to expand permissions.
 
-#### 5.1.5 Literature search
+## 6. Autonomy and Approval Boundary
 
-v1 sources: arXiv, PubMed, Crossref, OpenAlex, Semantic Scholar (optional API key),
-local PDF import.
+Within an approved scope, Spark may automatically:
 
-Features: keyword search; filter by year and source; dedup; export `corpus.csv`; save
-search logs; record data-source limits.
+- order and run allowed read-only operations and workspace-write steps explicitly
+  bound to the current immutable approval envelope;
+- normalize, deduplicate, parse, index, and validate results;
+- observe coverage, novelty, failures, and lack of progress;
+- maintain drafts, comparisons, artifacts, and recovery state;
+- stop early when an approved deterministic policy is satisfied; and
+- propose a revision when more authority or scientific judgment is required.
 
-#### 5.1.6 Skills library
+The user owns:
 
-The Skills page lists the **real** skills and agents the OpenCode runtime has loaded
-(built-in + project `.opencode/skill/` + user config) — no hardcoded catalog. Skill
-sources, layered:
+- the question, scope, provider set, budget, and disclosure boundary;
+- screening decisions;
+- method changes and expanded execution permissions;
+- interpretation of conflicting or insufficient evidence;
+- final scientific conclusions; and
+- acceptance, export, publication, or deletion.
 
-1. **OpenCode built-in** skills/agents (shipped with the runtime).
-2. **Self-authored AI4S skills** — planned: `literature-review`, `reproducible-analysis`,
-   `citation-reviewer`, `figure-provenance`, `paper-to-report` (Markdown skills under
-   `runtime/skills/core`, loaded from the workspace `.opencode/skill/`).
-3. **Third-party scientific skills** — e.g. K-Dense `scientific-agent-skills` (curated
-   install, a later feature).
+File writes, command execution, dependency installation, deletion, remote connection,
+and research-data disclosure retain the existing fail-closed approval policies. Low-
+risk work inside an already approved boundary should not create repetitive approval
+fatigue.
 
-K-Dense `scientific-agent-skills` is a collection for science/research; its README
-describes ~148 skills and compatibility with Claude Code, Codex, Cursor, OpenCode, and
-other Agent Skills hosts.
+## 7. Information Architecture and Interaction
 
-#### 5.1.7 Code execution
+The approved information architecture is defined in `PRODUCT.md` and remains frozen
+during the v1.3 capability phase.
 
-v1 languages: Python, Shell (R later).
+Global destinations use research vocabulary:
 
-| Mode | Notes |
-| --- | --- |
-| Local | Run directly in the local workspace |
-| Docker | Run in an isolated container |
-| SSH | Remote server execution (later) |
-| Modal | Cloud execution (later) |
-| Jupyter Kernel | Notebook-style persistent kernel (later) |
+- Home
+- Library
+- Workflows
+- Projects
+- Data
+- Reports
+- Settings
 
-OpenCode runs tools locally inside the bundled runtime by default; Docker sandbox and
-SSH / Modal remote execution are optional advanced backends, so the desktop starts local
-and expands later.
+Project navigation follows the active research job:
 
-#### 5.1.8 Artifact panel
+- Literature: Overview, Papers, Screening, Extraction, Synthesis.
+- Research answer: Answer, Papers, Notes, Report.
+- Dataset analysis: Dataset, Analysis, Results, Notebook.
 
-All outputs land here. Types: Markdown reports, CSV tables, PNG / SVG figures, PDFs,
-Python scripts, notebooks, JSONL provenance, review reports.
+Agent progress appears contextually as structured plans, observations, decisions,
+tool results, evidence, artifacts, and review states. Spark must not add a separate
+Agent destination, multi-agent persona UI, chat-first shell, or chain-of-thought
+transcript.
 
-Each artifact shows: filename, type, created time, generating step, input data,
-generating code, review status, and export / copy / open actions.
+The interface should remain dense, calm, and research-oriented. Elicit is the primary
+reference for literature workflows, Consensus for question-first search and answer
+synthesis, SciSpace for source-in-context reading, and Spark-owned patterns for local
+analysis and artifact continuity.
 
-#### 5.1.9 Provenance
+## 8. Trust and Technical Invariants
 
-Each project auto-generates `provenance.jsonl`, `manifest.json`, and `review.md`.
+- The frontend accesses Science Core only through the typed Research SDK.
+- Science Core is the canonical control plane and source of workflow truth.
+- OpenCode, PaperQA, Jupyter, MCP servers, models, and skills remain replaceable
+  capabilities.
+- The Agent may access only the current workspace.
+- Credentials remain in the OS credential manager and never enter logs, provenance,
+  exported projects, or model prompts beyond the required provider request.
+- External papers, metadata, web content, and tool output are untrusted data, never
+  instructions.
+- Approval, sandbox, EvidenceSpan, Artifact, provenance, and remote-data semantics
+  remain fail closed.
+- A model result, structurally valid citation, or deterministic reviewer pass must not
+  be described as proof of scientific truth.
 
-`provenance.jsonl` records each step, append-only:
+## 9. Accessibility and Responsive Requirements
 
-```json
-{
-  "step_id": "step_001",
-  "type": "literature_search",
-  "tool": "openalex",
-  "input": {},
-  "output_files": ["data/corpus.csv"],
-  "timestamp": "",
-  "status": "success"
-}
-```
+- All primary workflows must be operable by keyboard.
+- Focus must remain visible and predictable after dialogs, drawers, and source jumps.
+- State must not be communicated by color alone.
+- Long titles, citation excerpts, code, logs, and tables must remain usable across
+  supported desktop widths and low-height windows.
+- Reduced motion must disable non-essential movement without hiding state changes.
+- Dense research tables must preserve column meaning, source tracing, comparison, and
+  export at narrower widths.
 
-#### 5.1.10 Reviewer panel
+## 10. Product Success Measures
 
-v1 reviewer does basic checks: citations exist; DOI / PMID / arXiv IDs are
-well-formed; figures have generating code; tables have source data; reports include
-limitations; no untraced artifacts; no steps the agent claims but never ran.
+Primary measures are:
 
-## 6. UI design requirements
+- time from a bounded question to the first useful evidence-backed artifact;
+- completion rate for the intended answer, comparison, report, or analysis;
+- atomic claim support and exact-passage reopen success;
+- unsupported-claim and unverified-strengthening rates;
+- pause, failure, runtime, and restart recovery success;
+- number of material user interventions per completed run;
+- reproducibility and lineage completeness of exported artifacts; and
+- time required to understand current state and the next action without reading a
+  chat transcript or raw log.
 
-### 6.1 Keywords
+Conversation length, visible model activity, number of agents, number of tool calls,
+and generated-token volume are not product success measures.
 
-Modern, restrained, refined, research feel, tool feel — not flashy, not a traditional
-admin panel, not a low-quality AI wrapper. Reference vibes: Linear's simplicity,
-Cursor's technical feel, Notion's information structure, Raycast's command palette,
-Vercel's cleanliness, Claude's warmth.
+## 11. Delivery Order
 
-### 6.2 Visual style
-
-Light theme (default):
-
-| Use | Suggestion |
-| --- | --- |
-| Background | warm white / soft gray |
-| Primary | deep indigo / blue violet |
-| Accent | teal / cyan |
-| Success | soft green |
-| Warning | amber |
-| Error | soft red |
-| Text | near black / slate |
-
-Dark theme:
-
-| Use | Suggestion |
-| --- | --- |
-| Background | near black / deep navy |
-| Card | dark slate |
-| Primary | blue violet |
-| Accent | cyan |
-| Text | soft white |
-
-### 6.3 Main layout
+The approved sequence is:
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│ Top Bar: Project / Model / Runtime / Sync / Settings    │
-├──────────────┬──────────────────────────┬───────────────┤
-│ Sidebar      │ Main Agent Workspace      │ Artifact Dock │
-│ Projects     │ Chat / Plan / Execution   │ Files         │
-│ Workflows    │ Progress Timeline         │ Figures       │
-│ Skills       │ Code Blocks               │ Tables        │
-│ Connectors   │ Reports                   │ Citations     │
-│ Settings     │                          │ Review        │
-└──────────────┴──────────────────────────┴───────────────┘
+v1.2 Reliable Agent Substrate                 COMPLETE
+  |
+  v
+v1.3 Agent-Native Discovery and Coverage      CURRENT
+  |
+  v
+v1.4 Research Memory and Context Assembly
+  |
+  v
+v1.5 Controlled Skill Learning
+  |
+  v
+v1.6 Adaptive Research Operator
 ```
 
-### 6.4 Core pages
+Detailed contracts, gates, implementation locations, and evidence requirements live in
+`AGENT_NATIVE_ROADMAP.md`. A later phase must not start until the prior phase passes its
+Outcome, Process, and Trust gate.
 
-- **Home** — welcome card, new project, recent projects, example workflows, runtime status, model status.
-- **Project Workspace** — agent chat, execution timeline, plan approval card, tool-call cards, artifact dock, review warnings.
-- **Literature** — search, filter, list, abstract preview, PDF status, citation info, add to corpus, export BibTeX / CSV.
-- **Data & Code** — file tree, Python scripts, notebook preview, CSV preview, run history, environment dependencies.
-- **Artifacts** — figure gallery, report preview, table preview, provenance chain, download / export.
-- **Review** — citation check, figure provenance check, data source check, reproducibility check, risk warnings, limitations.
-- **Skills** — installed skills, recommended scientific skills, install from GitHub, enable / disable, view `SKILL.md`, check license, check dependencies.
-- **Settings** — model provider, API keys, workspace path, runtime backend, security approvals, update settings, appearance theme, data cleanup.
+## 12. One-line Positioning
 
-## 7. Key interactions
-
-### 7.1 Plan card
-
-Must be clean and clear. Contains: goal, step list, tools to call, expected artifacts,
-risk notes, run buttons. Buttons: Approve & Run · Edit Plan · Run Step-by-step ·
-Save as Workflow.
-
-### 7.2 Tool-call card
-
-Shows: tool name, status, input summary, output summary, duration, token / cost
-(optional), view details, copy log. Status: Pending · Running · Waiting Approval ·
-Success · Warning · Failed.
-
-### 7.3 Approval dialog
-
-For dangerous actions — delete file, overwrite file, install package, run shell,
-network access, connect remote server, upload file — a dialog must confirm. Options:
-Allow Once · Always Allow for This Project · Deny · View Details.
-
-### 7.4 Command palette
-
-Shortcut: `Cmd + K` (macOS) / `Ctrl + K` (Windows). Quick actions: new project, search
-literature, run reviewer, open settings, switch model, install skill, export report.
-
-## 8. MVP example workflow
-
-v1 must ship one complete demo:
-
-```text
-2023–2026 brain-computer interface literature trends
-```
-
-Outputs: `plan.md`, `data/corpus.csv`, `scripts/analyze.py`, `figures/year_trend.png`,
-`figures/topic_clusters.png`, `figures/top_keywords.png`, `report.md`, `review.md`,
-`provenance.jsonl`. Used for README, website, screenshots, video, and launch.
-
-## 9. Roadmap
-
-- **v0.1 Desktop MVP** — macOS / Windows installers, local workspace, bundled OpenCode runtime,
-  model config, agent chat, plan approval, literature search, Python analysis, artifact
-  panel, `provenance.jsonl`, basic reviewer, BCI demo.
-- **v0.2 Research Workflows** — K-Dense skills installer, PDF parsing, citation checker,
-  Markdown report export, workflow template library, fuller review panel.
-- **v0.3 Notebook Runtime** — Jupyter Kernel Gateway, persistent Python kernel, notebook
-  preview, R support, Quarto / PDF / DOCX export.
-- **v0.4 Advanced Science** — BioMCP; PubMed / GEO / ChEMBL / UniProt connectors;
-  RDKit / py3Dmol; single-cell and molecular-screening templates; HPC / SSH / Modal runner.
-
-## 10. Non-functional requirements
-
-### 10.1 Performance
-
-Cold start < 3s (excluding first-time runtime init); no noticeable UI jank; streaming
-agent output; live tool-call refresh; paginated large-file preview; lazy-loaded
-figures; virtualized log lists.
-
-### 10.2 Security
-
-API keys encrypted locally; workspace sandbox isolation; dangerous-command approval;
-no file upload by default; no full-disk access for the agent by default; access limited
-to the current project directory; all network access auditable.
-
-### 10.3 Maintainability
-
-Frontend, desktop shell, and agent runtime decoupled; pluggable skills; configurable
-MCP servers; extensible model providers; stable artifact schema; versioned workflow
-templates.
-
-### 10.4 Open-source friendliness
-
-Clear first-screen README; one-click install; one-click demo; nice screenshots;
-complete example results; clear license; separate note for third-party skill licenses.
-
-## 11. One-liner
-
-**Spark Agent Desktop is a research agent workbench with macOS and
-Windows installers that uses OpenCode, MCP, scientific skills, and a reproducible
-artifact system to weave literature, code, figures, reports, and review into one
-local-first scientific workflow.**
+> Spark Agent is an agent-powered research workspace that turns bounded research
+> questions, papers, and local data into verifiable, reproducible research artifacts.

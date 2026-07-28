@@ -35,6 +35,7 @@ from ...dataset_inspector import (
 )
 from ...model_gateway import ModelGatewayError, OpenAICompatibleModelGateway
 from ...models import (
+    AgentDecisionRecord,
     AnalysisSpecRecord,
     ApprovalRecord,
     EventRecord,
@@ -784,9 +785,9 @@ def handle_generate_plan(
             "The reserved autonomous plan version is not newer than plan history.",
         )
     if workflow.workflow_type == "dataset-analysis":
-        analysis_spec_record: AnalysisSpecRecord | None = None
+        analysis_spec_record = _pending_agent_revision_spec(session, workflow)
         method_invocation: ModelInvocationRecord | None = None
-        if workflow.creation_mode == "autonomous":
+        if workflow.creation_mode == "autonomous" and analysis_spec_record is None:
             selection, inspection, method_invocation, validated = (
                 _goal_aware_dataset_selection(session, workflow, job, gateway)
             )
@@ -1027,6 +1028,66 @@ def handle_generate_plan(
             ),
         ],
     )
+
+
+def _pending_agent_revision_spec(
+    session: Session,
+    workflow: WorkflowRecord,
+) -> AnalysisSpecRecord | None:
+    records = list(
+        session.scalars(
+            select(AnalysisSpecRecord)
+            .where(
+                AnalysisSpecRecord.workflow_id == workflow.id,
+                AnalysisSpecRecord.status == "pending-approval",
+                AnalysisSpecRecord.proposed_by_decision_id.is_not(None),
+            )
+            .order_by(AnalysisSpecRecord.revision.desc())
+        )
+    )
+    if len(records) > 1:
+        raise WorkflowFailure(
+            "agent-spec-revision-integrity-failed",
+            "More than one confirmed analysis method revision is pending.",
+        )
+    if not records:
+        return None
+    record = records[0]
+    decision = (
+        session.get(AgentDecisionRecord, record.proposed_by_decision_id)
+        if record.proposed_by_decision_id is not None
+        else None
+    )
+    previous = (
+        session.get(AnalysisSpecRecord, record.previous_spec_id)
+        if record.previous_spec_id is not None
+        else None
+    )
+    if (
+        workflow.creation_mode != "autonomous"
+        or workflow.workflow_type != "dataset-analysis"
+        or decision is None
+        or decision.workflow_id != workflow.id
+        or decision.action != "revise-analysis-spec"
+        or decision.status != "applied"
+        or decision.proposed_analysis_spec_sha256 != record.spec_sha256
+        or decision.proposed_analysis_spec_json != record.spec_json
+        or previous is None
+        or previous.workflow_id != workflow.id
+        or previous.status != "superseded"
+        or record.revision != previous.revision + 1
+        or record.dataset_source_id != previous.dataset_source_id
+        or record.dataset_content_hash != previous.dataset_content_hash
+        or record.dataset_profile_sha256 != previous.dataset_profile_sha256
+        or record.dataset_source_id != workflow.dataset_source_id
+        or record.dataset_content_hash != workflow.dataset_content_hash
+        or content_sha256(record.spec_json) != record.spec_sha256
+    ):
+        raise WorkflowFailure(
+            "agent-spec-revision-integrity-failed",
+            "The confirmed analysis method revision does not match its decision, dataset, and prior specification.",
+        )
+    return record
 
 
 def _reserved_agent_plan_version(

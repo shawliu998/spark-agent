@@ -22,6 +22,7 @@ from ...models import (
     WorkflowRecord,
 )
 from ...pdf import PdfPage, locate_quote
+from ..agent_loop.coordinator import enqueue_agent_observation
 from ..schemas import (
     ClaimReviewResult,
     DeterministicReviewResult,
@@ -40,6 +41,7 @@ from ..service import (
 )
 from ..state import WorkflowFailure
 from .dataset import handle_dataset_review
+from .evidence import page_contains_verified_quote
 from .lifecycle import finish_job, workflow_failure_from_conflict
 from .sources import validated_source_descriptors_for_task
 from .synthesis import (
@@ -71,14 +73,24 @@ def handle_review(
             PlanRecord.status == "approved",
         )
     )
-    answer = session.scalar(
-        select(AnswerRecord).where(AnswerRecord.workflow_id == workflow.id)
-    )
     checks: list[ReviewCheck] = []
     claim_results: list[ClaimReviewResult] = []
     required_revisions: list[str] = []
     if plan is None:
         raise WorkflowFailure("approved-plan-missing", "The approved workflow plan is missing.")
+    synthesis_task_id = session.scalar(
+        select(TaskRecord.id).where(
+            TaskRecord.workflow_id == workflow.id,
+            TaskRecord.plan_id == plan.id,
+            TaskRecord.step_key == "synthesize-extractive-claims",
+        )
+    )
+    answer = session.scalar(
+        select(AnswerRecord).where(
+            AnswerRecord.workflow_id == workflow.id,
+            AnswerRecord.task_id == synthesis_task_id,
+        )
+    )
     assert_current_review_contract(
         session,
         workflow,
@@ -259,7 +271,9 @@ def handle_review(
                 quote_ok = evidence.quote_hash == hashlib.sha256(
                     evidence.text.encode("utf-8")
                 ).hexdigest()
-                page_ok = page is not None and normalized_contains(page.text, evidence.text)
+                page_ok = page is not None and page_contains_verified_quote(
+                    page, evidence.text
+                )
                 located = (
                     locate_quote(
                         evidence.text,
@@ -405,7 +419,13 @@ def handle_review(
         ],
     )
     if verdict == "passed":
-        transition_workflow(session, workflow, "completed")
+        if (
+            workflow.creation_mode == "autonomous"
+            and workflow.generation_mode == "local-deterministic"
+        ):
+            enqueue_agent_observation(session, workflow, job)
+        else:
+            transition_workflow(session, workflow, "completed")
     else:
         transition_workflow(
             session,

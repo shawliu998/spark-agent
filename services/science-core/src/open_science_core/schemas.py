@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 from .config import normalize_model_identifier
 
@@ -39,9 +39,55 @@ class HealthOut(ApiModel):
 
 
 class ProjectCreate(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
     research_domain: str | None = None
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(not character.isprintable() for character in normalized):
+            raise ValueError("title must be printable and not blank")
+        return normalized
+
+
+class ProjectRename(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    title: str = Field(min_length=1, max_length=300)
+    expected_row_version: StrictInt = Field(ge=1)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(not character.isprintable() for character in normalized):
+            raise ValueError("title must be printable and not blank")
+        return normalized
+
+
+class ProjectStateMutation(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    expected_row_version: StrictInt = Field(ge=1)
 
 
 class ProjectOut(ApiModel):
@@ -51,8 +97,22 @@ class ProjectOut(ApiModel):
     project_path: str
     research_domain: str | None
     execution_mode: str
+    row_version: int
+    archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class DiscoverySourceLineageOut(ApiModel):
+    schema_version: Literal["1"]
+    workflow_id: str
+    candidate_id: str
+    candidate_sha256: str
+    occurrence_invocation_id: str
+    query_id: str
+    provider: Literal["arxiv", "crossref", "openalex", "pubmed", "csl-json-file"]
+    raw_item_sha256: str
+    source_content_hash: str
 
 
 class SourceOut(ApiModel):
@@ -68,7 +128,201 @@ class SourceOut(ApiModel):
     ingestion_status: str
     content_hash: str
     page_count: int | None
+    page_manifest_hash: str | None = None
+    discovery_lineage: DiscoverySourceLineageOut | None = None
     created_at: datetime
+
+
+class ScreeningDecisionUpsert(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    decision: Literal["include", "exclude"]
+    reason: str | None = Field(default=None, max_length=2_000)
+    criteria_version: str = Field(default="screening-v1", min_length=1, max_length=100)
+    expected_version: StrictInt = Field(ge=0)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("criteria_version")
+    @classmethod
+    def validate_criteria_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(not character.isprintable() for character in normalized):
+            raise ValueError("criteriaVersion must be printable and not blank")
+        return normalized
+
+
+class ScreeningDecisionOut(ApiModel):
+    id: str
+    project_id: str
+    source_id: str
+    decision: Literal["include", "exclude"]
+    reason: str | None
+    criteria_version: str
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CandidateTriageDecisionUpsert(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    decision: Literal["keep", "reject", "uncertain"]
+    reason: str | None = Field(default=None, max_length=2_000)
+    criteria_version: str = Field(
+        default="candidate-triage-v1",
+        min_length=1,
+        max_length=100,
+    )
+    expected_version: StrictInt = Field(ge=0)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    @field_validator("criteria_version")
+    @classmethod
+    def validate_criteria_version(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(not character.isprintable() for character in normalized):
+            raise ValueError("criteriaVersion must be printable and not blank")
+        return normalized
+
+
+class CandidateTriageDecisionOut(ApiModel):
+    id: str
+    project_id: str
+    candidate_id: str
+    decision: Literal["keep", "reject", "uncertain"]
+    reason: str | None
+    criteria_version: str
+    evidence_status: Literal["not-evidence"] = "not-evidence"
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class EvidenceDirectionJudgmentUpsert(ApiModel):
+    model_config = ConfigDict(
+        alias_generator=to_camel,
+        populate_by_name=True,
+        extra="forbid",
+    )
+
+    direction: Literal["supporting", "mixed", "insufficient"]
+    expected_version: StrictInt = Field(ge=0)
+
+
+class EvidenceDirectionJudgmentOut(ApiModel):
+    id: str
+    project_id: str
+    answer_id: str
+    source_id: str
+    direction: Literal["supporting", "mixed", "insufficient"]
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExtractionColumnCreate(ApiModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    instructions: str | None = Field(default=None, max_length=2_000)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name must not be blank")
+        return normalized
+
+    @field_validator("instructions")
+    @classmethod
+    def normalize_instructions(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+
+class ExtractionColumnOut(ApiModel):
+    id: str
+    project_id: str
+    name: str
+    instructions: str | None
+    order_index: int
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExtractionCellUpsert(ApiModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    value: str = Field(min_length=1, max_length=20_000)
+    review_status: Literal["unreviewed", "confirmed"] = "unreviewed"
+    evidence_ids: list[str] = Field(default_factory=list, max_length=100)
+    expected_version: StrictInt = Field(ge=0)
+
+    @field_validator("value")
+    @classmethod
+    def normalize_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def unique_evidence_ids(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value):
+            raise ValueError("evidenceIds must not contain blank values")
+        if len(set(value)) != len(value):
+            raise ValueError("evidenceIds must be unique")
+        return value
+
+
+class ExtractionCellDelete(ApiModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+    expected_version: StrictInt = Field(ge=1)
+
+
+class ExtractionCellOut(ApiModel):
+    id: str
+    project_id: str
+    source_id: str
+    column_id: str
+    value: str
+    review_status: Literal["unreviewed", "confirmed"]
+    evidence_ids: list[str]
+    row_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExtractionMatrixOut(ApiModel):
+    columns: list[ExtractionColumnOut]
+    cells: list[ExtractionCellOut]
 
 
 class QuestionIn(ApiModel):
@@ -109,6 +363,23 @@ class EvidenceOut(ApiModel):
     extraction_method: str
     confidence: float
     verified: bool
+
+
+class ExactEvidenceSpanCreate(ApiModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    page_index: StrictInt = Field(ge=0)
+    quote_text: str = Field(min_length=12, max_length=20_000)
+    expected_source_content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_page_manifest_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("quote_text")
+    @classmethod
+    def normalize_quote(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 12:
+            raise ValueError("quoteText must contain at least 12 non-whitespace characters")
+        return normalized
 
 
 class ClaimOut(ApiModel):

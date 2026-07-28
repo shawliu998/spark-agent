@@ -4,8 +4,10 @@ import ast
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
+import matplotlib.image as mpimg
+import numpy as np
 import pytest
 
 from open_science_core.analysis_spec.compiler import (
@@ -14,7 +16,14 @@ from open_science_core.analysis_spec.compiler import (
     RUNTIME_POLICY_ID,
     compile_analysis_spec,
 )
-from open_science_core.analysis_spec.results import StructuredAnalysisResult
+from open_science_core.analysis_spec.results import (
+    StructuredAnalysisResult,
+    structured_analysis_result_sha256,
+)
+from open_science_core.analysis_spec.reviewer import (
+    AnalysisReviewIdentity,
+    review_analysis_spec_outputs,
+)
 from open_science_core.analysis_spec.schemas import (
     AnalysisSpec,
     CorrelationOperation,
@@ -252,6 +261,70 @@ def test_compiled_descriptive_executes_semicolon_cp1252_and_validates_result(
     }
 
 
+def test_compiled_multicolumn_descriptive_summary_passes_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MPLBACKEND", "Agg")
+    (tmp_path / "dataset.csv").write_text(
+        "Year,J-D\n2023,0.44\n2024,0.52\n2025,0.61\n",
+        encoding="utf-8",
+    )
+    spec = _spec(
+        DescriptiveOperation(
+            type="descriptive",
+            columns=["Year", "J-D"],
+            statistics=["count", "missing", "mean", "median"],
+            plot="none",
+        ),
+        objective="Describe annual temperature anomalies over time.",
+    )
+    validated = _validated(spec, "descriptive")
+    compiled = compile_analysis_spec(validated)
+
+    result = _execute_compiled(tmp_path, validated)
+    run_dir = tmp_path / "run"
+    summary_csv = (run_dir / "summary.csv").read_bytes()
+    assert b"Year,count,3.0" in summary_csv
+    identity = AnalysisReviewIdentity(
+        dataset_content_hash=CONTENT_HASH,
+        dataset_profile_sha256=PROFILE_HASH,
+        analysis_spec_sha256=compiled.spec_sha256,
+        compiler_version=compiled.compiler_version,
+        code_sha256=compiled.code_sha256,
+        approval_hash="c" * 64,
+        runtime_policy_id=compiled.runtime_policy_id,
+    )
+    notebook = json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_type": "code",
+                    "metadata": {"tags": ["analysis"]},
+                    "source": compiled.code,
+                }
+            ]
+        }
+    ).encode()
+
+    review = review_analysis_spec_outputs(
+        analysis_spec_json=(run_dir / "analysis-spec.json").read_bytes(),
+        results_json=(run_dir / "results.json").read_bytes(),
+        summary_csv=summary_csv,
+        executed_notebook_json=notebook,
+        approved_code=compiled.code,
+        approved_identity=identity,
+        observed_identity=identity,
+        expected_result_sha256=structured_analysis_result_sha256(result),
+        figure_lineage=None,
+    )
+
+    assert review.verdict == "passed-with-warnings"
+    assert next(
+        check for check in review.checks if check.code == "summary-matches-results"
+    ).status == "passed"
+
+
 def test_compiled_perfect_pearson_uses_pearson_degenerate_interval(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -278,3 +351,53 @@ def test_compiled_perfect_pearson_uses_pearson_degenerate_interval(
     assert result.result.correlation == pytest.approx(1.0)
     assert result.result.confidence_interval == pytest.approx((1.0, 1.0))
     assert any("degenerate" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    ("method", "expected_statistic", "expects_linear_fit"),
+    [
+        ("pearson", "Pearson r", True),
+        ("spearman", "Spearman rho", False),
+    ],
+)
+def test_compiled_correlation_figure_uses_spark_editorial_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: Literal["pearson", "spearman"],
+    expected_statistic: str,
+    expects_linear_fit: bool,
+) -> None:
+    monkeypatch.setenv("MPLBACKEND", "Agg")
+    (tmp_path / "dataset.csv").write_text(
+        "Year,J-D\n2020,0.44\n2021,0.48\n2022,0.51\n2023,0.57\n2024,0.61\n",
+        encoding="utf-8",
+    )
+    spec = _spec(
+        CorrelationOperation(
+            type="correlation",
+            x_column="Year",
+            y_column="J-D",
+            method=method,
+            confidence_interval=False,
+            plot="scatter",
+        ),
+        objective="Analyze the trend of J-D over Year.",
+    )
+    validated = _validated(spec, method)
+    compiled = compile_analysis_spec(validated)
+
+    result = _execute_compiled(tmp_path, validated)
+    figure = (tmp_path / "run" / "figure.png").read_bytes()
+
+    assert result.result.type == "correlation"
+    assert figure.startswith(b"\x89PNG\r\n\x1a\n")
+    assert int.from_bytes(figure[16:20], "big") >= 800
+    assert int.from_bytes(figure[20:24], "big") >= 500
+    assert expected_statistic in compiled.code
+    assert "n = {complete.shape[0]}" in compiled.code
+    rendered = mpimg.imread(tmp_path / "run" / "figure.png")
+    spark_fit_blue = np.asarray([0x18, 0x4F, 0x95], dtype=float) / 255.0
+    fit_pixels = np.count_nonzero(
+        np.all(np.isclose(rendered[:, :, :3], spark_fit_blue, atol=1 / 255), axis=2)
+    )
+    assert bool(fit_pixels > 10) is expects_linear_fit

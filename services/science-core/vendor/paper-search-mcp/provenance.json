@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "package": "paper-search-mcp",
+  "upstreamVersion": "0.1.4",
+  "sparkVersion": "0.1.4+spark.3",
+  "upstreamSource": "https://github.com/openags/paper-search-mcp",
+  "upstreamSdistSha256": "3501a625840cab3410e990e2f2df51bd42ca7300872458bfd44bf6bf1f1188f8",
+  "upstreamWheelSha256": "3942b91391093d6b818ac3e15878adc80cb72a7c61c33152c1e57e5eefee6676",
+  "patch": "spark.patch",
+  "patchSha256": "5b6c63947ea9bee38de960d42fd9881d686123abf5b5ecc888fa352146bfaeee",
+  "licenseSha256": "995371b5b03267390307273fad027e86672c4a71b8d3648978047044e9e15065",
+  "sourceDateEpoch": 0,
+  "buildBackend": "wheel==0.47.0 (repacked from the bound spark.2 wheel)",
+  "wheel": "paper_search_mcp-0.1.4+spark.3-py3-none-any.whl",
+  "wheelSha256": "08c239670ac4ddedfaf3333143256efca43d3598ed55515fe4dc39ec5f55f38e"
+}

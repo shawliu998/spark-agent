@@ -21,16 +21,23 @@ export default {
       },
       fontFamily: {
         serif: ["'Source Serif 4'", "Georgia", "serif"],
-        sans: ["Inter", "system-ui", "sans-serif"],
+        sans: ["Inter", "-apple-system", "BlinkMacSystemFont", "'Segoe UI'", "system-ui", "sans-serif"],
         mono: ["'JetBrains Mono'", "ui-monospace", "monospace"],
       },
+      fontSize: {
+        caption: ["0.6875rem", { lineHeight: "1rem" }],
+        ui: ["0.8125rem", { lineHeight: "1.125rem" }],
+        "document-subheading": ["1.2rem", { lineHeight: "1.35" }],
+        "document-heading": ["1.44rem", { lineHeight: "1.25" }],
+        "document-display": ["1.728rem", { lineHeight: "1.2" }],
+      },
       borderRadius: {
-        card: "14px",
-        input: "10px",
+        card: "7px",
+        input: "5px",
       },
       boxShadow: {
-        card: "0 1px 2px rgba(40, 39, 35, 0.04), 0 4px 16px rgba(40, 39, 35, 0.05)",
-        pop: "0 8px 30px rgba(40, 39, 35, 0.14)",
+        card: "0 1px 2px rgba(28, 46, 50, 0.04)",
+        pop: "0 10px 28px rgba(28, 46, 50, 0.14)",
       },
     },
   },

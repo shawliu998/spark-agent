@@ -112,7 +112,7 @@ describe("LegacyQuestionPanel", () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/confirms only that quoted text occurs/i)).toBeInTheDocument();
     expect(screen.getByText("Not reviewed for claim support")).toBeInTheDocument();
-    expect(screen.getByText("quote located locally")).toBeInTheDocument();
+    expect(screen.getByText("Located locally")).toBeInTheDocument();
     expect(screen.getByText("paperqa2-remote-v1")).toBeInTheDocument();
     expect(screen.getByText("models.example.test")).toBeInTheDocument();
     expect(screen.getByText(`sha256:${"e".repeat(64)}`)).toBeInTheDocument();

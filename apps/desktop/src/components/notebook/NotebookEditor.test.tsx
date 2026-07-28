@@ -71,4 +71,22 @@ describe("NotebookEditor · stopping a hung cell", () => {
     await userEvent.click(await screen.findByLabelText("Run cell 1"));
     expect(await screen.findByText(/kernel error: kernel exited unexpectedly/)).toBeInTheDocument();
   });
+
+  it("keeps cell actions keyboard reachable without hover", async () => {
+    const user = userEvent.setup();
+    render(<NotebookEditor path="analysis.ipynb" onBack={vi.fn()} />);
+
+    const run = await screen.findByLabelText("Run cell 1");
+    const remove = screen.getByLabelText("Delete cell 1");
+    expect(run).toHaveClass("h-11", "opacity-0", "focus-visible:opacity-100");
+    expect(remove).toHaveClass("h-11", "w-11", "opacity-0", "focus-visible:opacity-100");
+    expect(screen.getByRole("button", { name: "Back to notebooks" })).toHaveClass("h-11", "w-11");
+    expect(screen.getByRole("button", { name: "Add cell" })).toHaveClass("min-h-11");
+
+    run.focus();
+    await user.tab();
+    expect(remove).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByLabelText("Cell 1")).not.toBeInTheDocument();
+  });
 });

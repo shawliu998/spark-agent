@@ -1,9 +1,33 @@
 {
   "title": "运行",
+  "analysis": {
+    "heading": "数据集分析",
+    "loading": "正在加载数据集分析运行…",
+    "unavailable": "数据集分析运行暂时不可用。",
+    "failed": "数据集分析失败",
+    "fallbackTitle": "数据集分析",
+    "artifactCount": "{{count}} 个产物",
+    "isolatedRuntime": "隔离运行时",
+    "open": "打开分析",
+    "openTitle": "在数据分析中打开此次运行"
+  },
   "description": {
+    "product": "查看科研任务的执行结果与产物，并在需要时复现。",
     "prefix": "跨所有会话的每一次实验执行——命令、代码版本、环境、硬件与输出。",
     "suffix": "会重新运行并比较结果。"
   },
+  "summary": {
+    "total": "{{count}} 次运行",
+    "succeeded": "{{count}} 次成功",
+    "failed": "{{count}} 次失败"
+  },
+  "run": {
+    "generated": "已生成 {{name}}",
+    "completed": "已完成 {{name}}",
+    "failed": "执行失败",
+    "additionalOutputs": "另有 {{count}} 个产物"
+  },
+  "technicalDetails": "技术详情",
   "pane": {
     "subtitle": "本会话",
     "closeAria": "关闭运行面板"

@@ -1,9 +1,34 @@
 {
   "title": "Ejecuciones",
+  "analysis": {
+    "heading": "Análisis de datos",
+    "loading": "Cargando ejecuciones de análisis de datos…",
+    "unavailable": "Las ejecuciones de análisis de datos no están disponibles temporalmente.",
+    "failed": "El análisis de datos falló",
+    "fallbackTitle": "Análisis de datos",
+    "artifactCount_one": "{{count}} artefacto",
+    "artifactCount_other": "{{count}} artefactos",
+    "isolatedRuntime": "entorno aislado",
+    "open": "Abrir análisis",
+    "openTitle": "Abrir esta ejecución en Análisis de datos"
+  },
   "description": {
+    "product": "Revisa las ejecuciones de investigación, abre sus resultados y reproduce un resultado cuando sea necesario.",
     "prefix": "Cada ejecución de experimento en todas las sesiones — comando, versión del código, entorno, hardware y salidas. ",
     "suffix": " la vuelve a ejecutar y compara los resultados."
   },
+  "summary": {
+    "total": "{{count}} ejecuciones",
+    "succeeded": "{{count}} correctas",
+    "failed": "{{count}} fallidas"
+  },
+  "run": {
+    "generated": "{{name}} generado",
+    "completed": "{{name}} completado",
+    "failed": "La ejecución falló",
+    "additionalOutputs": "{{count}} resultados adicionales"
+  },
+  "technicalDetails": "Detalles técnicos",
   "pane": {
     "subtitle": "esta sesión",
     "closeAria": "Cerrar ejecuciones"

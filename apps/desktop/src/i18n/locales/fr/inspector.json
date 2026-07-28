@@ -2,7 +2,8 @@
   "shell": {
     "maximizePanel": "Agrandir le panneau",
     "restorePanel": "Restaurer le panneau",
-    "closeInspector": "Fermer l'inspecteur"
+    "closeInspector": "Fermer l'inspecteur",
+    "resizePanel": "Redimensionner le panneau de l'inspecteur"
   },
   "artifact": {
     "previousVersionAria": "Version précédente",
@@ -267,6 +268,8 @@
       "show": "Afficher la série"
     },
     "selectSeriesHint": "sélectionnez une série à tracer",
-    "noNumericColumns": "Aucune colonne numérique à représenter."
+    "noNumericColumns": "Aucune colonne numérique à représenter.",
+    "chartTitle": "Graphique du jeu de données",
+    "chartDescription": "Graphique {{type}} avec {{series}} séries numériques sélectionnées sur {{rows}} lignes. Les valeurs manquantes apparaissent sous forme d'espaces."
   }
 }

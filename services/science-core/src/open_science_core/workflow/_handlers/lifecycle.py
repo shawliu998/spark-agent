@@ -67,6 +67,16 @@ class _ReviewHandler(Protocol):
     ) -> None: ...
 
 
+class _AgentLoopHandler(Protocol):
+    def __call__(
+        self,
+        session: Session,
+        workflow: WorkflowRecord,
+        job: JobRecord,
+        /,
+    ) -> object: ...
+
+
 def mark_leased_job_started(session: Session, job_id: str, lease_token: str) -> None:
     job = session.get(JobRecord, job_id)
     if job is None or job.status != "leased" or job.lease_token != lease_token:
@@ -118,6 +128,9 @@ def execute_leased_job(
     handle_generate_plan: _PlanHandler,
     handle_task: _TaskHandler,
     handle_review: _ReviewHandler,
+    handle_observe_step: _AgentLoopHandler,
+    handle_decide_next_action: _AgentLoopHandler,
+    handle_apply_agent_decision: _AgentLoopHandler,
 ) -> None:
     job = session.get(JobRecord, job_id)
     if job is None or job.status != "leased" or job.lease_token != lease_token:
@@ -166,6 +179,12 @@ def execute_leased_job(
             job,
             legacy_handler=compatibility == "legacy",
         )
+    elif job.kind == "observe-step":
+        handle_observe_step(session, workflow, job)
+    elif job.kind == "decide-next-action":
+        handle_decide_next_action(session, workflow, job)
+    elif job.kind == "apply-agent-decision":
+        handle_apply_agent_decision(session, workflow, job)
     else:
         raise WorkflowFailure("unsupported-job-kind", "The workflow job type is unsupported.")
     # A cancellation may commit while a deterministic handler is doing a long

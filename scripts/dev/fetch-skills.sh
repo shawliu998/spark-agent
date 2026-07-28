@@ -65,6 +65,7 @@ cmp -s "$SRC/LICENSE" "$STAGING/LICENSE" || {
   exit 1
 }
 printf '%s\n' "$AI4S_SKILLS_COMMIT" >"$STAGING/.commit"
+verify_tree_manifest "$STAGING" "$ROOT/runtime/skills/ai4s-skills.manifest"
 
 install_directory_transactionally "$STAGING" "$OUT_DIR"
 STAGING=''

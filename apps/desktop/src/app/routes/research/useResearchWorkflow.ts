@@ -20,6 +20,10 @@ import {
   type WorkflowCreateCandidate,
   type WorkflowCreateIntent,
 } from "./workflowModel";
+import {
+  readLastWorkflowId,
+  writeLastWorkflowId,
+} from "./researchPreferences";
 
 export type { WorkflowConnectionState } from "./useWorkflowEvents";
 
@@ -113,6 +117,7 @@ export interface ResearchWorkflowController {
     interactionId: string,
     response: InteractionResponseValue,
   ) => Promise<void>;
+  resolveAgentDecision: (decision: "approved" | "rejected") => Promise<void>;
   approvePlan: () => Promise<void>;
   decideAnalysis: (decision: "approved" | "rejected") => Promise<void>;
   acceptReviewWarnings: () => Promise<void>;
@@ -125,6 +130,7 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
   const [workflows, setWorkflows] = useState<ResearchWorkflowSnapshot[]>([]);
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string | null>(null);
   const [loadingList, setLoadingList] = useState(false);
+  const [workflowListResolved, setWorkflowListResolved] = useState(false);
   const [mutating, setMutating] = useState(false);
   const [interactions, setInteractions] = useState<InteractionRequest[]>([]);
   const [loadingInteractions, setLoadingInteractions] = useState(false);
@@ -179,6 +185,7 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     setSelectedWorkflowId(null);
     setError(null);
     setLoadingList(false);
+    setWorkflowListResolved(false);
     if (!projectId) return () => controller.abort();
 
     setLoadingList(true);
@@ -215,20 +222,32 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
           selectionChanged ? mergeWorkflowLists(current, next) : next,
         );
         if (!selectionChanged && selectedWorkflowIdRef.current === null) {
-          const nextSelectedWorkflowId = next[0]?.workflow.id ?? null;
+          const storedWorkflowId = readLastWorkflowId();
+          const nextSelectedWorkflowId = next.some(
+            (item) => item.workflow.id === storedWorkflowId,
+          )
+            ? storedWorkflowId
+            : next[0]?.workflow.id ?? null;
           selectedWorkflowIdRef.current = nextSelectedWorkflowId;
           setSelectedWorkflowId(nextSelectedWorkflowId);
         }
+        setWorkflowListResolved(true);
       })
       .catch((reason) => {
         if (!controller.signal.aborted) setError(errorMessage(reason));
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoadingList(false);
+        if (!controller.signal.aborted) {
+          setLoadingList(false);
+        }
       });
 
     return () => controller.abort();
   }, [listRefresh, projectId]);
+
+  useEffect(() => {
+    if (workflowListResolved) writeLastWorkflowId(selectedWorkflowId);
+  }, [selectedWorkflowId, workflowListResolved]);
 
   const selectedIsAgentRun = workflows.some(
     (item) =>
@@ -300,6 +319,7 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     currentSnapshot,
     selectedIsAgentRun,
     selectedWorkflowId,
+    snapshot?.eventCursor,
     snapshot?.workflow.revision,
   ]);
 
@@ -575,6 +595,41 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     [currentSnapshot, interactions, runMutation],
   );
 
+  const resolveAgentDecision = useCallback(
+    async (decision: "approved" | "rejected") => {
+      await runMutation((signal) => {
+        const current = currentSnapshot();
+        if (!current || !("pendingDecision" in current)) {
+          throw new Error("The Agent decision is still loading");
+        }
+        const pending = current.pendingDecision;
+        const requiredAction =
+          decision === "approved"
+            ? "approve-agent-decision"
+            : "reject-agent-decision";
+        if (
+          !pending ||
+          pending.status !== "waiting-user-confirmation" ||
+          !pending.requiresUserConfirmation ||
+          !current.allowedActions.includes(requiredAction)
+        ) {
+          throw new Error("The scientific revision is no longer awaiting confirmation");
+        }
+        return scienceCore.resolveAgentDecision(
+          current.workflow.id,
+          pending.id,
+          {
+            decision,
+            decisionOutputSha256: pending.outputSha256,
+            expectedWorkflowRevision: current.workflow.revision,
+          },
+          { signal },
+        );
+      });
+    },
+    [currentSnapshot, runMutation],
+  );
+
   const approvePlan = useCallback(async () => {
     await runMutation((signal) => {
       const current = requireAction("approve-plan");
@@ -736,6 +791,7 @@ export function useResearchWorkflow(projectId: string | null): ResearchWorkflowC
     refresh,
     create,
     respondToInteraction,
+    resolveAgentDecision,
     approvePlan,
     decideAnalysis,
     acceptReviewWarnings,

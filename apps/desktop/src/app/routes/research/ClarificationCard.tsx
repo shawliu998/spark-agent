@@ -93,7 +93,7 @@ export function ClarificationCard({
       <div className="flex items-start gap-3">
         <HelpCircle size={17} className="mt-0.5 shrink-0 text-warn" />
         <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-medium uppercase tracking-wider text-warn">
+          <p className="text-caption font-medium text-warn">
             {interaction.status === "answered"
               ? t("research.workflow.clarification.answerTitle", {
                   defaultValue: "Clarification answer",
@@ -105,7 +105,7 @@ export function ClarificationCard({
           <h3 className="mt-1 text-sm font-medium leading-relaxed text-text">
             {interaction.question}
           </h3>
-          <p className="mt-1 text-[10px] text-muted">
+          <p className="mt-1 text-caption text-muted">
             {interaction.status === "answered"
               ? t("research.workflow.clarification.revisionHint", {
                   defaultValue:
@@ -205,7 +205,7 @@ export function ClarificationCard({
       </div>
 
       <div className="mt-3 flex items-center justify-between gap-3 border-t border-warn/20 pt-3">
-        <p className="min-w-0 text-[10px] text-muted">
+        <p className="min-w-0 text-caption text-muted">
           {interaction.stepId
             ? t("research.workflow.clarification.step", {
                 defaultValue: "Plan step: {{stepId}}",

@@ -233,6 +233,90 @@ export async function setupScienceMcp(pkg: string): Promise<string> {
   return invoke<string>("setup_science_mcp", { package: pkg });
 }
 
+export type ScienceCoreRuntimeState =
+  | "starting"
+  | "ready"
+  | "unavailable"
+  | "failed"
+  | "stopping"
+  | "stopped";
+
+export interface ScienceCoreRuntimeStatus {
+  state: ScienceCoreRuntimeState;
+  endpoint: string | null;
+  dockerReady: boolean;
+  composeReady: boolean;
+  message: string | null;
+}
+
+export interface ScienceCoreRuntimeConnection {
+  endpoint: string;
+  token: string;
+}
+
+export interface ScienceModelConfigStatus {
+  providerId: string;
+  protocol: "openai-compatible" | "anthropic";
+  apiBase: string;
+  llmModel: string;
+  embeddingModel: string;
+  credentialStored: boolean;
+}
+
+export interface ScienceModelConfigInput {
+  providerId: string;
+  protocol: "openai-compatible" | "anthropic";
+  apiBase: string;
+  llmModel: string;
+  embeddingModel: string;
+  apiKey?: string;
+  clearCredential: boolean;
+}
+
+/** Packaged Science Core lifecycle state; null is an explicit browser no-op. */
+export async function scienceCoreStatus(): Promise<ScienceCoreRuntimeStatus | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScienceCoreRuntimeStatus>("science_core_status");
+}
+
+/** Ready-only connection handoff. The token must remain in caller memory. */
+export async function scienceCoreConnection(): Promise<ScienceCoreRuntimeConnection | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScienceCoreRuntimeConnection>("science_core_connection");
+}
+
+/** Retry packaged startup; null is an explicit browser no-op. */
+export async function retryScienceCore(): Promise<ScienceCoreRuntimeStatus | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScienceCoreRuntimeStatus>("science_core_retry");
+}
+
+/** Stop the packaged core; null is an explicit browser no-op. */
+export async function stopScienceCore(): Promise<ScienceCoreRuntimeStatus | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScienceCoreRuntimeStatus>("science_core_stop");
+}
+
+/** Read non-secret Research model settings. The Keychain secret is never returned. */
+export async function scienceModelConfig(): Promise<ScienceModelConfigStatus | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScienceModelConfigStatus>("science_model_config");
+}
+
+/** Persist Research model settings and optionally replace/remove its Keychain secret. */
+export async function saveScienceModelConfig(
+  input: ScienceModelConfigInput,
+): Promise<ScienceModelConfigStatus | null> {
+  if (!isTauri) return null;
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<ScienceModelConfigStatus>("science_model_config_save", { input });
+}
+
 /** Auto-start Jupyter on launch when it was enabled before. Silent no-op otherwise. */
 export async function ensureJupyter(): Promise<void> {
   try {
@@ -281,6 +365,20 @@ export async function saveTextFile(filename: string, content: string): Promise<S
   if (!isTauri) return { kind: "not-desktop" };
   const { invoke } = await import("@tauri-apps/api/core");
   const path = await invoke<string | null>("save_text_file", { filename, content });
+  return path ? { kind: "saved", path } : { kind: "canceled" };
+}
+
+/** Save binary bytes via the native "Save As" dialog (desktop only). */
+export async function saveBinaryFile(
+  filename: string,
+  content: Uint8Array,
+): Promise<SaveResult> {
+  if (!isTauri) return { kind: "not-desktop" };
+  const { invoke } = await import("@tauri-apps/api/core");
+  const path = await invoke<string | null>("save_binary_file", {
+    filename,
+    content: Array.from(content),
+  });
   return path ? { kind: "saved", path } : { kind: "canceled" };
 }
 

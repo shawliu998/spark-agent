@@ -31,17 +31,6 @@ export interface ScienceConnector {
 
 export const SCIENCE_CONNECTORS: ScienceConnector[] = [
   {
-    id: "paper-search",
-    label: "Literature search",
-    discipline: "all fields",
-    description:
-      "arXiv · PubMed · Crossref · Semantic Scholar · bioRxiv/medRxiv — search & fetch papers",
-    // Exact pin: curated connectors must not drift between internal builds.
-    pkg: "paper-search-mcp==0.1.4",
-    module: "paper_search_mcp.server",
-    source: "github.com/openags/paper-search-mcp",
-  },
-  {
     id: "biomcp",
     label: "Biomedical databases",
     discipline: "biology",

@@ -11,6 +11,7 @@ from typing import Any, Protocol, cast
 
 from pydantic import field_serializer
 
+from .config import model_api_key_required
 from .config import settings as app_settings
 
 DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
@@ -58,6 +59,18 @@ class PaperQaAdapter:
         question: str,
         model: str | None,
     ) -> LiteratureResult:
+        selected_model = model or app_settings.llm_model
+        api_key = app_settings.openai_api_key
+        if app_settings.model_protocol != "openai-compatible":
+            raise RuntimeError(
+                "PaperQA requires a separately configured OpenAI-compatible "
+                "embedding connection for this model provider"
+            )
+        if (
+            not selected_model
+            or (not api_key and model_api_key_required(app_settings.openai_api_base))
+        ):
+            raise RuntimeError("PaperQA model gateway is not configured")
         try:
             paperqa = cast(_PaperQaModule, importlib.import_module("paperqa"))
         except ImportError as error:
@@ -65,11 +78,8 @@ class PaperQaAdapter:
 
         lock = self._locks.setdefault(project_id, asyncio.Lock())
         async with lock:
-            selected_model = model or app_settings.llm_model
-            api_key = app_settings.openai_api_key
-            if not selected_model or not api_key:
-                raise RuntimeError("PaperQA model gateway is not configured")
             signature = (
+                app_settings.model_protocol,
                 selected_model,
                 app_settings.embedding_model or "",
                 app_settings.openai_api_base,
@@ -78,7 +88,7 @@ class PaperQaAdapter:
             settings_kwargs = paperqa_settings_kwargs(
                 selected_model,
                 app_settings.embedding_model,
-                api_key,
+                api_key or "",
                 app_settings.openai_api_base,
             )
             settings = create_paperqa_settings(paperqa.Settings, settings_kwargs)

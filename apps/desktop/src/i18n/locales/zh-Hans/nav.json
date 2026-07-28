@@ -9,12 +9,19 @@
   },
   "items": {
     "new": "新建",
-    "research": "科研",
+    "agentSession": "新建 Agent 会话",
+    "research": "研究",
     "analysis": "数据分析",
     "notebooks": "笔记本",
     "files": "文件",
     "runs": "运行",
     "skills": "技能"
+  },
+  "groups": {
+    "primary": "主导航",
+    "workspace": "工作区",
+    "resources": "资源",
+    "agent": "Agent"
   },
   "history": {
     "heading": "历史记录",
@@ -31,7 +38,7 @@
     "hideAction": "隐藏"
   },
   "status": {
-    "runtime": "运行时",
+    "runtime": "环境",
     "model": "模型",
     "modelNotSet": "未设置",
     "values": {
@@ -48,7 +55,7 @@
     "actions": {
       "newSession": "新建会话",
       "analyzeData": "分析我的数据（新建工作流）",
-      "auditReport": "审查报告（溯源性审查）",
+      "auditReport": "检查报告引用与一致性",
       "openNotebooks": "打开笔记本",
       "manageSkills": "管理技能",
       "openSettings": "打开设置",

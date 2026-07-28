@@ -6,13 +6,14 @@ import "./i18n";
 import { LocaleProvider } from "./app/providers/LocaleProvider";
 import { ThemeProvider } from "./app/providers/ThemeProvider";
 import { router } from "./app/router";
+import { RouteLoading } from "./app/routes/RouteLoading";
 import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <LocaleProvider>
       <ThemeProvider>
-        <RouterProvider router={router} />
+        <RouterProvider router={router} fallbackElement={<RouteLoading />} />
       </ThemeProvider>
     </LocaleProvider>
   </React.StrictMode>,

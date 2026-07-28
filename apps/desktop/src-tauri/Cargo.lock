@@ -31,14 +31,17 @@ dependencies = [
 
 [[package]]
 name = "ai4s-workbench"
-version = "0.1.9"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.4.3",
+ "libc",
  "opener",
  "reqwest",
  "rusqlite",
+ "security-framework",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-clipboard-manager",

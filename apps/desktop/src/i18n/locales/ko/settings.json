@@ -53,8 +53,25 @@
     "title": "모델",
     "hint": "아래 제공자가 여기서 선택할 수 있는 모델을 제공합니다",
     "connectPrompt": "모델을 구성하려면 런타임을 연결하세요.",
+    "loading": "구성된 모델을 불러오는 중…",
     "notSet": "설정 안 됨 — 기본 모델을 선택하세요",
     "providersDivider": "제공자"
+  },
+  "researchModel": {
+    "title": "연구 모델 연결",
+    "hint": "연구 워크플로용 선택적 OpenAI 호환 모델입니다. 원격 실행마다 데이터 전송을 명시적으로 승인해야 합니다.",
+    "desktopOnly": "패키징된 데스크톱 앱에서 연구 모델을 구성하세요.",
+    "provider": "제공자",
+    "protocol": "연결 프로토콜",
+    "openaiCompatible": "OpenAI 호환",
+    "anthropicNative": "Anthropic 네이티브",
+    "endpoint": "엔드포인트", "endpointPlaceholder": "https://api.example.com/v1",
+    "model": "모델", "modelPlaceholder": "모델 이름",
+    "embedding": "임베딩 모델", "optional": "선택 사항", "embeddingPlaceholder": "임베딩 모델 이름",
+    "embeddingUnavailable": "이 연결에서는 임베딩을 사용할 수 없습니다. 연구 에이전트는 작동하지만 PDF 의미 기반 Q&A에는 호환 임베딩 엔드포인트가 필요합니다.",
+    "apiKey": "API 키", "keyStoredPlaceholder": "macOS 키체인에 저장됨 — 교체할 때만 입력", "keyPlaceholder": "macOS 키체인에 저장", "keyOptionalPlaceholder": "이 로컬 제공자에는 필요하지 않습니다",
+    "credentialStored": "자격 증명이 macOS 키체인에 저장됨", "credentialMissing": "연구 모델 자격 증명이 없음", "credentialNotRequired": "이 로컬 제공자는 API 키가 필요하지 않습니다", "removeKey": "키 제거",
+    "readFailed": "연구 모델 연결을 읽을 수 없습니다.", "saveFailed": "연구 모델 연결을 저장할 수 없습니다.", "saved": "연구 모델 연결을 저장했습니다. Science Core를 다시 시작하는 중입니다."
   },
   "providers": {
     "modelCount_other": "모델 {{count}}개",

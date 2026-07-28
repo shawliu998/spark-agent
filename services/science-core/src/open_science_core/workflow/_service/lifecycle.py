@@ -26,6 +26,7 @@ from ...models import (
     AnalysisIntentRecord,
     AnalysisSpecRecord,
     ApprovalRecord,
+    DiscoverySpecRecord,
     EventRecord,
     InteractionRequestRecord,
     JobRecord,
@@ -37,6 +38,8 @@ from ...models import (
     WorkflowRecord,
     utc_now,
 )
+from ..discovery_adapter import discovery_operation_key
+from ..discovery_schemas import DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION
 from ..schemas import (
     AnalysisApprovalEventData,
     AnalysisSpecEventData,
@@ -44,6 +47,8 @@ from ..schemas import (
     CreatedEventData,
     DatasetAnalysisReviewResult,
     DatasetReviewWarningsAcceptedEventData,
+    PaperDiscoveryPlanSpec,
+    PaperDiscoveryPlanStep,
     PlanEventData,
     RemoteDataApprovalEventData,
     ResearchWorkflowCreateIn,
@@ -266,34 +271,46 @@ def materialize_plan_tasks(
         return existing
     spec = assert_plan_for_workflow(workflow, plan)
     tasks: list[TaskRecord] = []
-    for order_index, step in enumerate(spec.steps):
-        inputs = model_payload(step.inputs)
+    for zero_based_index, step in enumerate(spec.steps):
+        if isinstance(step, PaperDiscoveryPlanStep):
+            order_index = step.order_index
+            inputs = step.inputs.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=False,
+            )
+            step_type = step.task_type
+        else:
+            order_index = zero_based_index
+            inputs = model_payload(step.inputs)
+            step_type = step.type
         expected_outputs, risk_level, timeout_seconds = plan_step_materialization(
             spec,
-            order_index,
+            zero_based_index,
         )
+        step_key = step.key
         task = TaskRecord(
             id=str(uuid.uuid4()),
             project_id=workflow.project_id,
             workflow_id=workflow.id,
             plan_id=plan.id,
-            step_key=step.key,
+            step_key=step_key,
             order_index=order_index,
             objective=step.objective,
-            task_type=step.type,
+            task_type=step_type,
             inputs=inputs,
             input_sha256=content_sha256(
                 {
                     "inputs": inputs,
                     "objective": step.objective,
-                    "stepKey": step.key,
-                    "stepType": step.type,
+                    "stepKey": step_key,
+                    "stepType": step_type,
                 }
             ),
             expected_outputs=expected_outputs,
             outputs={},
             acceptance_criteria=list(step.acceptance_criteria),
-            permissions=TASK_PERMISSIONS_BY_TYPE[step.type],
+            permissions=TASK_PERMISSIONS_BY_TYPE[step_type],
             risk_level=risk_level,
             status="pending",
             row_version=1,
@@ -341,6 +358,7 @@ def approve_plan(
         "workflow-plan-approval-v1",
         "workflow-plan-approval-v2",
         "workflow-plan-approval-v3",
+        DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
     }:
         raise WorkflowConflict(
             "approval-schema-unsupported",
@@ -355,6 +373,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -363,6 +382,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -371,6 +391,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -379,6 +400,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -387,6 +409,7 @@ def approve_plan(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -478,6 +501,31 @@ def approve_plan(
         .values(status="approved", approved_at=now)
         .execution_options(synchronize_session=False)
     )
+    discovery_plan = (
+        PaperDiscoveryPlanSpec.model_validate(plan.spec_json)
+        if plan.generator == "paper-discovery-v1"
+        else None
+    )
+    if discovery_plan is not None:
+        discovery_result = session.execute(
+            update(DiscoverySpecRecord)
+            .where(
+                DiscoverySpecRecord.id == discovery_plan.discovery_spec_id,
+                DiscoverySpecRecord.workflow_id == workflow.id,
+                DiscoverySpecRecord.revision
+                == discovery_plan.discovery_spec_revision,
+                DiscoverySpecRecord.spec_sha256
+                == discovery_plan.discovery_spec_sha256,
+                DiscoverySpecRecord.status == "pending-approval",
+            )
+            .values(status="approved", approved_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if cast(CursorResult[object], discovery_result).rowcount != 1:
+            raise WorkflowConflict(
+                "discovery-spec-approval-mismatch",
+                "The plan no longer matches its pending discovery specification.",
+            )
     approved_analysis_spec: AnalysisSpecRecord | None = None
     analysis_spec_id = plan.spec_json.get("analysisSpecId")
     analysis_spec_sha256 = plan.spec_json.get("analysisSpecSha256")
@@ -502,12 +550,25 @@ def approve_plan(
     tasks = materialize_plan_tasks(session, workflow, plan)
     first_task = tasks[0]
     transition_task(session, first_task, "queued")
+    first_query_id = first_task.inputs.get("queryId")
+    first_provider = first_task.inputs.get("provider")
+    operation_key = (
+        discovery_operation_key(
+            discovery_plan.discovery_spec_id,
+            first_query_id,
+            first_provider,
+        )
+        if discovery_plan is not None
+        and isinstance(first_query_id, str)
+        and first_provider in {"crossref", "openalex"}
+        else f"workflow:{workflow.id}:task:{first_task.id}"
+    )
     job = enqueue_job(
         session,
         workflow,
         kind="execute-task",
         task=first_task,
-        operation_key=f"workflow:{workflow.id}:task:{first_task.id}",
+        operation_key=operation_key,
     )
     transition_workflow(
         session,

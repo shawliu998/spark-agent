@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 _MODEL_SECRET_MAX_BYTES = 4096
 _MODEL_IDENTIFIER_MAX_CHARS = 200
 _MODEL_API_BASE_MAX_CHARS = 2048
+_MODEL_PROTOCOLS = frozenset({"openai-compatible", "anthropic"})
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 
 
@@ -90,6 +91,24 @@ def is_valid_model_identifier(value: str | None) -> bool:
         return False
 
 
+def normalize_model_protocol(value: str | None) -> str:
+    normalized = (value or "openai-compatible").strip()
+    if normalized not in _MODEL_PROTOCOLS:
+        raise ValueError("The configured model protocol is not supported")
+    return normalized
+
+
+def model_api_key_required(api_base: str) -> bool:
+    try:
+        hostname = urlsplit(api_base).hostname
+        if not hostname:
+            return True
+        valid, loopback = _valid_hostname(hostname)
+        return not (valid and loopback)
+    except (UnicodeError, ValueError):
+        return True
+
+
 def _normalize_model_api_base(value: str | None) -> str:
     raw_value = value or "https://api.openai.com/v1"
     if any(ord(character) < 32 or ord(character) == 127 for character in raw_value):
@@ -134,7 +153,10 @@ def is_valid_model_api_base(value: str) -> bool:
         return False
 
 
-def canonical_model_api_endpoint(value: str) -> str | None:
+def canonical_model_api_endpoint(
+    value: str,
+    protocol: str = "openai-compatible",
+) -> str | None:
     """Return the credential-free endpoint used for approval identity hashing."""
 
     if not is_valid_model_api_base(value):
@@ -155,7 +177,8 @@ def canonical_model_api_endpoint(value: str) -> str | None:
         default_port = 443 if parsed.scheme == "https" else 80
         authority = canonical_host if port in {None, default_port} else f"{canonical_host}:{port}"
         base_path = parsed.path.rstrip("/")
-        return f"{parsed.scheme.lower()}://{authority}{base_path}/chat/completions"
+        request_path = "/messages" if protocol == "anthropic" else "/chat/completions"
+        return f"{parsed.scheme.lower()}://{authority}{base_path}{request_path}"
     except (UnicodeError, ValueError):
         return None
 
@@ -174,6 +197,7 @@ class Settings:
     runtime_exchange_dir: Path
     runtime_socket_path: Path
     execution_timeout_seconds: int
+    model_protocol: str = "openai-compatible"
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -193,6 +217,9 @@ class Settings:
         embedding_model = normalize_model_identifier(
             _env("SPARK_AGENT_EMBEDDING_MODEL", "OPENSCIENCE_EMBEDDING_MODEL")
         )
+        model_protocol = normalize_model_protocol(
+            os.environ.get("SPARK_AGENT_MODEL_PROTOCOL")
+        )
         return cls(
             data_dir=data_dir,
             database_path=data_dir / "science-core.sqlite3",
@@ -207,7 +234,9 @@ class Settings:
             # therefore reports ready only when that credential is present; local
             # embedding profiles remain a later, separately declared capability.
             model_gateway_configured=bool(
-                openai_api_key and llm_model and is_valid_model_api_base(openai_api_base)
+                llm_model
+                and is_valid_model_api_base(openai_api_base)
+                and (openai_api_key or not model_api_key_required(openai_api_base))
             ),
             openai_api_base=openai_api_base,
             openai_api_key=openai_api_key,
@@ -232,6 +261,7 @@ class Settings:
                 ),
                 120,
             ),
+            model_protocol=model_protocol,
         )
 
 

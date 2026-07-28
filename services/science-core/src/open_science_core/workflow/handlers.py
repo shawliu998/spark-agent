@@ -167,6 +167,7 @@ from ._handlers.text import (
 from ._handlers.text import (
     terms as terms,
 )
+from .agent_loop.coordinator import AgentLoopCoordinator, enqueue_agent_observation
 from .agent_service import handle_route_intent as _handle_route_intent_impl
 from .schemas import (
     AnalysisApprovalEventData,
@@ -385,6 +386,18 @@ def _handle_task(
             analysis_events,
         )
         return
+    if (
+        workflow.creation_mode == "autonomous"
+        and (
+            workflow.workflow_type == "dataset-analysis"
+            or (
+                workflow.workflow_type == "literature-synthesis"
+                and workflow.generation_mode == "local-deterministic"
+            )
+        )
+    ):
+        enqueue_agent_observation(session, workflow, job)
+        return
     advance_after_task(
         session,
         workflow,
@@ -450,6 +463,7 @@ def assert_remote_passage_approval(
 
 
 def execute_leased_job(session: Session, job_id: str, lease_token: str) -> None:
+    coordinator = AgentLoopCoordinator(model_gateway)
     _execute_leased_job(
         session,
         job_id,
@@ -458,4 +472,7 @@ def execute_leased_job(session: Session, job_id: str, lease_token: str) -> None:
         handle_generate_plan=handle_generate_plan,
         handle_task=_handle_task,
         handle_review=handle_review,
+        handle_observe_step=coordinator.observe,
+        handle_decide_next_action=coordinator.decide,
+        handle_apply_agent_decision=coordinator.apply_decision,
     )

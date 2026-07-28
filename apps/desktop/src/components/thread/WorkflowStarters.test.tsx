@@ -50,7 +50,7 @@ describe("WorkflowStarters", () => {
     await userEvent.click(screen.getByText("Explore an example: climate trends"));
     await waitFor(() => expect(onPick).toHaveBeenCalledTimes(1));
     expect(installCalls).toEqual(["climate-trends"]);
-    expect(onPick.mock.calls[0][0]).toContain("gistemp_global_means.csv");
+    expect(onPick.mock.calls[0][0]).toContain("gistemp_annual_global_means.csv");
   });
 
   it("does not send the prompt when the example install fails", async () => {

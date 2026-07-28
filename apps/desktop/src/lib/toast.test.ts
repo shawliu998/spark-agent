@@ -10,11 +10,12 @@ describe("toast store", () => {
     vi.useRealTimers();
   });
 
-  it("pushes success and error toasts and auto-dismisses them", () => {
+  it("pushes success, error, and info toasts and auto-dismisses them", () => {
     toast.success("Saved to /tmp/a.py");
     toast.error("Could not save b.svg");
+    toast.info("Save canceled");
     const { toasts } = useToastStore.getState();
-    expect(toasts.map((t) => t.tone)).toEqual(["success", "error"]);
+    expect(toasts.map((t) => t.tone)).toEqual(["success", "error", "info"]);
 
     vi.advanceTimersByTime(4000);
     expect(useToastStore.getState().toasts).toEqual([]);

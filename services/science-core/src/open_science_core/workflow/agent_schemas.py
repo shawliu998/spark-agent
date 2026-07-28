@@ -6,6 +6,16 @@ from typing import Any, Literal
 from pydantic import ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from ..schemas import ApiModel
+from .agent_loop.policy import (
+    MAX_AGENT_STEPS,
+    MAX_ANALYSIS_SPEC_REVISIONS,
+    MAX_CLARIFICATION_ROUNDS,
+    MAX_INVALID_MODEL_DECISIONS,
+    MAX_MODEL_DECISIONS,
+    MAX_PLAN_REVISIONS,
+    MAX_STEP_RETRIES,
+)
+from .agent_loop.schemas import AgentDecision, StepObservation
 from .schemas import (
     AnalysisSpecSnapshotOut,
     DatasetProfile,
@@ -59,6 +69,8 @@ AgentAllowedAction = Literal[
     "approve-plan",
     "approve-analysis",
     "reject-analysis",
+    "approve-agent-decision",
+    "reject-agent-decision",
     "respond-interaction",
     "accept-review-warnings",
     "cancel",
@@ -141,7 +153,7 @@ def _empty_interaction_options() -> list[dict[str, Any]]:
 class InteractionRequestOut(StrictAgentModel):
     id: str = Field(min_length=1, max_length=36)
     workflow_id: str = Field(min_length=1, max_length=36)
-    step_id: str | None = Field(default=None, max_length=36)
+    step_id: str | None = Field(default=None, max_length=100)
     request_type: InteractionRequestType
     question: str = Field(min_length=1, max_length=4_000)
     options: list[dict[str, Any]] = Field(
@@ -177,6 +189,12 @@ class InteractionRespondIn(StrictAgentModel):
     expected_workflow_revision: int = Field(ge=1)
 
 
+class AgentDecisionResolveIn(StrictAgentModel):
+    decision: Literal["approved", "rejected"]
+    decision_output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_workflow_revision: int = Field(ge=1)
+
+
 class AgentStatusReasonOut(StrictAgentModel):
     code: str = Field(min_length=1, max_length=100)
     user_message: str = Field(min_length=1, max_length=2_000)
@@ -202,6 +220,141 @@ class AgentWorkflowStateOut(StrictAgentModel):
     completed_at: datetime | None
 
 
+class StepObservationOut(StepObservation):
+    id: str = Field(min_length=1, max_length=36)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    generator: str = Field(min_length=1, max_length=100)
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=100)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    model_invocation_id: str | None = Field(default=None, min_length=1, max_length=36)
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_observer_provenance(self) -> StepObservationOut:
+        if (self.model is None) != (self.model_invocation_id is None):
+            raise ValueError("model observations require complete invocation provenance")
+        return self
+
+
+AgentDecisionStatus = Literal[
+    "proposed",
+    "waiting-user-confirmation",
+    "applied",
+    "superseded",
+    "rejected",
+    "failed",
+]
+
+
+class AgentDecisionOut(AgentDecision):
+    id: str = Field(min_length=1, max_length=36)
+    workflow_id: str = Field(min_length=1, max_length=36)
+    observation_id: str = Field(min_length=1, max_length=36)
+    decision_revision: int = Field(ge=1)
+    status: AgentDecisionStatus
+    expected_workflow_revision: int = Field(ge=1)
+    generator: str = Field(min_length=1, max_length=100)
+    prompt_version: str | None = Field(default=None, min_length=1, max_length=100)
+    model: str | None = Field(default=None, min_length=1, max_length=200)
+    model_invocation_id: str | None = Field(default=None, min_length=1, max_length=36)
+    input_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    research_context_snapshot_id: str | None = Field(
+        default=None, min_length=1, max_length=36
+    )
+    research_context_snapshot_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    applied_at: datetime | None
+    created_at: datetime
+
+    @model_validator(mode="after")
+    def validate_decision_record_lifecycle(self) -> AgentDecisionOut:
+        if (self.model is None) != (self.model_invocation_id is None):
+            raise ValueError("model decisions require complete invocation provenance")
+        if (self.status == "applied") != (self.applied_at is not None):
+            raise ValueError("only an applied decision may include applied_at")
+        if (self.research_context_snapshot_id is None) != (
+            self.research_context_snapshot_sha256 is None
+        ):
+            raise ValueError("research context snapshot identity and hash must be paired")
+        return self
+
+
+class AgentDecisionSummaryOut(StrictAgentModel):
+    id: str = Field(min_length=1, max_length=36)
+    observation_id: str = Field(min_length=1, max_length=36)
+    action: Literal[
+        "continue",
+        "request-clarification",
+        "revise-analysis-spec",
+        "retry-step",
+        "complete",
+        "stop",
+    ]
+    reason: str = Field(min_length=1, max_length=4_000)
+    status: AgentDecisionStatus
+    requires_user_confirmation: bool
+    research_context_snapshot_id: str | None = Field(
+        default=None, min_length=1, max_length=36
+    )
+    research_context_snapshot_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    created_at: datetime
+    applied_at: datetime | None
+
+    @model_validator(mode="after")
+    def validate_research_context_provenance(self) -> AgentDecisionSummaryOut:
+        if (self.research_context_snapshot_id is None) != (
+            self.research_context_snapshot_sha256 is None
+        ):
+            raise ValueError("research context snapshot identity and hash must be paired")
+        return self
+
+
+class AgentLoopLimitUsageOut(StrictAgentModel):
+    count: int = Field(ge=0)
+    limit: int = Field(gt=0)
+    reached: bool
+
+    @model_validator(mode="after")
+    def validate_reached_flag(self) -> AgentLoopLimitUsageOut:
+        if self.reached != (self.count >= self.limit):
+            raise ValueError("agent loop reached flag must match count and limit")
+        return self
+
+
+class AgentLoopLimitStateOut(StrictAgentModel):
+    agent_steps: AgentLoopLimitUsageOut
+    plan_revisions: AgentLoopLimitUsageOut
+    analysis_spec_revisions: AgentLoopLimitUsageOut
+    step_retries: AgentLoopLimitUsageOut
+    clarification_rounds: AgentLoopLimitUsageOut
+    model_decisions: AgentLoopLimitUsageOut
+    invalid_model_decisions: AgentLoopLimitUsageOut
+
+
+def _zero_agent_loop_limits() -> AgentLoopLimitStateOut:
+    def usage(limit: int) -> AgentLoopLimitUsageOut:
+        return AgentLoopLimitUsageOut(count=0, limit=limit, reached=False)
+
+    return AgentLoopLimitStateOut(
+        agent_steps=usage(MAX_AGENT_STEPS),
+        plan_revisions=usage(MAX_PLAN_REVISIONS),
+        analysis_spec_revisions=usage(MAX_ANALYSIS_SPEC_REVISIONS),
+        step_retries=usage(MAX_STEP_RETRIES),
+        clarification_rounds=usage(MAX_CLARIFICATION_ROUNDS),
+        model_decisions=usage(MAX_MODEL_DECISIONS),
+        invalid_model_decisions=usage(MAX_INVALID_MODEL_DECISIONS),
+    )
+
+
+def _empty_agent_decision_history() -> list[AgentDecisionSummaryOut]:
+    return []
+
+
 class AgentRunSnapshot(StrictAgentModel):
     workflow: AgentWorkflowStateOut
     intent_decision: IntentDecisionOut | None
@@ -216,6 +369,14 @@ class AgentRunSnapshot(StrictAgentModel):
     analysis_spec: AnalysisSpecSnapshotOut | None = None
     structured_result: StructuredAnalysisResultSnapshotOut | None = None
     review_warning_acceptance: DatasetReviewWarningAcceptanceOut | None = None
+    latest_observation: StepObservationOut | None = None
+    pending_decision: AgentDecisionOut | None = None
+    decision_history: list[AgentDecisionSummaryOut] = Field(
+        default_factory=_empty_agent_decision_history
+    )
+    agent_loop_limits: AgentLoopLimitStateOut = Field(
+        default_factory=_zero_agent_loop_limits
+    )
     allowed_actions: list[AgentAllowedAction]
     event_cursor: int = Field(ge=0)
 
@@ -228,6 +389,34 @@ class AgentRunSnapshot(StrictAgentModel):
             and self.intent_decision.workflow_id != self.workflow.id
         ):
             raise ValueError("the intent decision must belong to the snapshot workflow")
+        if (
+            self.latest_observation is not None
+            and self.latest_observation.workflow_id != self.workflow.id
+        ):
+            raise ValueError("the latest observation must belong to the snapshot workflow")
+        if (
+            self.pending_decision is not None
+            and self.pending_decision.workflow_id != self.workflow.id
+        ):
+            raise ValueError("the pending agent decision must belong to the snapshot workflow")
+        waiting_decision = bool(
+            self.pending_decision is not None
+            and self.pending_decision.status == "waiting-user-confirmation"
+            and self.pending_decision.requires_user_confirmation
+        )
+        decision_actions = {
+            "approve-agent-decision",
+            "reject-agent-decision",
+        }.intersection(self.allowed_actions)
+        if waiting_decision != bool(decision_actions):
+            raise ValueError(
+                "decision resolution actions must exactly follow a pending user confirmation"
+            )
+        if decision_actions and decision_actions != {
+            "approve-agent-decision",
+            "reject-agent-decision",
+        }:
+            raise ValueError("a pending decision must expose both resolution actions")
         if self.intent_decision is not None and not set(
             self.intent_decision.selected_source_ids
         ).issubset(self.workflow.source_ids):

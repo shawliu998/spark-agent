@@ -83,6 +83,7 @@ def ready_source_descriptors(
         SourceRecord.source_kind == "pdf",
         SourceRecord.ingestion_status == "ready",
     )
+    selected_source_ids: list[str] | None = None
     if workflow.creation_mode == "autonomous":
         decision = (
             session.get(IntentDecisionRecord, workflow.current_intent_decision_id)
@@ -98,6 +99,13 @@ def ready_source_descriptors(
     sources = list(
         session.scalars(source_query.order_by(SourceRecord.created_at, SourceRecord.id))
     )
+    if selected_source_ids is not None:
+        sources_by_id = {source.id: source for source in sources}
+        sources = [
+            sources_by_id[source_id]
+            for source_id in selected_source_ids
+            if source_id in sources_by_id
+        ]
     descriptors: list[FrozenSourceDescriptor] = []
     for source in sources:
         page_manifest = source_page_manifest_hash(session, source.id)

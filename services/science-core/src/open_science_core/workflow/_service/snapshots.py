@@ -168,9 +168,16 @@ def result_source_descriptors(
     session: Session,
     workflow: WorkflowRecord,
 ) -> list[FrozenSourceDescriptor]:
+    plan_id = session.scalar(
+        select(PlanRecord.id).where(
+            PlanRecord.workflow_id == workflow.id,
+            PlanRecord.status == "approved",
+        )
+    )
     inspect_task = session.scalar(
         select(TaskRecord).where(
             TaskRecord.workflow_id == workflow.id,
+            TaskRecord.plan_id == plan_id,
             TaskRecord.order_index == 0,
         )
     )
@@ -278,9 +285,25 @@ def build_workflow_result(
     integrity_status: Literal["verified-frozen-v2", "unfrozen"] = "unfrozen",
     review_completed: bool = False,
 ) -> WorkflowResultOut | None:
+    plan_id = session.scalar(
+        select(PlanRecord.id).where(
+            PlanRecord.workflow_id == workflow.id,
+            PlanRecord.status == "approved",
+        )
+    )
+    synthesis_task_id = session.scalar(
+        select(TaskRecord.id).where(
+            TaskRecord.workflow_id == workflow.id,
+            TaskRecord.plan_id == plan_id,
+            TaskRecord.step_key == "synthesize-extractive-claims",
+        )
+    )
     answer = session.scalar(
         select(AnswerRecord)
-        .where(AnswerRecord.workflow_id == workflow.id)
+        .where(
+            AnswerRecord.workflow_id == workflow.id,
+            AnswerRecord.task_id == synthesis_task_id,
+        )
         .order_by(AnswerRecord.created_at.desc())
     )
     if answer is None:
@@ -1012,18 +1035,13 @@ def _dataset_analysis_run_snapshot(
 ) -> WorkflowAnalysisRunOut | None:
     if intent is None:
         return None
-    runs = list(
-        session.scalars(
-            select(RunRecord).where(RunRecord.analysis_intent_id == intent.id)
-        )
+    run = session.scalar(
+        select(RunRecord)
+        .where(RunRecord.analysis_intent_id == intent.id)
+        .order_by(RunRecord.attempt.desc(), RunRecord.created_at.desc())
     )
-    if not runs:
+    if run is None:
         return None
-    if len(runs) != 1:
-        raise WorkflowConflict(
-            "analysis-run-lineage-invalid",
-            "The current analysis intent has more than one execution run.",
-        )
     project = session.get(ProjectRecord, workflow.project_id)
     if project is None:
         raise WorkflowConflict(
@@ -1031,7 +1049,7 @@ def _dataset_analysis_run_snapshot(
             "The workflow project is missing from the analysis run lineage.",
         )
     try:
-        run = analysis_run_out(session, runs[0], intent, project)
+        run = analysis_run_out(session, run, intent, project)
         return WorkflowAnalysisRunOut(
             id=run.id,
             intent_id=run.intent_id,
@@ -1444,7 +1462,7 @@ def workflow_snapshot(session: Session, workflow: WorkflowRecord) -> ResearchWor
         )
     )
     review_query = select(ReviewRecord).where(ReviewRecord.workflow_id == workflow.id)
-    if workflow.workflow_type == "dataset-analysis" and plan is not None:
+    if plan is not None:
         review_query = review_query.where(ReviewRecord.plan_id == plan.id)
     review = session.scalar(
         review_query.order_by(ReviewRecord.created_at.desc(), ReviewRecord.id.desc())

@@ -27,6 +27,42 @@ check_packaged_skill_bytecode() {
     fail "Python bytecode/cache would be packaged: $contaminant"
 }
 
+check_pinned_skill_pack() {
+  local skill_source="$1"
+  local expected_commit="$2"
+  local actual_commit
+
+  [[ -d "$skill_source" && ! -L "$skill_source" ]] || \
+    fail "pinned skill pack is missing or a symlink: $skill_source"
+  [[ -f "$skill_source/.commit" ]] || \
+    fail "pinned skill pack has no commit marker: $skill_source"
+  actual_commit="$(tr -d '\r\n' <"$skill_source/.commit")"
+  [[ "$actual_commit" == "$expected_commit" ]] || \
+    fail "pinned skill pack commit differs: expected $expected_commit, found $actual_commit"
+  find "$skill_source" -type f -name SKILL.md -print -quit | grep -q . || \
+    fail "pinned skill pack contains no SKILL.md: $skill_source"
+}
+
+check_target_sidecar() {
+  local tool="$1"
+  local triple="$2"
+  local expected_arch="$3"
+  local binary="$ROOT/apps/desktop/src-tauri/binaries/$tool-$triple"
+  local arches
+
+  [[ -f "$binary" && -x "$binary" ]] || \
+    fail "required target sidecar is missing or not executable: $binary"
+  if command -v lipo >/dev/null 2>&1; then
+    arches="$(lipo -archs "$binary" 2>/dev/null || true)"
+  else
+    arches="$(file -b "$binary" 2>/dev/null || true)"
+  fi
+  case " $arches " in
+    *" $expected_arch "*|*" $expected_arch,"*|*"($expected_arch)"*) ;;
+    *) fail "target sidecar has wrong architecture: $binary ($arches)" ;;
+  esac
+}
+
 read_json_version() {
   node -e '
     const fs = require("node:fs");
@@ -60,6 +96,104 @@ check_desktop_release_version() {
   fi
 }
 
+check_release_gate_sources_tracked() {
+  local path
+  local -a required=(
+    .github/workflows/build.yml
+    runtime/skills/ai4s-skills.manifest
+    runtime/skills/core.manifest
+    scripts/release/build-science-images.sh
+    scripts/release/build-macos.sh
+    scripts/release/macos-release-lib.sh
+    scripts/release/science-sbom.py
+    scripts/release/verify-macos-bundle.sh
+    scripts/quality/test-macos-release-gate.sh
+    services/compose.production.yaml
+    services/science-core/.dockerignore
+    services/science-core/Dockerfile
+    services/science-core/pyproject.toml
+    services/science-core/requirements.lock
+    services/science-core/vendor/paper-search-mcp/LICENSE
+    services/science-core/vendor/paper-search-mcp/paper_search_mcp-0.1.4.tar.gz
+    services/science-core/vendor/paper-search-mcp/paper_search_mcp-0.1.4+spark.3-py3-none-any.whl
+    services/science-core/vendor/paper-search-mcp/provenance.json
+    services/science-core/vendor/paper-search-mcp/spark.patch
+    services/science-runtime/.dockerignore
+    services/science-runtime/Dockerfile
+    services/science-runtime/pyproject.toml
+    services/science-runtime/requirements.lock
+  )
+  for path in "${required[@]}"; do
+    git -C "$ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 || \
+      fail "release gate source is not git-tracked: $path"
+  done
+}
+
+check_science_supply_chain_workflow() {
+  python3 - "$ROOT/.github/workflows/build.yml" <<'PY'
+import pathlib
+import re
+import sys
+
+workflow = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+required_once = [
+    "target: aarch64-apple-darwin\n            docker_platform: linux/arm64\n            image_arch: arm64",
+    "target: x86_64-apple-darwin\n            docker_platform: linux/amd64\n            image_arch: amd64",
+    "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0",
+    "docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0",
+    "pattern: spark-agent-*",
+]
+for value in required_once:
+    if workflow.count(value) != 1:
+        raise SystemExit(f"Science supply-chain workflow contract differs: {value}")
+
+expected_actions = {
+    "actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0": 3,
+    "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0": 2,
+    "docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0": 1,
+    "docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0": 1,
+    "pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0": 1,
+    "actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0": 1,
+    "swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1": 1,
+    "tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2": 1,
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2": 3,
+    "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0": 2,
+}
+uses = []
+for line in workflow.splitlines():
+    match = re.match(r"^\s*(?:-\s*)?uses:\s*(\S+@\S+\s+#\s+v\S+)\s*$", line)
+    if match:
+        uses.append(match.group(1))
+    elif "uses:" in line:
+        raise SystemExit(f"release action is not pinned with an annotated version: {line.strip()}")
+if len(uses) != 16:
+    raise SystemExit(f"expected 16 pinned release actions, found {len(uses)}")
+for action, count in expected_actions.items():
+    if uses.count(action) != count:
+        raise SystemExit(f"release action pin/count differs: {action}")
+if any(not re.search(r"@[0-9a-f]{40}\s+#\s+v", action) for action in uses):
+    raise SystemExit("every release action must use a full commit SHA and version comment")
+if workflow.count("name: spark-science-runtime-${{ matrix.target }}") != 2:
+    raise SystemExit("Science artifacts must use one exact target-specific upload/download name")
+if "merge-multiple: true" in workflow:
+    raise SystemExit("release workflow must not merge intermediate artifacts")
+if "needs: [preflight, build-science-images]" not in workflow:
+    raise SystemExit("platform builds must wait for both Science image artifacts")
+if "pnpm test:science-supply-chain" in workflow:
+    raise SystemExit("preflight must not depend on an uninstalled pnpm executable")
+if "python3 scripts/release/science-sbom.py fixtures --root ." not in workflow:
+    raise SystemExit("preflight must run the Science SBOM fixtures directly")
+macos_build = (
+    'run: bash scripts/release/build-macos.sh --target ${{ matrix.target }} '
+    '--science-runtime-bundle "$PWD/science-runtime-bundle"'
+)
+if workflow.count(macos_build) != 1:
+    raise SystemExit("macOS build must consume the exact downloaded Science artifact root")
+if "SPARK_AGENT_SCIENCE_RUNTIME_DIR" in workflow or "SPARK_AGENT_SCIENCE_SBOM_DIR" in workflow:
+    raise SystemExit("release workflow must not publish unused Science directory environment variables")
+PY
+}
+
 if [[ "${1:-}" == "--version-only" ]]; then
   [[ "$#" -eq 1 ]] || fail "--version-only accepts no additional arguments"
   check_desktop_release_version \
@@ -67,6 +201,18 @@ if [[ "${1:-}" == "--version-only" ]]; then
     "${GITHUB_REF_TYPE:-}" \
     "${GITHUB_REF_NAME:-}"
   printf 'Desktop release version policy passed.\n'
+  exit 0
+fi
+if [[ "${1:-}" == "--tracked-release-gate" ]]; then
+  [[ "$#" -eq 1 ]] || fail "--tracked-release-gate accepts no additional arguments"
+  check_release_gate_sources_tracked
+  printf 'Release gate sources are git-tracked.\n'
+  exit 0
+fi
+if [[ "${1:-}" == "--science-supply-chain-static" ]]; then
+  [[ "$#" -eq 1 ]] || fail "--science-supply-chain-static accepts no additional arguments"
+  check_science_supply_chain_workflow
+  printf 'Science supply-chain workflow policy passed.\n'
   exit 0
 fi
 [[ "$#" -eq 0 ]] || fail "unknown argument: $1"
@@ -101,19 +247,20 @@ uv_triples=$'\n'
 opencode_count=0
 uv_count=0
 for record in "${SIDECAR_ASSET_MANIFEST[@]}"; do
-  IFS='|' read -r tool version triple asset digest extra <<<"$record"
+  IFS='|' read -r tool version triple asset digest binary_digest extra <<<"$record"
   [[ -n "$tool" && -n "$version" && -n "$triple" && -n "$asset" &&
-    -n "$digest" && -z "$extra" ]] || \
+    -n "$digest" && -n "$binary_digest" && -z "$extra" ]] || \
     fail "malformed sidecar manifest record"
   [[ "$triple" =~ ^[A-Za-z0-9_-]+$ ]] || fail "unsafe target triple: $triple"
   [[ "$asset" =~ ^[A-Za-z0-9._-]+$ ]] || fail "unsafe sidecar asset name: $asset"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || fail "malformed sidecar digest for $tool $asset"
+  [[ "$binary_digest" =~ ^[0-9a-f]{64}$ ]] || fail "malformed sidecar binary digest for $tool $asset"
 
   key="${tool}|${version}|${triple}"
   [[ "$seen_keys" != *$'\n'"$key"$'\n'* ]] || fail "duplicate sidecar manifest key: $key"
   seen_keys+="${key}"$'\n'
 
-  [[ "$(resolve_sidecar "$tool" "$version" "$triple")" == "${asset}|${digest}" ]] || \
+  [[ "$(resolve_sidecar "$tool" "$version" "$triple")" == "${asset}|${digest}|${binary_digest}" ]] || \
     fail "sidecar lookup drift for $key"
   [[ "$(sidecar_pinned_version "$tool")" == "$version" ]] || \
     fail "sidecar version drift for $tool"
@@ -148,7 +295,11 @@ check_desktop_release_version \
   "${GITHUB_REF_TYPE:-}" \
   "${GITHUB_REF_NAME:-}"
 
-IFS='|' read -r sample_tool sample_version sample_triple _ \
+if [[ "${GITHUB_ACTIONS:-}" == true ]] || [[ -z "$(git -C "$ROOT" status --porcelain)" ]]; then
+  check_release_gate_sources_tracked
+fi
+
+IFS='|' read -r sample_tool sample_version sample_triple _ _ \
   <<<"${SIDECAR_ASSET_MANIFEST[0]}"
 if resolve_sidecar "$sample_tool" 0.0.0 "$sample_triple" >/dev/null 2>&1; then
   fail "unknown sidecar versions must fail closed"
@@ -189,6 +340,20 @@ packaged_skill_sources=(
 for skill_source in "${packaged_skill_sources[@]}"; do
   check_packaged_skill_bytecode "$skill_source"
 done
+check_pinned_skill_pack "$ROOT/runtime/skills/external/ai4s-skills" "$skills_commit"
+find "$ROOT/runtime/skills/core" -type f -name SKILL.md -print -quit | grep -q . || \
+  fail "core skill resources contain no SKILL.md"
+
+release_target="${SPARK_AGENT_RELEASE_TARGET:-$(rustc -Vv | sed -n 's/^host: //p')}"
+case "$release_target" in
+  aarch64-apple-darwin) expected_host_arch='arm64' ;;
+  x86_64-apple-darwin) expected_host_arch='x86_64' ;;
+  *) expected_host_arch='' ;;
+esac
+if [[ -n "$expected_host_arch" ]]; then
+  check_target_sidecar opencode "$release_target" "$expected_host_arch"
+  check_target_sidecar uv "$release_target" "$expected_host_arch"
+fi
 
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
@@ -884,6 +1049,10 @@ bash -n \
   "$ROOT/scripts/dev/fetch-opencode.sh" \
   "$ROOT/scripts/dev/fetch-uv.sh" \
   "$ROOT/scripts/dev/fetch-skills.sh" \
+  "$ROOT/scripts/release/build-macos.sh" \
+  "$ROOT/scripts/release/macos-release-lib.sh" \
+  "$ROOT/scripts/release/verify-macos-bundle.sh" \
+  "$ROOT/scripts/quality/test-macos-release-gate.sh" \
   "$ROOT/scripts/quality/check-release-assets.sh"
 
 printf 'Release integrity policy passed for %d sidecars and %d skills archive.\n' \

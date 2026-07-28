@@ -11,7 +11,7 @@ const INSPECTOR_WIDTH_KEY = "ai4s.inspector.width";
 
 export const SIDEBAR_MIN = 184;
 export const SIDEBAR_MAX = 340;
-export const SIDEBAR_DEFAULT = 232;
+export const SIDEBAR_DEFAULT = 267;
 
 export const INSPECTOR_MIN = 360;
 export const INSPECTOR_MAX = 960;
@@ -21,8 +21,7 @@ function initialTheme(): Theme {
   if (typeof window === "undefined") return "light";
   const saved = window.localStorage.getItem(THEME_KEY);
   if (saved === "light" || saved === "dark") return saved;
-  const prefersDark = window.matchMedia?.("(prefers-color-scheme: dark)").matches;
-  return prefersDark ? "dark" : "light";
+  return "light";
 }
 
 function initialSidebarWidth(): number {

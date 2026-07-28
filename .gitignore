@@ -40,6 +40,8 @@ venv/
 .eslintcache
 .superpowers/
 docs/superpowers/
+.impeccable/
+.playwright-mcp/
 
 # Local runtime & secrets (never commit)
 .ai4s-workbench/
@@ -63,6 +65,21 @@ runtime/skills/external/
 
 # Local demo recordings (too large for git)
 videos/
+
+# Local design QA output. Keep only the four curated README screenshots.
+apps/desktop/design-qa/*
+!apps/desktop/design-qa/report-p2-citation-1280x720.jpg
+!apps/desktop/design-qa/report-p2-exports-1280x720.jpg
+!apps/desktop/design-qa/react-dataset-workspace/
+apps/desktop/design-qa/react-dataset-workspace/*
+!apps/desktop/design-qa/react-dataset-workspace/results-chart-1280.png
+!apps/desktop/design-qa/react-real-source-e2e/
+apps/desktop/design-qa/react-real-source-e2e/*
+!apps/desktop/design-qa/react-real-source-e2e/reader-verified-citation-page-3.png
+design-qa.md
+execution-check.png
+apps/desktop/src/app/routes/NotebooksPage 2.tsx
+tests/integration/docker_smoke 2.py
 
 # Local video-production tooling (fetched hyperframes skill packs)
 .agents/

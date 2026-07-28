@@ -87,6 +87,7 @@ class ModelGatewayTest(unittest.TestCase):
                     "OPENAI_API_KEY": "ignored-host-environment-value",
                     "SPARK_AGENT_OPENAI_API_KEY_FILE": str(secret_path),
                     "SPARK_AGENT_LLM_MODEL": "environment-model",
+                    "SPARK_AGENT_MODEL_PROTOCOL": "anthropic",
                 },
                 clear=True,
             ):
@@ -94,6 +95,7 @@ class ModelGatewayTest(unittest.TestCase):
         self.assertEqual(loaded.openai_api_base, "https://gateway.example.test/compatible/v1")
         self.assertEqual(loaded.openai_api_key, API_KEY)
         self.assertEqual(loaded.llm_model, "environment-model")
+        self.assertEqual(loaded.model_protocol, "anthropic")
         self.assertTrue(loaded.model_gateway_configured)
 
         for missing_or_invalid in (
@@ -185,6 +187,27 @@ class ModelGatewayTest(unittest.TestCase):
                     self.assertNotIn("Injected", str(caught.exception))
                     self.assertNotIn("x" * 201, str(caught.exception))
 
+        with patch.dict(
+            os.environ,
+            {"SPARK_AGENT_MODEL_PROTOCOL": "future-protocol"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "protocol"):
+                Settings.from_environment()
+
+    def test_loopback_environment_is_configured_without_a_key(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_BASE": "http://127.0.0.1:11434/v1",
+                "SPARK_AGENT_LLM_MODEL": "qwen3:8b",
+            },
+            clear=True,
+        ):
+            loaded = Settings.from_environment()
+        self.assertIsNone(loaded.openai_api_key)
+        self.assertTrue(loaded.model_gateway_configured)
+
     def test_model_api_base_requires_https_except_literal_loopback(self) -> None:
         for value in (
             "https://models.example.test/v1",
@@ -268,6 +291,79 @@ class ModelGatewayTest(unittest.TestCase):
             gateway.complete_json("Return a plan.", "Review local papers.", "override-model")
         )
         self.assertEqual(result, {"plan": ["read"]})
+
+    def test_anthropic_native_contract_is_adapted_to_json_completion(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url, "https://models.example.test/v1/messages")
+            self.assertEqual(request.headers["x-api-key"], API_KEY)
+            self.assertEqual(request.headers["anthropic-version"], "2023-06-01")
+            self.assertNotIn("authorization", request.headers)
+            payload = json.loads(request.content)
+            self.assertEqual(payload["model"], "test-model")
+            self.assertEqual(payload["messages"], [{"role": "user", "content": "user"}])
+            self.assertNotIn("response_format", payload)
+            self.assertIn("Return only one valid JSON object", payload["system"])
+            return streaming_json_response(
+                {
+                    "content": [{"type": "text", "text": '{"intent":"review"}'}],
+                    "usage": {"input_tokens": 11, "output_tokens": 4},
+                }
+            )
+
+        gateway = OpenAICompatibleModelGateway(
+            replace(configured_settings(), model_protocol="anthropic"),
+            transport=httpx.MockTransport(handler),
+        )
+        result, usage = asyncio.run(
+            gateway.complete_json_with_metadata("system", "user")
+        )
+        self.assertEqual(result, {"intent": "review"})
+        self.assertEqual(
+            usage,
+            {
+                "prompt_tokens": 11,
+                "completion_tokens": 4,
+                "total_tokens": 15,
+            },
+        )
+
+    def test_loopback_openai_compatible_endpoint_does_not_require_a_key(self) -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url, "http://127.0.0.1:11434/v1/chat/completions")
+            self.assertNotIn("authorization", request.headers)
+            return streaming_json_response(
+                {"choices": [{"message": {"content": '{"local":true}'}}]}
+            )
+
+        local_settings = replace(
+            configured_settings(),
+            openai_api_base="http://127.0.0.1:11434/v1",
+            openai_api_key=None,
+        )
+        gateway = OpenAICompatibleModelGateway(
+            local_settings,
+            transport=httpx.MockTransport(handler),
+        )
+        self.assertTrue(gateway.configured)
+        self.assertEqual(
+            asyncio.run(gateway.complete_json("system", "user")),
+            {"local": True},
+        )
+
+    def test_anthropic_max_tokens_response_fails_closed(self) -> None:
+        gateway = OpenAICompatibleModelGateway(
+            replace(configured_settings(), model_protocol="anthropic"),
+            transport=httpx.MockTransport(
+                lambda _request: streaming_json_response(
+                    {
+                        "stop_reason": "max_tokens",
+                        "content": [{"type": "text", "text": '{"partial":'}],
+                    }
+                )
+            ),
+        )
+        with self.assertRaises(ModelGatewayInvalidResponseError):
+            asyncio.run(gateway.complete_json("system", "user"))
 
     def test_returns_validated_token_usage_with_completion_metadata(self) -> None:
         gateway = OpenAICompatibleModelGateway(

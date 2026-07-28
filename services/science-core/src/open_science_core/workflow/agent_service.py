@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import math
 import uuid
 from typing import Any, cast
 
-from sqlalchemy import select, update
+from pydantic import ValidationError
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..model_gateway import OpenAICompatibleModelGateway
 from ..models import (
+    AgentContextSnapshotRecord,
+    AgentDecisionRecord,
     AnalysisSpecRecord,
     ApprovalRecord,
     EventRecord,
@@ -23,6 +27,7 @@ from ..models import (
     PlanRecord,
     ProjectRecord,
     SourceRecord,
+    StepObservationRecord,
     TaskRecord,
     UserResponseRecord,
     WorkflowRecord,
@@ -35,8 +40,28 @@ from ._service.integrity import WorkflowConflict, canonical_json_bytes, content_
 from ._service.jobs import enqueue_job
 from ._service.lifecycle import verified_dataset_for_workflow
 from ._service.snapshots import workflow_snapshot
+from .agent_loop.policy import (
+    MAX_AGENT_STEPS,
+    MAX_ANALYSIS_SPEC_REVISIONS,
+    MAX_CLARIFICATION_ROUNDS,
+    MAX_INVALID_MODEL_DECISIONS,
+    MAX_MODEL_DECISIONS,
+    MAX_PLAN_REVISIONS,
+    MAX_STEP_RETRIES,
+)
+from .agent_loop.schemas import (
+    AgentDecision,
+    StepObservation,
+    agent_decision_sha256,
+    step_observation_sha256,
+)
 from .agent_schemas import (
     AgentAllowedAction,
+    AgentDecisionOut,
+    AgentDecisionResolveIn,
+    AgentDecisionSummaryOut,
+    AgentLoopLimitStateOut,
+    AgentLoopLimitUsageOut,
     AgentRunCreateIn,
     AgentRunSnapshot,
     AgentStatusReasonOut,
@@ -45,10 +70,13 @@ from .agent_schemas import (
     InteractionRequestOut,
     InteractionRespondIn,
     ResolvedAgentWorkflowType,
+    StepObservationOut,
     UserResponseOut,
 )
+from .research_memory import commit_user_response_memory
 from .schemas import (
     AUTONOMOUS_REMOTE_DATA_CATEGORIES,
+    AgentDecisionEventData,
     AgentRunCreatedEventData,
     AnalysisSpecEventData,
     CreatedEventData,
@@ -511,16 +539,10 @@ def handle_route_intent(
         )
     else:
         workflow.current_intent_decision_id = decision_record.id
-        code = (
-            "mixed-workflow-not-yet-available"
-            if decision_record.intent == "mixed-research"
-            else "research-capability-unsupported"
-        )
+        code = "research-capability-unsupported"
         workflow.last_error_code = code
         workflow.last_error_message = (
-            "Mixed literature and dataset execution is recognized but will be enabled in PR5."
-            if decision_record.intent == "mixed-research"
-            else "This research goal is outside the registered autonomous capabilities."
+            "This research goal is outside the registered autonomous capabilities."
         )
         transition_workflow(session, workflow, "unsupported", reason_code=code)
 
@@ -1068,6 +1090,7 @@ def _answered_context(session: Session, workflow_id: str) -> list[dict[str, obje
             {
                 "interactionId": interaction.id,
                 "requestType": interaction.request_type,
+                "options": list(interaction.options),
                 "response": response.response_json,
             }
         )
@@ -1347,6 +1370,7 @@ def respond_to_interaction(
     interaction.status = "answered"
     interaction.answered_at = utc_now()
     session.flush()
+    commit_user_response_memory(session, workflow, response_record)
     append_workflow_events(
         session,
         workflow,
@@ -1404,6 +1428,147 @@ def respond_to_interaction(
             if persisted is not None:
                 return persisted
         raise
+    session.refresh(workflow)
+    return workflow
+
+
+def resolve_agent_decision(
+    session: Session,
+    workflow: WorkflowRecord,
+    decision: AgentDecisionRecord,
+    payload: AgentDecisionResolveIn,
+) -> WorkflowRecord:
+    if (
+        workflow.creation_mode != "autonomous"
+        or decision.workflow_id != workflow.id
+        or decision.action != "revise-analysis-spec"
+        or not decision.requires_user_confirmation
+    ):
+        raise WorkflowConflict(
+            "agent-decision-resolution-invalid",
+            "Only a pending scientific revision for this autonomous workflow can be resolved.",
+        )
+    _agent_decision_out(session, workflow, decision)
+    observation = session.get(StepObservationRecord, decision.observation_id)
+    if observation is None or observation.workflow_id != workflow.id:
+        raise WorkflowConflict(
+            "agent-decision-integrity-failed",
+            "The scientific revision is missing its verified observation.",
+        )
+    _step_observation_out(observation)
+    if (
+        payload.decision_output_sha256 != decision.output_sha256
+        or payload.expected_workflow_revision != decision.expected_workflow_revision
+    ):
+        raise WorkflowConflict(
+            "agent-decision-resolution-mismatch",
+            "The submitted decision does not match the displayed scientific revision.",
+        )
+    if payload.decision == "approved" and decision.status in {"proposed", "applied"}:
+        return workflow
+    if payload.decision == "rejected" and decision.status == "rejected":
+        return workflow
+    if decision.status != "waiting-user-confirmation":
+        raise WorkflowConflict(
+            "agent-decision-already-resolved",
+            "The scientific revision was already resolved with a different decision.",
+        )
+    if workflow.row_version != payload.expected_workflow_revision:
+        raise WorkflowConflict(
+            "workflow-revision-conflict",
+            "The workflow changed before the scientific revision was resolved. Reload and try again.",
+            retryable=True,
+        )
+    target_status = "proposed" if payload.decision == "approved" else "rejected"
+    changed = session.execute(
+        update(AgentDecisionRecord)
+        .where(
+            AgentDecisionRecord.id == decision.id,
+            AgentDecisionRecord.workflow_id == workflow.id,
+            AgentDecisionRecord.status == "waiting-user-confirmation",
+            AgentDecisionRecord.output_sha256 == payload.decision_output_sha256,
+            AgentDecisionRecord.expected_workflow_revision
+            == payload.expected_workflow_revision,
+        )
+        .values(status=target_status)
+        .execution_options(synchronize_session=False)
+    )
+    if cast(CursorResult[object], changed).rowcount != 1:
+        session.expire_all()
+        persisted = session.get(AgentDecisionRecord, decision.id)
+        persisted_workflow = session.get(WorkflowRecord, workflow.id)
+        if (
+            persisted is not None
+            and persisted_workflow is not None
+            and (
+                (payload.decision == "approved" and persisted.status in {"proposed", "applied"})
+                or (payload.decision == "rejected" and persisted.status == "rejected")
+            )
+        ):
+            return persisted_workflow
+        raise WorkflowConflict(
+            "agent-decision-resolution-conflict",
+            "The scientific revision was resolved concurrently. Reload the workflow.",
+            retryable=True,
+        )
+    session.flush()
+    session.refresh(decision)
+    current_spec = session.scalar(
+        select(AnalysisSpecRecord)
+        .where(
+            AnalysisSpecRecord.workflow_id == workflow.id,
+            AnalysisSpecRecord.status == "approved",
+        )
+        .order_by(AnalysisSpecRecord.revision.desc())
+    )
+    event = AgentDecisionEventData(
+        observation_id=observation.id,
+        decision_id=decision.id,
+        action="revise-analysis-spec",
+        task_id=observation.task_id,
+        target_step_key=None,
+        previous_analysis_spec_id=(current_spec.id if current_spec is not None else None),
+        proposed_analysis_spec_id=None,
+        expected_workflow_revision=decision.expected_workflow_revision,
+        reason_code=decision.reason_code,
+    )
+    append_workflow_events(
+        session,
+        workflow,
+        [
+            (
+                (
+                    "agent.decision-approved"
+                    if payload.decision == "approved"
+                    else "agent.decision-rejected"
+                ),
+                event,
+                observation.task_id,
+                None,
+            )
+        ],
+    )
+    if payload.decision == "approved":
+        enqueue_job(
+            session,
+            workflow,
+            kind="apply-agent-decision",
+            operation_key=f"workflow:{workflow.id}:apply-decision:{decision.id}",
+        )
+    elif workflow.status in {"reviewing", "running"}:
+        transition_workflow(
+            session,
+            workflow,
+            "blocked",
+            reason_code="agent-analysis-spec-revision-rejected",
+            blocking_message="The proposed scientific method revision was rejected.",
+        )
+    elif workflow.status not in {"blocked", "failed"}:
+        raise WorkflowConflict(
+            "agent-decision-resolution-state-invalid",
+            "The workflow is no longer waiting for this scientific revision.",
+        )
+    session.commit()
     session.refresh(workflow)
     return workflow
 
@@ -1751,6 +1916,303 @@ def _interaction_out(
     )
 
 
+def _step_observation_out(record: StepObservationRecord) -> StepObservationOut:
+    payload = {
+        "schemaVersion": record.schema_version,
+        "workflowId": record.workflow_id,
+        "planId": record.plan_id,
+        "taskId": record.task_id,
+        "sourceJobId": record.source_job_id,
+        "runId": record.run_id,
+        "reviewId": record.review_id,
+        "observationType": record.observation_type,
+        "stepKey": record.step_key,
+        "attempt": record.attempt,
+        "status": record.status,
+        "facts": record.facts_json,
+        "warnings": record.warnings_json,
+        "unresolvedQuestions": record.unresolved_questions_json,
+        "artifactIds": record.artifact_ids_json,
+        "failureCategory": record.failure_category,
+        "recommendedActions": record.recommended_actions_json,
+    }
+    observation = StepObservation.model_validate_json(
+        json.dumps(payload, allow_nan=False, ensure_ascii=False)
+    )
+    if step_observation_sha256(observation) != record.output_sha256:
+        raise WorkflowConflict(
+            "agent-observation-integrity-failed",
+            "The persisted Agent observation no longer matches its immutable hash.",
+        )
+    return StepObservationOut.model_validate(
+        {
+            **observation.model_dump(mode="python", by_alias=True),
+            "id": record.id,
+            "inputSha256": record.input_sha256,
+            "outputSha256": record.output_sha256,
+            "generator": record.generator,
+            "promptVersion": record.prompt_version,
+            "model": record.model,
+            "modelInvocationId": record.model_invocation_id,
+            "createdAt": record.created_at,
+        }
+    )
+
+
+def _decision_research_context_provenance(
+    session: Session,
+    workflow: WorkflowRecord,
+    record: AgentDecisionRecord,
+) -> tuple[str | None, str | None]:
+    matching_events = [
+        event
+        for event in session.scalars(
+            select(EventRecord).where(
+                EventRecord.workflow_id == workflow.id,
+                EventRecord.event_type == "agent.decision-proposed",
+            )
+        )
+        if event.payload.get("decisionId") == record.id
+    ]
+    if not matching_events:
+        # Events written before context provenance was introduced remain readable.
+        return None, None
+    if len(matching_events) != 1:
+        raise WorkflowConflict(
+            "agent-decision-provenance-invalid",
+            "The Agent decision has no unique proposed-event provenance.",
+        )
+    try:
+        event_data = AgentDecisionEventData.model_validate(
+            matching_events[0].payload, strict=True
+        )
+    except ValidationError as error:
+        raise WorkflowConflict(
+            "agent-decision-provenance-invalid",
+            "The Agent decision proposed-event payload is invalid.",
+        ) from error
+    if (
+        event_data.decision_id != record.id
+        or event_data.observation_id != record.observation_id
+        or event_data.action != record.action
+        or event_data.expected_workflow_revision != record.expected_workflow_revision
+        or event_data.reason_code != record.reason_code
+    ):
+        raise WorkflowConflict(
+            "agent-decision-provenance-invalid",
+            "The Agent decision proposed-event does not match the decision record.",
+        )
+    if event_data.research_context_snapshot_id is None:
+        return None, None
+    snapshot = session.get(
+        AgentContextSnapshotRecord, event_data.research_context_snapshot_id
+    )
+    if (
+        snapshot is None
+        or snapshot.workflow_id != workflow.id
+        or snapshot.context_sha256 != event_data.research_context_snapshot_sha256
+    ):
+        raise WorkflowConflict(
+            "agent-decision-provenance-invalid",
+            "The Agent decision context snapshot provenance is invalid.",
+        )
+    return (event_data.research_context_snapshot_id, snapshot.context_sha256)
+
+
+def _agent_decision_out(
+    session: Session,
+    workflow: WorkflowRecord,
+    record: AgentDecisionRecord,
+) -> AgentDecisionOut:
+    payload = {
+        "schemaVersion": record.schema_version,
+        "action": record.action,
+        "reasonCode": record.reason_code,
+        "reason": record.reason,
+        "targetStepKey": record.target_step_key,
+        "clarificationRequests": record.clarification_requests_json,
+        "proposedAnalysisSpec": record.proposed_analysis_spec_json,
+        "analysisSpecDiff": record.analysis_spec_diff_json,
+        "requiresUserConfirmation": record.requires_user_confirmation,
+    }
+    decision = AgentDecision.model_validate_json(
+        json.dumps(payload, allow_nan=False, ensure_ascii=False)
+    )
+    if agent_decision_sha256(decision) != record.output_sha256:
+        raise WorkflowConflict(
+            "agent-decision-integrity-failed",
+            "The persisted Agent decision no longer matches its immutable hash.",
+        )
+    research_context_snapshot_id, research_context_snapshot_sha256 = (
+        _decision_research_context_provenance(session, workflow, record)
+    )
+    return AgentDecisionOut.model_validate(
+        {
+            **decision.model_dump(mode="python", by_alias=True),
+            "id": record.id,
+            "workflowId": record.workflow_id,
+            "observationId": record.observation_id,
+            "decisionRevision": record.decision_revision,
+            "status": record.status,
+            "expectedWorkflowRevision": record.expected_workflow_revision,
+            "generator": record.generator,
+            "promptVersion": record.prompt_version,
+            "model": record.model,
+            "modelInvocationId": record.model_invocation_id,
+            "inputSha256": record.input_sha256,
+            "outputSha256": record.output_sha256,
+            "researchContextSnapshotId": research_context_snapshot_id,
+            "researchContextSnapshotSha256": research_context_snapshot_sha256,
+            "appliedAt": record.applied_at,
+            "createdAt": record.created_at,
+        }
+    )
+
+
+def _agent_decision_summary(
+    session: Session,
+    workflow: WorkflowRecord,
+    record: AgentDecisionRecord,
+) -> AgentDecisionSummaryOut:
+    research_context_snapshot_id, research_context_snapshot_sha256 = (
+        _decision_research_context_provenance(session, workflow, record)
+    )
+    return AgentDecisionSummaryOut(
+        id=record.id,
+        observation_id=record.observation_id,
+        action=cast(Any, record.action),
+        reason=record.reason,
+        status=cast(Any, record.status),
+        requires_user_confirmation=record.requires_user_confirmation,
+        research_context_snapshot_id=research_context_snapshot_id,
+        research_context_snapshot_sha256=research_context_snapshot_sha256,
+        created_at=record.created_at,
+        applied_at=record.applied_at,
+    )
+
+
+def _limit_usage(count: int, limit: int) -> AgentLoopLimitUsageOut:
+    return AgentLoopLimitUsageOut(
+        count=count,
+        limit=limit,
+        reached=count >= limit,
+    )
+
+
+def _agent_loop_snapshot_fields(
+    session: Session,
+    workflow: WorkflowRecord,
+) -> tuple[
+    StepObservationOut | None,
+    AgentDecisionOut | None,
+    list[AgentDecisionSummaryOut],
+    AgentLoopLimitStateOut,
+]:
+    observations = list(
+        session.scalars(
+            select(StepObservationRecord)
+            .where(StepObservationRecord.workflow_id == workflow.id)
+            .order_by(StepObservationRecord.created_at, StepObservationRecord.id)
+        )
+    )
+    decisions = list(
+        session.scalars(
+            select(AgentDecisionRecord)
+            .where(AgentDecisionRecord.workflow_id == workflow.id)
+            .order_by(AgentDecisionRecord.created_at, AgentDecisionRecord.id)
+        )
+    )
+    live_decisions = [
+        record
+        for record in decisions
+        if record.status in {"proposed", "waiting-user-confirmation"}
+    ]
+    if len(live_decisions) > 1:
+        raise WorkflowConflict(
+            "agent-decision-integrity-failed",
+            "The workflow has more than one pending Agent decision.",
+        )
+    latest_observation = (
+        _step_observation_out(observations[-1]) if observations else None
+    )
+    pending_decision = (
+        _agent_decision_out(session, workflow, live_decisions[0]) if live_decisions else None
+    )
+    spec_revision = session.scalar(
+        select(func.max(AnalysisSpecRecord.revision)).where(
+            AnalysisSpecRecord.workflow_id == workflow.id
+        )
+    )
+    model_invocation_ids = {
+        record.model_invocation_id
+        for record in decisions
+        if record.model_invocation_id is not None
+    }
+    model_invocations = (
+        list(
+            session.scalars(
+                select(ModelInvocationRecord).where(
+                    ModelInvocationRecord.workflow_id == workflow.id,
+                    ModelInvocationRecord.id.in_(model_invocation_ids),
+                )
+            )
+        )
+        if model_invocation_ids
+        else []
+    )
+    if len(model_invocations) != len(model_invocation_ids):
+        raise WorkflowConflict(
+            "agent-decision-integrity-failed",
+            "An Agent decision is missing its model invocation provenance.",
+        )
+    limits = AgentLoopLimitStateOut(
+        agent_steps=_limit_usage(len(observations), MAX_AGENT_STEPS),
+        plan_revisions=_limit_usage(
+            sum(
+                record.action == "revise-analysis-spec" and record.status == "applied"
+                for record in decisions
+            ),
+            MAX_PLAN_REVISIONS,
+        ),
+        analysis_spec_revisions=_limit_usage(
+            max((spec_revision or 1) - 1, 0),
+            MAX_ANALYSIS_SPEC_REVISIONS,
+        ),
+        step_retries=_limit_usage(
+            sum(
+                record.action == "retry-step" and record.status == "applied"
+                for record in decisions
+            ),
+            MAX_STEP_RETRIES,
+        ),
+        clarification_rounds=_limit_usage(
+            sum(
+                record.action == "request-clarification"
+                and record.status == "applied"
+                for record in decisions
+            ),
+            MAX_CLARIFICATION_ROUNDS,
+        ),
+        model_decisions=_limit_usage(len(model_invocation_ids), MAX_MODEL_DECISIONS),
+        invalid_model_decisions=_limit_usage(
+            sum(
+                invocation.status == "failed" or bool(invocation.validation_errors)
+                for invocation in model_invocations
+            ),
+            MAX_INVALID_MODEL_DECISIONS,
+        ),
+    )
+    return (
+        latest_observation,
+        pending_decision,
+        [
+            _agent_decision_summary(session, workflow, record)
+            for record in reversed(decisions)
+        ],
+        limits,
+    )
+
+
 def agent_run_snapshot(
     session: Session,
     workflow: WorkflowRecord,
@@ -1860,6 +2322,12 @@ def agent_run_snapshot(
             "interaction-integrity-failed",
             "The waiting workflow is missing its pending clarification request.",
         )
+    (
+        latest_observation,
+        pending_decision,
+        decision_history,
+        agent_loop_limits,
+    ) = _agent_loop_snapshot_fields(session, workflow)
     if any(
         item.status == "answered" and item.latest_response is None
         for item in interactions
@@ -1896,6 +2364,16 @@ def agent_run_snapshot(
         allowed_actions = ["retry", "cancel"]
     else:
         allowed_actions = []
+    if (
+        pending_decision is not None
+        and pending_decision.status == "waiting-user-confirmation"
+        and pending_decision.requires_user_confirmation
+    ):
+        allowed_actions = [
+            "approve-agent-decision",
+            "reject-agent-decision",
+            *(["cancel"] if "cancel" in allowed_actions else []),
+        ]
     return AgentRunSnapshot(
         workflow=AgentWorkflowStateOut(
             id=workflow.id,
@@ -1959,6 +2437,10 @@ def agent_run_snapshot(
         review_warning_acceptance=(
             base.review_warning_acceptance if base is not None else None
         ),
+        latest_observation=latest_observation,
+        pending_decision=pending_decision,
+        decision_history=decision_history,
+        agent_loop_limits=agent_loop_limits,
         allowed_actions=allowed_actions,
         event_cursor=workflow.event_sequence,
     )

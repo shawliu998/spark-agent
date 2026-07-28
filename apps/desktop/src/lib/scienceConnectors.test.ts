@@ -8,16 +8,6 @@ const byId = (id: string) => {
 };
 
 describe("connectorConfig", () => {
-  it("launches a `-m module` connector (paper-search)", () => {
-    const cfg = connectorConfig(byId("paper-search"), "/env/bin/python");
-    expect(cfg).toMatchObject({
-      type: "local",
-      command: ["/env/bin/python", "-m", "paper_search_mcp.server"],
-      enabled: true,
-    });
-    expect(cfg.type === "local" && cfg.environment).toBeUndefined();
-  });
-
   it("keeps a module connector's extra args (biomcp run)", () => {
     const cfg = connectorConfig(byId("biomcp"), "/env/bin/python");
     expect(cfg.type === "local" && cfg.command).toEqual([

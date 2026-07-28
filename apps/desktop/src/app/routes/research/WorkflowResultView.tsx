@@ -10,7 +10,6 @@ import type {
   ResearchSource,
   ResearchWorkflowResult,
   ResearchWorkflowSnapshot,
-  WorkflowClaim,
   WorkflowEvidenceRelationship,
 } from "@spark/research-domain";
 import { MarkdownViewer } from "@/components/markdown-viewer/MarkdownViewer";
@@ -20,6 +19,11 @@ import {
   resultReviewState,
   statusLabel,
 } from "./workflowModel";
+import type {
+  CitationPresentation,
+  ClaimPresentation,
+} from "./researchPresentation";
+import { presentWorkflowClaim } from "./researchPresentation";
 
 interface WorkflowResultViewProps {
   snapshot: ResearchWorkflowSnapshot;
@@ -39,11 +43,14 @@ export function WorkflowResultView({
   if (!result) return null;
   const reviewState = resultReviewState(snapshot);
   const generationMode = generationModeForSnapshot(snapshot);
+  const claims = result.claims.map((claim, index) =>
+    presentWorkflowClaim(claim, sources, index),
+  );
 
   return (
     <article className="space-y-4">
-      <section className="rounded-card border border-border bg-surface p-4 shadow-card">
-        <div className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-wider text-muted">
+      <section className="border-b border-border pb-5">
+        <div className="mb-3 flex items-center gap-2 text-xs font-medium text-muted">
           {reviewState === "passed" ? (
             <CheckCircle2 size={14} className="text-ok" />
           ) : (
@@ -81,31 +88,30 @@ export function WorkflowResultView({
           )}
         </div>
         <GenerationBoundary mode={generationMode} result={result} />
-        <MarkdownViewer>{result.summary}</MarkdownViewer>
+        <MarkdownViewer className="max-w-[70ch] text-base leading-7">{result.summary}</MarkdownViewer>
       </section>
 
       <div className="flex items-center gap-2 pt-1">
-        <h3 className="text-xs font-medium uppercase tracking-wider text-muted">
+        <h3 className="text-xs font-medium text-muted">
           {t("research.claimsHeading", {
             defaultValue: "Claims ({{count}})",
-            count: result.claims.length,
+            count: claims.length,
           })}
         </h3>
         <div className="h-px flex-1 bg-border" />
       </div>
 
-      {result.claims.map((claim, index) => (
+      {claims.map((claim, index) => (
         <WorkflowClaimCard
-          key={claim.id}
+          key={claim.key}
           claim={claim}
           index={index}
-          sources={sources}
           onSelectEvidence={onSelectEvidence}
         />
       ))}
 
       {result.unresolvedQuestions.length > 0 && (
-        <section className="rounded-card border border-warn/30 bg-warn/5 p-4">
+        <section className="border-y border-warn/25 bg-warn/5 px-1 py-4">
           <h3 className="flex items-center gap-2 text-xs font-medium text-text">
             <AlertTriangle size={14} className="text-warn" />
             {t("research.unresolvedHeading", {
@@ -126,30 +132,37 @@ export function WorkflowResultView({
 function WorkflowClaimCard({
   claim,
   index,
-  sources,
   onSelectEvidence,
 }: {
-  claim: WorkflowClaim;
+  claim: ClaimPresentation;
   index: number;
-  sources: ResearchSource[];
   onSelectEvidence: (evidence: WorkflowEvidenceRelationship) => void;
 }) {
   const { t } = useTranslation("pages");
   const tone =
     claim.supportStatus === "supported"
-      ? "bg-ok/10 text-ok ring-ok/20"
+      ? "text-ok"
       : claim.supportStatus === "pending-review"
-        ? "bg-surface-2 text-muted ring-border"
+        ? "text-muted"
         : claim.supportStatus === "contradicted" ||
             claim.supportStatus === "insufficient-evidence"
-          ? "bg-error/10 text-error ring-error/20"
-          : "bg-warn/10 text-warn ring-warn/20";
+          ? "text-error"
+          : "text-warn";
+  const dotTone =
+    claim.supportStatus === "supported"
+      ? "bg-ok"
+      : claim.supportStatus === "pending-review"
+        ? "bg-muted"
+        : claim.supportStatus === "contradicted" ||
+            claim.supportStatus === "insufficient-evidence"
+          ? "bg-error"
+          : "bg-warn";
 
   return (
-    <section className="rounded-card border border-border bg-surface p-4">
+    <section className="border-b border-border py-4">
       <div className="flex items-start gap-3">
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-2 text-[10px] font-semibold text-muted ring-1 ring-border">
-          {index + 1}
+        <span className="w-7 shrink-0 pt-0.5 font-mono text-caption font-medium text-muted">
+          C{index + 1}
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-medium leading-relaxed text-text">
@@ -157,18 +170,26 @@ function WorkflowClaimCard({
           </p>
           <span
             className={cn(
-              "mt-2 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ring-1",
+              "mt-2 inline-flex items-center gap-1.5 text-xs font-medium",
               tone,
             )}
           >
+            <span aria-hidden="true" className={cn("h-1.5 w-1.5 rounded-full", dotTone)} />
             {t(`research.claimSupport.${claim.supportStatus}`, {
               defaultValue: statusLabel(claim.supportStatus),
             })}
           </span>
+          {claim.issues.length > 0 && (
+            <span className="ml-2 inline-flex text-caption text-warn">
+              {t("research.workflow.incompleteClaimMetadata", {
+                defaultValue: "Incomplete claim metadata — not treated as verified",
+              })}
+            </span>
+          )}
         </div>
       </div>
       <div className="mt-3 space-y-2 border-t border-border-faint pt-3">
-        {claim.evidence.length === 0 && (
+        {claim.citations.length === 0 && (
           <div className="flex items-center gap-2 text-xs text-warn">
             <AlertTriangle size={13} />
             {t("research.noEvidence", {
@@ -176,100 +197,134 @@ function WorkflowClaimCard({
             })}
           </div>
         )}
-        {claim.evidence.map((evidence) => {
-          const source = sources.find((item) => item.id === evidence.sourceId);
-          const sourceTitle =
-            evidence.sourceTitle ??
-            source?.title ??
-            t("research.unknownSource", { defaultValue: "Unknown source" });
-          const frozenCitation =
-            evidence.sourceTitle !== null &&
-            evidence.sourceContentHash !== null &&
-            evidence.sourcePageManifestHash !== null;
-          return (
-            <button
-              key={evidence.evidenceId}
-              type="button"
-              onClick={() => onSelectEvidence(evidence)}
-              className="group w-full rounded-input border border-border bg-bg px-3 py-2.5 text-left hover:border-accent/30 hover:bg-surface-2"
-            >
-              <span className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted">
-                <Quote
-                  size={12}
-                  className={
-                    evidence.relationship === "contradicting"
-                      ? "text-warn"
-                      : "text-accent"
-                  }
-                />
-                {t("research.evidencePage", {
-                  defaultValue: "{{source}}, page {{page}}",
-                  source: sourceTitle,
-                  page: evidence.pageLabel ?? evidence.pageIndex + 1,
-                })}
-                <span className="ml-auto normal-case tracking-normal">
-                  {t(
-                    `research.evidenceRelationship.${evidence.relationship}`,
-                    { defaultValue: evidence.relationship },
-                  )}
-                </span>
-                <ChevronRight
-                  size={12}
-                  className="transition-transform group-hover:translate-x-0.5"
-                />
-              </span>
-              <span className="mt-1.5 block line-clamp-4 font-serif text-[13px] leading-relaxed text-text/90">
-                {evidence.text}
-              </span>
-              <span className="mt-2 block space-y-0.5 border-t border-border-faint pt-2 font-mono text-[9px] leading-relaxed text-muted">
-                <span className="block break-all">
-                  {t("research.workflow.evidenceId", {
-                    defaultValue: "Evidence ID",
-                  })}
-                  : {evidence.evidenceId}
-                </span>
-                <span className="block break-all">
-                  {t("research.workflow.sourceId", {
-                    defaultValue: "Source ID",
-                  })}
-                  : {evidence.sourceId}
-                </span>
-                <span className="block break-all">
-                  {t("research.workflow.quoteHash", {
-                    defaultValue: "Quote SHA-256",
-                  })}
-                  : {evidence.quoteHash}
-                </span>
-                {evidence.sourceContentHash && (
-                  <span className="block break-all">
-                    {t("research.workflow.fileHash", {
-                      defaultValue: "File SHA-256",
-                    })}
-                    : {evidence.sourceContentHash}
-                  </span>
-                )}
-                {evidence.sourcePageManifestHash && (
-                  <span className="block break-all">
-                    {t("research.workflow.pageManifestHash", {
-                      defaultValue: "Parsed-page manifest SHA-256",
-                    })}
-                    : {evidence.sourcePageManifestHash}
-                  </span>
-                )}
-                {!frozenCitation && (
-                  <span className="block font-sans text-warn">
-                    {t("research.workflow.legacyCitationBoundary", {
-                      defaultValue:
-                        "Legacy citation: the displayed source title is current metadata and was not frozen with this result.",
-                    })}
-                  </span>
-                )}
-              </span>
-            </button>
-          );
-        })}
+        {claim.citations.map((citation) => (
+          <CitationRow
+            key={citation.key}
+            citation={citation}
+            onSelectEvidence={onSelectEvidence}
+          />
+        ))}
       </div>
     </section>
+  );
+}
+
+function CitationRow({
+  citation,
+  onSelectEvidence,
+}: {
+  citation: CitationPresentation;
+  onSelectEvidence: (evidence: WorkflowEvidenceRelationship) => void;
+}) {
+  const { t } = useTranslation("pages");
+  const relationshipTone =
+    citation.relationship === "contradicting"
+      ? "text-warn"
+      : citation.relationship === "supporting"
+        ? "text-accent"
+        : "text-muted";
+  return (
+    <div className="rounded-input bg-surface-2">
+      <button
+        type="button"
+        disabled={!citation.original}
+        onClick={() => citation.original && onSelectEvidence(citation.original)}
+        className="group w-full px-3 py-3 text-left hover:bg-bg/70 disabled:cursor-default"
+      >
+        <span className="flex min-w-0 items-center gap-2 text-xs font-medium text-muted">
+          <Quote size={12} className="text-muted" />
+          <span className="min-w-0 truncate">
+            {t("research.evidencePage", {
+              defaultValue: "{{source}}, page {{page}}",
+              source: citation.sourceTitle,
+              page: citation.page,
+            })}
+          </span>
+          <span className={cn("ml-auto shrink-0 normal-case tracking-normal", relationshipTone)}>
+            {citation.relationship === "unclassified"
+              ? t("research.workflow.unclassifiedRelationship", {
+                  defaultValue: "relationship not reported",
+                })
+              : t(`research.evidenceRelationship.${citation.relationship}`, {
+                  defaultValue: citation.relationship,
+                })}
+          </span>
+          {citation.original && (
+            <ChevronRight
+              size={12}
+              className="shrink-0 transition-transform group-hover:translate-x-0.5"
+            />
+          )}
+        </span>
+        <span className="mt-1.5 block line-clamp-4 text-ui leading-relaxed text-text/90">
+          {citation.text}
+        </span>
+        <span className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-caption text-muted">
+          <span className={citation.verified ? "text-ok" : "text-warn"}>
+            {citation.verified
+              ? t("research.quoteLocated", { defaultValue: "quote located locally" })
+              : t("research.needsReview", {
+                  defaultValue: "quote location needs review",
+                })}
+          </span>
+          <span>
+            {citation.frozen
+              ? t("research.workflow.frozenCitation", {
+                  defaultValue: "frozen source provenance",
+                })
+              : t("research.workflow.currentCitationMetadata", {
+                  defaultValue: "current source metadata",
+                })}
+          </span>
+        </span>
+      </button>
+      <details className="mx-3 border-t border-border-faint">
+        <summary className="flex min-h-9 cursor-pointer items-center font-sans text-xs font-medium text-link hover:underline">
+          {t("research.workflow.citationProvenance", {
+            defaultValue: "Citation provenance",
+          })}
+        </summary>
+        <span className="block space-y-1 pb-2 font-mono text-caption leading-relaxed text-muted">
+          <span className="block break-all">
+            {t("research.workflow.evidenceId", { defaultValue: "Evidence ID" })}: {citation.evidenceId ?? "—"}
+          </span>
+          <span className="block break-all">
+            {t("research.workflow.sourceId", { defaultValue: "Source ID" })}: {citation.sourceId ?? "—"}
+          </span>
+          <span className="block break-all">
+            {t("research.workflow.quoteHash", { defaultValue: "Quote SHA-256" })}: {citation.quoteHash ?? "—"}
+          </span>
+          {citation.sourceContentHash && (
+            <span className="block break-all">
+              {t("research.workflow.fileHash", { defaultValue: "File SHA-256" })}: {citation.sourceContentHash}
+            </span>
+          )}
+          {citation.sourcePageManifestHash && (
+            <span className="block break-all">
+              {t("research.workflow.pageManifestHash", {
+                defaultValue: "Parsed-page manifest SHA-256",
+              })}: {citation.sourcePageManifestHash}
+            </span>
+          )}
+          {!citation.frozen && (
+            <span className="block font-sans text-warn">
+              {t("research.workflow.legacyCitationBoundary", {
+                defaultValue:
+                  "Citation metadata was not frozen with this result; current source metadata is shown for orientation only.",
+              })}
+            </span>
+          )}
+          {!citation.original && (
+            <span className="block font-sans text-error">
+              {t("research.workflow.citationUnavailable", {
+                defaultValue:
+                  "This citation is incomplete and cannot be opened at an exact source location.",
+              })}
+            </span>
+          )}
+        </span>
+      </details>
+    </div>
   );
 }
 
@@ -284,7 +339,7 @@ function GenerationBoundary({
   const remoteOutput = result.generator.startsWith("remote-model-assisted-");
 
   return (
-    <div className="mb-3 rounded-input border border-border-faint bg-bg px-3 py-2 text-[11px] leading-relaxed text-muted">
+    <div className="mb-4 max-w-[70ch] border-y border-border-faint py-3 text-ui leading-relaxed text-muted">
       <strong className="font-medium text-text">
         {remoteOutput
           ? t("research.workflow.modelAssistedResult", {
@@ -300,10 +355,10 @@ function GenerationBoundary({
       })}
       <p
         className={cn(
-          "mt-2 rounded-input px-2 py-1 text-[10px] ring-1",
+          "mt-2 text-xs",
           result.integrityStatus === "verified-frozen-v2"
-            ? "bg-ok/5 text-ok ring-ok/20"
-            : "bg-warn/5 text-warn ring-warn/20",
+            ? "text-ok"
+            : "text-warn",
         )}
       >
         {result.integrityStatus === "verified-frozen-v2"
@@ -316,22 +371,28 @@ function GenerationBoundary({
                 "Unfrozen result: review is pending, requires revision, or predates immutable result snapshots.",
             })}
       </p>
-      <dl className="mt-2 grid gap-2 border-t border-border-faint pt-2 sm:grid-cols-3">
+      <details className="mt-2 border-t border-border-faint pt-1">
+        <summary className="flex min-h-9 cursor-pointer items-center text-xs font-medium text-link hover:underline">
+          {t("research.workflow.generationDetails", {
+            defaultValue: "Generation details",
+          })}
+        </summary>
+      <dl className="grid gap-3 pb-1 sm:grid-cols-3">
         <div className="min-w-0">
-          <dt className="text-[9px] font-medium uppercase tracking-wider text-muted">
+          <dt className="text-xs font-medium text-muted">
             {t("research.workflow.resultGenerator", {
               defaultValue: "Generator",
             })}
           </dt>
-          <dd className="mt-0.5 break-words font-mono text-[10px] text-text">
+          <dd className="mt-0.5 break-words font-mono text-caption text-text">
             {result.generator}
           </dd>
         </div>
         <div className="min-w-0">
-          <dt className="text-[9px] font-medium uppercase tracking-wider text-muted">
+          <dt className="text-xs font-medium text-muted">
             {t("research.workflow.model", { defaultValue: "Model" })}
           </dt>
-          <dd className="mt-0.5 break-words font-mono text-[10px] text-text">
+          <dd className="mt-0.5 break-words font-mono text-caption text-text">
             {result.model ??
               (mode === "local-deterministic"
                 ? t("research.workflow.noRemoteModel", {
@@ -343,12 +404,12 @@ function GenerationBoundary({
           </dd>
         </div>
         <div className="min-w-0">
-          <dt className="text-[9px] font-medium uppercase tracking-wider text-muted">
+          <dt className="text-xs font-medium text-muted">
             {t("research.workflow.promptVersion", {
               defaultValue: "Prompt version",
             })}
           </dt>
-          <dd className="mt-0.5 break-words font-mono text-[10px] text-text">
+          <dd className="mt-0.5 break-words font-mono text-caption text-text">
             {result.promptVersion ??
               t("research.workflow.notReported", {
                 defaultValue: "Not reported (legacy snapshot)",
@@ -356,6 +417,7 @@ function GenerationBoundary({
           </dd>
         </div>
       </dl>
+      </details>
     </div>
   );
 }

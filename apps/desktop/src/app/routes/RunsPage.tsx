@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import {
+  AlertTriangle,
+  BarChart3,
   Check,
   ChevronDown,
   ChevronRight,
@@ -11,6 +13,7 @@ import {
   FileCode2,
   FileOutput,
   FlaskConical,
+  History,
   Loader2,
   MessageSquare,
   Package,
@@ -20,9 +23,11 @@ import {
   X,
 } from "lucide-react";
 import type { RunArtifact, RunRecord } from "@ai4s/shared";
+import type { AnalysisArtifact, AnalysisRun, ResearchProject } from "@spark/research-domain";
 import { queryRuns, readRunLog, reproduceRunPrompt, type RunFacet, type RunPage } from "@/lib/runs";
 import { openArtifactExternally } from "@/lib/artifactFile";
 import { copyText } from "@/lib/clipboard";
+import { scienceCore } from "@/lib/scienceCore";
 import { PaneTitlebarInset } from "@/components/inspector/RightPane";
 import { useUiStore } from "@/lib/store";
 import { cn } from "@/lib/cn";
@@ -45,11 +50,12 @@ interface Filter {
  * runs to hundreds of thousands. Reused by the global `RunsPage` (all sessions)
  * and the per-session `RunsPane` (passes `sessionId` to narrow to one session).
  */
-function RunsView({ sessionId }: { sessionId?: string }) {
+function RunsView({ sessionId, suppressEmpty = false }: { sessionId?: string; suppressEmpty?: boolean }) {
   const { t } = useTranslation(["runs", "common"]);
   const [filter, setFilter] = useState<Filter>({ search: "" });
   const [debounced, setDebounced] = useState("");
   const [rows, setRows] = useState<RunRecord[]>([]);
+  const [total, setTotal] = useState(0);
   const [facets, setFacets] = useState<RunPage["facets"]>({ status: [], surface: [] });
   const [cursor, setCursor] = useState<RunPage["next"]>(undefined);
   const [state, setState] = useState<"loading" | "loadingMore" | "ready">("loading");
@@ -84,6 +90,7 @@ function RunsView({ sessionId }: { sessionId?: string }) {
     void queryRuns({ ...base, limit: 50 }).then((page) => {
       if (cancelled) return;
       setRows(page.rows);
+      setTotal(page.total);
       setFacets(page.facets);
       setCursor(page.next);
       setState("ready");
@@ -140,12 +147,31 @@ function RunsView({ sessionId }: { sessionId?: string }) {
 
   const okN = count(facets.status, "ok");
   const failedN = count(facets.status, "failed");
+  const visibleOkN = filter.status === "ok" ? total : filter.status === "failed" ? 0 : okN;
+  const visibleFailedN = filter.status === "failed" ? total : filter.status === "ok" ? 0 : failedN;
   const anyFilter = !!(filter.search || filter.status || filter.surface || filter.since);
   const remoteSurfaces = facets.surface.filter((f) => f.value && f.value !== "local");
   const groups = useMemo(() => groupByDay(rows), [rows]);
 
   return (
     <>
+        {state !== "loading" && (rows.length > 0 || anyFilter) && (
+          <div className="mb-3 flex items-center gap-2 text-xs text-muted">
+            <History size={13} />
+            <span>
+              {t("summary.total", { count: total })}
+              <span aria-hidden="true"> · </span>
+              {t("summary.succeeded", { count: visibleOkN })}
+              {visibleFailedN > 0 && (
+                <>
+                  <span aria-hidden="true"> · </span>
+                  <span className="text-error">{t("summary.failed", { count: visibleFailedN })}</span>
+                </>
+              )}
+            </span>
+          </div>
+        )}
+
         {/* Filter bar */}
         {(rows.length > 0 || anyFilter) && (
           <div className="sticky top-0 z-20 -mx-1 flex flex-wrap items-center gap-2 bg-bg/95 px-1 py-2 backdrop-blur">
@@ -205,7 +231,7 @@ function RunsView({ sessionId }: { sessionId?: string }) {
           </div>
         )}
 
-        {state !== "loading" && rows.length === 0 && !anyFilter && (
+        {state !== "loading" && rows.length === 0 && !anyFilter && !suppressEmpty && (
           <div className="mt-8 rounded-input border border-dashed border-border bg-surface px-4 py-8 text-center">
             <FlaskConical size={22} className="mx-auto text-muted" strokeWidth={1.5} />
             <p className="mt-2 text-sm font-medium text-text">{t("empty.title")}</p>
@@ -261,24 +287,219 @@ function RunsView({ sessionId }: { sessionId?: string }) {
  *  Files browser and Notebooks page. */
 export function RunsPage() {
   const { t } = useTranslation(["runs", "common"]);
+  const [analysisRuns, setAnalysisRuns] = useState<ProjectAnalysisRun[]>([]);
+  const [analysisState, setAnalysisState] = useState<"loading" | "ready" | "unavailable">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    void scienceCore
+      .listProjects()
+      .then(async (projects) => {
+        const runGroups = await Promise.all(
+          projects.map(async (project) => ({
+            project,
+            runs: await scienceCore.listAnalysisRuns(project.id),
+          })),
+        );
+        if (cancelled) return;
+        setAnalysisRuns(
+          runGroups
+            .flatMap(({ project, runs }) => runs.map((run) => ({ project, run })))
+            .sort((a, b) => analysisRunTimestamp(b.run) - analysisRunTimestamp(a.run)),
+        );
+        setAnalysisState("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setAnalysisState("unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl px-8 py-8">
-        <header className="mb-4 flex items-start gap-3">
+      <div className="mx-auto max-w-4xl px-8 py-8">
+        <header className="mb-6 flex items-start gap-3">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-input bg-accent/10 text-accent">
             <FlaskConical size={17} strokeWidth={1.75} />
           </div>
           <div className="min-w-0 flex-1">
             <h1 className="font-serif text-xl leading-tight text-text">{t("title")}</h1>
-            <p className="mt-0.5 text-sm text-muted">
-              {t("description.prefix")}
-              <span className="text-text/70">{t("action.reproduce")}</span>
-              {t("description.suffix")}
-            </p>
+            <p className="mt-1 text-sm text-muted">{t("description.product")}</p>
           </div>
         </header>
-        <RunsView />
+        {analysisState === "loading" && (
+          <div className="mb-4 flex items-center gap-2 text-sm text-muted">
+            <Loader2 size={15} className="animate-spin" /> {t("analysis.loading")}
+          </div>
+        )}
+        {analysisRuns.length > 0 && <AnalysisRuns runs={analysisRuns} />}
+        <RunsView suppressEmpty={analysisRuns.length > 0 || analysisState === "loading"} />
+        {analysisState === "unavailable" && (
+          <p className="mt-4 flex items-center gap-2 text-xs text-muted">
+            <AlertTriangle size={13} className="text-warn" />
+            {t("analysis.unavailable")}
+          </p>
+        )}
       </div>
+    </div>
+  );
+}
+
+interface ProjectAnalysisRun {
+  project: ResearchProject;
+  run: AnalysisRun;
+}
+
+function AnalysisRuns({ runs }: { runs: ProjectAnalysisRun[] }) {
+  const { t } = useTranslation(["runs", "common"]);
+  const [expanded, setExpanded] = useState<string | null>(runs[0]?.run.id ?? null);
+  const navigate = useNavigate();
+  return (
+    <section className="mb-5" aria-labelledby="analysis-runs-heading">
+      <div className="mb-2 flex items-center gap-2">
+        <BarChart3 size={14} className="text-accent" />
+        <h2 id="analysis-runs-heading" className="text-xs font-semibold uppercase tracking-wider text-muted">
+          {t("analysis.heading")}
+        </h2>
+        <span className="text-xs tabular-nums text-muted">{runs.length}</span>
+      </div>
+      <ul>
+        {runs.map(({ project, run }) => (
+          <AnalysisRunRow
+            key={run.id}
+            project={project}
+            run={run}
+            open={expanded === run.id}
+            onToggle={() => setExpanded((current) => (current === run.id ? null : run.id))}
+            onOpenAnalysis={() =>
+              navigate(`/analysis?project=${encodeURIComponent(project.id)}&run=${encodeURIComponent(run.id)}`)
+            }
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function AnalysisRunRow({
+  project,
+  run,
+  open,
+  onToggle,
+  onOpenAnalysis,
+}: {
+  project: ResearchProject;
+  run: AnalysisRun;
+  open: boolean;
+  onToggle: () => void;
+  onOpenAnalysis: () => void;
+}) {
+  const { t } = useTranslation(["runs", "common"]);
+  const failed = run.status === "failed";
+  const active = run.status === "pending" || run.status === "running";
+  return (
+    <li className="mb-2 overflow-hidden rounded-card border border-border bg-surface">
+      <button
+        type="button"
+        className="group flex w-full items-start gap-3 px-3.5 py-3 text-left hover:bg-surface-2/45"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
+        <span
+          className={cn(
+            "mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full",
+            failed ? "bg-error/10 text-error" : active ? "bg-warn/10 text-warn" : "bg-ok/10 text-ok",
+          )}
+        >
+          {failed ? <X size={12} /> : active ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={cn("truncate text-sm font-medium", failed ? "text-text/75" : "text-text")}>
+              {failed ? t("analysis.failed") : run.objective || t("analysis.fallbackTitle")}
+            </span>
+            {run.artifacts.length > 0 && (
+              <span className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted ring-1 ring-border-faint">
+                {t("analysis.artifactCount", { count: run.artifacts.length })}
+              </span>
+            )}
+          </span>
+          <span className="mt-0.5 block truncate text-[11px] text-muted">
+            {project.title} · {t("analysis.isolatedRuntime")}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2 pt-0.5">
+          <span className="w-16 text-right text-xs text-muted" title={analysisRunAbsoluteTime(run)}>
+            {relativeTs(Math.floor(analysisRunTimestamp(run) / 1000))}
+          </span>
+          {open ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted opacity-50" />}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-border-faint px-3.5 py-3 text-xs">
+          {run.error && <p className="text-error">{run.error}</p>}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Action icon={<ExternalLink size={12} />} onClick={onOpenAnalysis} title={t("analysis.openTitle")}>
+              {t("analysis.open")}
+            </Action>
+          </div>
+          {run.artifacts.length > 0 && <AnalysisArtifactGroup artifacts={run.artifacts} />}
+          {run.logs && (
+            <details className="rounded-input border border-border-faint bg-bg">
+              <summary className="cursor-pointer list-none px-2.5 py-2 text-[11px] font-medium text-muted hover:text-text">
+                {t("action.log")}
+              </summary>
+              <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words border-t border-border-faint bg-[#17161b] px-2.5 py-2 font-mono text-[11px] leading-relaxed text-[#d8d4cc]">
+                {run.logs}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function AnalysisArtifactGroup({ artifacts }: { artifacts: AnalysisArtifact[] }) {
+  const { t } = useTranslation(["runs", "common"]);
+  const openArtifact = async (artifact: AnalysisArtifact) => {
+    const preview = window.open("about:blank", "_blank");
+    if (preview) preview.opener = null;
+    try {
+      const blob = await scienceCore.fetchArtifactBlob(artifact.id);
+      const objectUrl = URL.createObjectURL(blob);
+      if (preview) preview.location.replace(objectUrl);
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch {
+      preview?.close();
+    }
+  };
+  return (
+    <div>
+      <div className="mb-1 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wider text-muted">
+        <FileOutput size={12} /> {t("files.outputs")}
+      </div>
+      <ul className="space-y-0.5">
+        {artifacts.map((artifact) => (
+          <li key={artifact.id}>
+            <button
+              type="button"
+              onClick={() => void openArtifact(artifact)}
+              title={t("files.openTitle")}
+              className="group flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-surface-2"
+            >
+              <span className="min-w-0 flex-1 truncate font-mono text-text group-hover:text-link">
+                {fileName(artifact.path)}
+              </span>
+              <span className="shrink-0 text-muted">{artifact.artifactType}</span>
+              <ExternalLink size={11} className="shrink-0 text-muted opacity-0 group-hover:opacity-100" />
+              <span className="shrink-0 tabular-nums text-muted">{humanSize(artifact.sizeBytes)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -339,66 +560,49 @@ function RunRow({
   const { t } = useTranslation(["runs", "common"]);
   const failed = r.status === "failed";
   const remote = r.surface && r.surface !== "local";
+  const primaryOutput = r.outputs?.[0];
+  const title = failed
+    ? t("run.failed")
+    : primaryOutput
+      ? t("run.generated", { name: fileName(primaryOutput.path) })
+      : t("run.completed", { name: commandSubject(r.command) });
   return (
-    <li>
+    <li className="mb-2 overflow-hidden rounded-card border border-border bg-surface">
       <button
-        className="group flex w-full items-center gap-2.5 rounded-input px-2 py-1.5 text-left hover:bg-surface-2/60"
+        className="group flex w-full items-start gap-3 px-3.5 py-3 text-left hover:bg-surface-2/45"
         onClick={onToggle}
         aria-expanded={open}
       >
-        {open ? (
-          <ChevronDown size={13} className="shrink-0 text-muted" />
-        ) : (
-          <ChevronRight size={13} className="shrink-0 text-muted opacity-40 group-hover:opacity-100" />
-        )}
-        <span
-          className={cn("h-1.5 w-1.5 shrink-0 rounded-full", failed ? "bg-error" : "bg-ok")}
-          title={failed ? t("status.failed") : t("status.succeeded")}
-        />
-        <span className={cn("min-w-0 flex-1 truncate font-mono text-[13px]", failed ? "text-text/70" : "text-text")}>
-          {r.command}
+        <span className={cn("mt-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full", failed ? "bg-error/10 text-error" : "bg-ok/10 text-ok")}>
+          {failed ? <X size={12} /> : <Check size={12} />}
         </span>
-        {remote && (
-          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-accent">{r.surface}</span>
-        )}
-        {r.wallMs != null && <span className="shrink-0 tabular-nums text-xs text-muted">{formatDuration(r.wallMs)}</span>}
-        <span className="w-16 shrink-0 text-right text-xs text-muted" title={absoluteTs(r.ts)}>
-          {relativeTs(r.ts)}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className={cn("truncate text-sm font-medium", failed ? "text-text/75" : "text-text")}>
+              {title}
+            </span>
+            {!failed && (r.outputs?.length ?? 0) > 1 && (
+              <span
+                className="shrink-0 rounded-full bg-surface-2 px-1.5 py-0.5 text-[10px] font-medium text-muted ring-1 ring-border-faint"
+                title={t("run.additionalOutputs", { count: r.outputs!.length - 1 })}
+              >
+                +{r.outputs!.length - 1}
+              </span>
+            )}
+          </span>
+          <span className="mt-0.5 block truncate font-mono text-[11px] text-muted">{r.command}</span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2 pt-0.5">
+          {remote && <span className="text-[10px] font-semibold uppercase tracking-wide text-accent">{r.surface}</span>}
+          {r.wallMs != null && <span className="tabular-nums text-xs text-muted">{formatDuration(r.wallMs)}</span>}
+          <span className="w-16 text-right text-xs text-muted" title={absoluteTs(r.ts)}>{relativeTs(r.ts)}</span>
+          {open ? <ChevronDown size={14} className="text-muted" /> : <ChevronRight size={14} className="text-muted opacity-50" />}
         </span>
       </button>
 
       {open && (
-        <div className="ml-6 mb-1 space-y-3 border-l border-border-faint pl-4 pt-1 text-xs">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {r.env && (
-              <Chip>
-                {[r.env.python && `py ${r.env.python}`, r.env.platform, r.env.app && `app ${r.env.app}`]
-                  .filter(Boolean)
-                  .join(" · ")}
-              </Chip>
-            )}
-            {r.env?.hardware && (
-              <Chip icon={<Cpu size={11} />} title={t("hardware.title")}>
-                {hardwareLabel(r.env.hardware)}
-              </Chip>
-            )}
-            {r.env?.packages && (
-              <Chip icon={<Package size={11} />}>{t("hardware.packageCount", { count: r.env.packages.count })}</Chip>
-            )}
-            {r.remoteHardware && (
-              <Chip icon={<Cpu size={11} />} title={t("hardware.remoteTitle")}>
-                {r.remoteHardware}
-              </Chip>
-            )}
-            {r.host && (
-              <Chip title={t("host.title")}>
-                {r.host}
-                {r.jobId && ` · ${t("host.jobLabel")} ${r.jobId}`}
-              </Chip>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <div className="space-y-3 border-t border-border-faint px-3.5 py-3 text-xs">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             <Action icon={<RotateCcw size={12} />} onClick={onReproduce} title={t("action.reproduceTitle")}>
               {t("action.reproduce")}
             </Action>
@@ -417,7 +621,6 @@ function RunRow({
             </Action>
           </div>
 
-          {r.code && r.code.length > 0 && <FileGroup icon={<FileCode2 size={12} />} label={t("files.code")} files={r.code} />}
           {r.outputs && r.outputs.length > 0 && (
             <FileGroup icon={<FileOutput size={12} />} label={t("files.outputs")} files={r.outputs} openable />
           )}
@@ -425,6 +628,30 @@ function RunRow({
             <p className="text-muted">
               {t("remote.outputsNotCaptured", { surface: r.surface === "hpc" ? t("remote.hpcLabel") : r.surface })}
             </p>
+          )}
+
+          {(r.env || r.code?.length || r.remoteHardware || r.host) && (
+            <details className="rounded-input border border-border-faint bg-bg">
+              <summary className="cursor-pointer list-none px-2.5 py-2 text-[11px] font-medium text-muted hover:text-text">
+                {t("technicalDetails")}
+              </summary>
+              <div className="space-y-3 border-t border-border-faint p-2.5">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {r.env && (
+                    <Chip>
+                      {[r.env.python && `py ${r.env.python}`, r.env.platform, r.env.app && `app ${r.env.app}`]
+                        .filter(Boolean)
+                        .join(" · ")}
+                    </Chip>
+                  )}
+                  {r.env?.hardware && <Chip icon={<Cpu size={11} />} title={t("hardware.title")}>{hardwareLabel(r.env.hardware)}</Chip>}
+                  {r.env?.packages && <Chip icon={<Package size={11} />}>{t("hardware.packageCount", { count: r.env.packages.count })}</Chip>}
+                  {r.remoteHardware && <Chip icon={<Cpu size={11} />} title={t("hardware.remoteTitle")}>{r.remoteHardware}</Chip>}
+                  {r.host && <Chip title={t("host.title")}>{r.host}{r.jobId && ` · ${t("host.jobLabel")} ${r.jobId}`}</Chip>}
+                </div>
+                {r.code && r.code.length > 0 && <FileGroup icon={<FileCode2 size={12} />} label={t("files.code")} files={r.code} />}
+              </div>
+            </details>
           )}
 
           {r.logHash && log?.hash === r.logHash && (
@@ -592,6 +819,17 @@ function absoluteTs(ts: number): string {
   return new Date(ts * 1000).toLocaleString(i18n.language, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function analysisRunTimestamp(run: AnalysisRun): number {
+  const raw = run.finishedAt ?? run.createdAt;
+  const value = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(raw) ? raw : `${raw}Z`);
+  return Number.isNaN(value) ? 0 : value;
+}
+
+function analysisRunAbsoluteTime(run: AnalysisRun): string {
+  const value = analysisRunTimestamp(run);
+  return value === 0 ? run.finishedAt ?? run.createdAt : new Date(value).toLocaleString(i18n.language);
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} ms`;
   const s = ms / 1000;
@@ -604,4 +842,15 @@ function humanSize(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fileName(path: string): string {
+  const segments = path.split(/[\\/]/).filter(Boolean);
+  return segments[segments.length - 1] ?? path;
+}
+
+function commandSubject(command: string): string {
+  const tokens = command.trim().split(/\s+/);
+  const script = tokens.find((token) => /\.(?:py|ipynb|r|jl)$/i.test(token));
+  return script ? fileName(script) : tokens[0] || command;
 }

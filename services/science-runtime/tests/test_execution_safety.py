@@ -121,6 +121,20 @@ def test_reserved_file_collision_rolls_back_only_files_created_by_runtime(
     assert blocker.read_text(encoding="utf-8") == "user-owned"
 
 
+def test_reserved_runtime_artifacts_are_group_readable_and_complete(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    reserved = execution._reserve_runtime_files(run_dir)
+
+    assert set(reserved) == set(execution._RESERVED_ARTIFACTS)
+    assert {path.name for path in run_dir.iterdir()} == set(execution._RESERVED_ARTIFACTS)
+    assert {
+        name: reserved_file.path.stat().st_mode & 0o777
+        for name, reserved_file in reserved.items()
+    } == {name: 0o640 for name in execution._RESERVED_ARTIFACTS}
+
+
 def test_reserved_file_rewrite_rejects_symlink_substitution(
     tmp_path: Path,
 ) -> None:

@@ -38,7 +38,18 @@ export function ArtifactCard({
         onOpen && "cursor-pointer hover:bg-surface-2",
       )}
       onClick={onOpen ? () => onOpen(block) : undefined}
+      onKeyDown={
+        onOpen
+          ? (event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onOpen(block);
+              }
+            }
+          : undefined
+      }
       role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
     >
       <span className="shrink-0 text-accent">{ICON[block.artifact]}</span>
       <span className="truncate font-medium text-text">{block.filename}</span>

@@ -2,7 +2,8 @@
   "shell": {
     "maximizePanel": "パネルを最大化",
     "restorePanel": "パネルを元に戻す",
-    "closeInspector": "インスペクタを閉じる"
+    "closeInspector": "インスペクタを閉じる",
+    "resizePanel": "インスペクタペインのサイズを変更"
   },
   "artifact": {
     "previousVersionAria": "前のバージョン",
@@ -255,6 +256,8 @@
       "show": "シリーズを表示"
     },
     "selectSeriesHint": "プロットするシリーズを選択",
-    "noNumericColumns": "グラフ化できる数値列がありません。"
+    "noNumericColumns": "グラフ化できる数値列がありません。",
+    "chartTitle": "データセットグラフ",
+    "chartDescription": "{{rows}} 行にわたる {{series}} 個の数値系列を選択した {{type}} グラフです。欠損値は空白で表示されます。"
   }
 }

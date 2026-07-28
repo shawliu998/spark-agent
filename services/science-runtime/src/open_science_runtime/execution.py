@@ -385,7 +385,7 @@ def _reserve_runtime_files(run_dir: Path) -> dict[str, _ReservedFile]:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
             if hasattr(os, "O_NOFOLLOW"):
                 flags |= os.O_NOFOLLOW
-            descriptor = os.open(path, flags, 0o600)
+            descriptor = os.open(path, flags, 0o640)
             try:
                 file_stat = os.fstat(descriptor)
                 if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:

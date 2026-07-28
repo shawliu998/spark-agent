@@ -233,4 +233,5 @@ describe("dataset workflow domain contract", () => {
     expect(completedInitialIntent.decision).toBe("approved");
     expect(completedInitialIntent.errorSummary).toBeNull();
   });
+
 });

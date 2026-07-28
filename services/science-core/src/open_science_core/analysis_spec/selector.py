@@ -80,9 +80,11 @@ _UNSUPPORTED_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 _CORRELATION_PATTERN = re.compile(
-    r"(?:correlat(?:e|ed|ion)?|association|pearson|spearman|相关(?:性|分析)?|关联(?:性|分析)?)",
+    r"(?:correlat(?:e|ed|ion)?|association|pearson|spearman|trend|趋势|"
+    r"相关(?:性|分析)?|关联(?:性|分析)?)",
     re.IGNORECASE,
 )
+_TREND_PATTERN = re.compile(r"(?:trend|趋势)", re.IGNORECASE)
 _TWO_GROUP_PATTERN = re.compile(
     r"(?:two[- ]?group|between\s+(?:the\s+)?groups?|compare|difference|welch|mann[- ]?whitney|"
     r"两组|组间|比较|差异)",
@@ -265,6 +267,11 @@ def deterministic_method_selection(
         x_name = _column_answer(answers, "x-column", columns)
         y_name = _column_answer(answers, "y-column", columns)
         mentioned_numeric = [name for name in mentioned if name in {item.name for item in numeric}]
+        if _TREND_PATTERN.search(objective):
+            trend_roles = _trend_role_binding(objective, mentioned_numeric)
+            if trend_roles is not None:
+                x_name = x_name or trend_roles[0]
+                y_name = y_name or trend_roles[1]
         if x_name is None and mentioned_numeric:
             x_name = mentioned_numeric[0]
         if y_name is None and len(mentioned_numeric) > 1:
@@ -740,6 +747,25 @@ def _mentioned_columns(goal: str, columns: Sequence[DatasetColumnProfile]) -> li
         if match is not None:
             matches.append((match.start(), column.name))
     return [name for _position, name in sorted(matches)]
+
+
+def _trend_role_binding(
+    objective: str,
+    mentioned_numeric: Sequence[str],
+) -> tuple[str, str] | None:
+    if len(mentioned_numeric) != 2:
+        return None
+    first, second = mentioned_numeric
+    for y_name, x_name in ((first, second), (second, first)):
+        role_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_]){re.escape(y_name)}(?![A-Za-z0-9_])"
+            rf"\s*(?:over|versus|随)\s*"
+            rf"(?<![A-Za-z0-9_]){re.escape(x_name)}(?![A-Za-z0-9_])",
+            re.IGNORECASE,
+        )
+        if role_pattern.search(objective):
+            return x_name, y_name
+    return None
 
 
 def _answered_values(

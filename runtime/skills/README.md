@@ -35,14 +35,17 @@ How they ship, end to end:
 
 To bump the pack version, update `AI4S_SKILLS_COMMIT` in `fetch-skills.sh`.
 
-## Office pack: Anthropic document skills (bundled into the installer)
+## Office skills: not bundled
 
-The docx / pdf / pptx / xlsx skills come from Anthropic's open-source
-[anthropics/skills](https://github.com/anthropics/skills) repo (Apache-2.0;
-each skill directory keeps its own `LICENSE.txt`). Same pipeline as above:
-`fetch-skills.sh` pins them into `external/anthropic-skills/`, bundled as the
-`skills-office/` app resource, deployed by `deploy_bundled_skills`. Bump via
-`ANTHROPIC_SKILLS_COMMIT` in `fetch-skills.sh`.
+Anthropic's docx / pdf / pptx / xlsx skills are source-available rather than
+open-source under one reusable repository license. Spark does not fetch, vendor,
+bundle, or deploy them. `fetch-skills.sh` currently fetches only the pinned
+AI4S pack described above.
+
+Do not add Anthropic office skills to the installer without a separate license
+and redistribution review of every selected skill. Their repository documents
+the current licensing distinction:
+[anthropics/skills](https://github.com/anthropics/skills#about-this-repository).
 
 ## Third-party skills
 

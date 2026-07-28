@@ -2,7 +2,8 @@
   "shell": {
     "maximizePanel": "Maximize panel",
     "restorePanel": "Restore panel",
-    "closeInspector": "Close inspector"
+    "closeInspector": "Close inspector",
+    "resizePanel": "Resize inspector pane"
   },
   "artifact": {
     "previousVersionAria": "Previous version",
@@ -267,6 +268,8 @@
       "show": "Show series"
     },
     "selectSeriesHint": "select a series to plot",
-    "noNumericColumns": "No numeric columns to chart."
+    "noNumericColumns": "No numeric columns to chart.",
+    "chartTitle": "Dataset chart",
+    "chartDescription": "{{type}} chart with {{series}} selected numeric series across {{rows}} rows. Missing values are shown as gaps."
   }
 }

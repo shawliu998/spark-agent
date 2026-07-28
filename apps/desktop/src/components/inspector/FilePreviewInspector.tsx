@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Code2, Eye, ExternalLink, FileSearch, History, Loader2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FilePreviewInspector as FilePreviewInspectorT, FileRoot } from "@ai4s/shared";
@@ -19,19 +19,46 @@ import { ProvenancePanel } from "./ProvenancePanel";
 import { TablePreview } from "./TablePreview";
 import { TableChart } from "./TableChart";
 import { canChart } from "@/lib/tableChart";
-import { DocxView, PptxView, XlsxView } from "./OfficePreview";
-import { MoleculeView } from "./MoleculeView";
-import { MeshView } from "./MeshView";
-import { GenomeView } from "./GenomeView";
-import { FitsView } from "./FitsView";
-import { DosView } from "./DosView";
-import { BandView } from "./BandView";
-import { QCodeView } from "./QCodeView";
-import { AnomalyMapView } from "./AnomalyMapView";
-import { PhaseView } from "./PhaseView";
 import { useScrollMemory } from "@/lib/scrollMemory";
 import { cn } from "@/lib/cn";
 import { PaneTitlebarInset } from "./RightPane";
+
+const DocxView = lazy(() =>
+  import("./OfficePreview").then((module) => ({ default: module.DocxView })),
+);
+const XlsxView = lazy(() =>
+  import("./OfficePreview").then((module) => ({ default: module.XlsxView })),
+);
+const PptxView = lazy(() =>
+  import("./OfficePreview").then((module) => ({ default: module.PptxView })),
+);
+const MoleculeView = lazy(() =>
+  import("./MoleculeView").then((module) => ({ default: module.MoleculeView })),
+);
+const MeshView = lazy(() =>
+  import("./MeshView").then((module) => ({ default: module.MeshView })),
+);
+const GenomeView = lazy(() =>
+  import("./GenomeView").then((module) => ({ default: module.GenomeView })),
+);
+const FitsView = lazy(() =>
+  import("./FitsView").then((module) => ({ default: module.FitsView })),
+);
+const DosView = lazy(() =>
+  import("./DosView").then((module) => ({ default: module.DosView })),
+);
+const BandView = lazy(() =>
+  import("./BandView").then((module) => ({ default: module.BandView })),
+);
+const QCodeView = lazy(() =>
+  import("./QCodeView").then((module) => ({ default: module.QCodeView })),
+);
+const AnomalyMapView = lazy(() =>
+  import("./AnomalyMapView").then((module) => ({ default: module.AnomalyMapView })),
+);
+const PhaseView = lazy(() =>
+  import("./PhaseView").then((module) => ({ default: module.PhaseView })),
+);
 
 /**
  * Right-pane preview for any workspace file. Strategy (no format conversion):
@@ -195,17 +222,33 @@ export function FilePreviewInspector({
           />
         )}
         {!showHistory && !loading && !error && (
-          <Body
-            kind={kind}
-            url={url}
-            text={text}
-            bytes={bytes}
-            showCode={tab === "code"}
-            filename={data.filename}
-            path={data.path}
-            language={data.language}
-          />
+          <Suspense fallback={<PreviewModuleLoading filename={data.filename} />}>
+            <Body
+              kind={kind}
+              url={url}
+              text={text}
+              bytes={bytes}
+              showCode={tab === "code"}
+              filename={data.filename}
+              path={data.path}
+              language={data.language}
+            />
+          </Suspense>
         )}
+      </div>
+    </div>
+  );
+}
+
+function PreviewModuleLoading({ filename }: { filename: string }) {
+  const { t } = useTranslation(["inspector", "common"]);
+  return (
+    <div className="space-y-3 p-4" role="status">
+      <span className="sr-only">{t("filePreview.loading", { filename })}</span>
+      <div aria-hidden="true" className="animate-pulse space-y-3 motion-reduce:animate-none">
+        <div className="h-4 w-40 rounded-input bg-border" />
+        <div className="h-3 w-full rounded-input bg-border-faint" />
+        <div className="h-3 w-4/5 rounded-input bg-border-faint" />
       </div>
     </div>
   );

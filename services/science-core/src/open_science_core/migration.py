@@ -243,12 +243,40 @@ def _application_tables(connection: sqlite3.Connection) -> set[str]:
     return {str(row[0]) for row in rows if row[0] != "alembic_version"}
 
 
-def _validate_integrity(connection: sqlite3.Connection) -> None:
+def _is_repairable_extraction_source_parent_key_mismatch(
+    connection: sqlite3.Connection, error: sqlite3.OperationalError
+) -> bool:
+    if 'foreign key mismatch - "extraction_cells" referencing "sources"' not in str(error):
+        return False
+    tables = _application_tables(connection)
+    if not {"sources", "extraction_cells"}.issubset(tables):
+        return False
+    unique_sets = {
+        tuple(str(column[2]) for column in connection.execute(f'PRAGMA index_info("{row[1]}")'))
+        for row in connection.execute("PRAGMA index_list(sources)")
+        if int(row[2]) == 1
+    }
+    return ("project_id", "id") not in unique_sets
+
+
+def _validate_integrity(
+    connection: sqlite3.Connection, *, allow_repairable_extraction_parent_key: bool = False
+) -> None:
     result = connection.execute("PRAGMA integrity_check").fetchone()
     if result is None or result[0] != "ok":
         raise DatabaseMigrationError("SQLite integrity_check failed; database was not changed")
     connection.execute("PRAGMA foreign_keys=ON")
-    violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    try:
+        violation = connection.execute("PRAGMA foreign_key_check").fetchone()
+    except sqlite3.OperationalError as error:
+        if (
+            allow_repairable_extraction_parent_key
+            and _is_repairable_extraction_source_parent_key_mismatch(connection, error)
+        ):
+            return
+        raise DatabaseMigrationError(
+            "SQLite foreign_key_check failed; database was not changed"
+        ) from error
     if violation is not None:
         raise DatabaseMigrationError("SQLite foreign_key_check failed; database was not changed")
 
@@ -380,7 +408,12 @@ def _backup_database(database_path: Path, current: str, head: str) -> Path:
     with sqlite3.connect(database_path, timeout=5) as source:
         with sqlite3.connect(backup_path) as destination:
             source.backup(destination)
-            _validate_integrity(destination)
+            _validate_integrity(
+                destination,
+                allow_repairable_extraction_parent_key=(
+                    current == "0010_extraction_matrix"
+                ),
+            )
     try:
         os.chmod(backup_path, 0o600)
     except OSError:
@@ -422,9 +455,14 @@ def ensure_database(database_path: Path | None = None) -> None:
     head = single_head(config)
 
     with sqlite3.connect(path, timeout=5) as connection:
-        _validate_integrity(connection)
         application_tables = _application_tables(connection)
         current = _current_revision(connection)
+        _validate_integrity(
+            connection,
+            allow_repairable_extraction_parent_key=(
+                current == "0010_extraction_matrix"
+            ),
+        )
 
         if not application_tables and current is None:
             mode = "empty"

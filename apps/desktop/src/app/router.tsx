@@ -1,13 +1,5 @@
 import { createBrowserRouter, Navigate, type RouteObject } from "react-router-dom";
 import { AppShell } from "./layout/AppShell";
-import { SessionPage } from "./routes/SessionPage";
-import { LiveSessionPage } from "./routes/LiveSessionPage";
-import { SkillsPage } from "./routes/SkillsPage";
-import { NotebooksPage } from "./routes/NotebooksPage";
-import { FilesPage } from "./routes/FilesPage";
-import { RunsPage } from "./routes/RunsPage";
-import { SettingsPage } from "./routes/SettingsPage";
-import { NotFound } from "./routes/NotFound";
 import { productRoutes } from "@/product/manifest";
 
 export const routes: RouteObject[] = [
@@ -15,17 +7,44 @@ export const routes: RouteObject[] = [
     path: "/",
     element: <AppShell />,
     children: [
-      { index: true, element: <Navigate to="/live" replace /> },
-      { path: "live", element: <LiveSessionPage /> },
-      { path: "live/:sessionId", element: <LiveSessionPage /> },
-      { path: "example/:sessionId", element: <SessionPage /> },
-      { path: "skills", element: <SkillsPage /> },
-      { path: "notebooks", element: <NotebooksPage /> },
-      { path: "files", element: <FilesPage /> },
-      { path: "runs", element: <RunsPage /> },
+      { index: true, element: <Navigate to="/research" replace /> },
+      {
+        path: "live",
+        lazy: async () => ({ Component: (await import("./routes/LiveSessionPage")).LiveSessionPage }),
+      },
+      {
+        path: "live/:sessionId",
+        lazy: async () => ({ Component: (await import("./routes/LiveSessionPage")).LiveSessionPage }),
+      },
+      {
+        path: "example/:sessionId",
+        lazy: async () => ({ Component: (await import("./routes/SessionPage")).SessionPage }),
+      },
+      {
+        path: "skills",
+        lazy: async () => ({ Component: (await import("./routes/SkillsPage")).SkillsPage }),
+      },
+      {
+        path: "notebooks",
+        lazy: async () => ({ Component: (await import("./routes/NotebooksPage")).NotebooksPage }),
+      },
+      {
+        path: "files",
+        lazy: async () => ({ Component: (await import("./routes/FilesPage")).FilesPage }),
+      },
+      {
+        path: "runs",
+        lazy: async () => ({ Component: (await import("./routes/RunsPage")).RunsPage }),
+      },
       ...productRoutes,
-      { path: "settings", element: <SettingsPage /> },
-      { path: "*", element: <NotFound /> },
+      {
+        path: "settings",
+        lazy: async () => ({ Component: (await import("./routes/SettingsPage")).SettingsPage }),
+      },
+      {
+        path: "*",
+        lazy: async () => ({ Component: (await import("./routes/NotFound")).NotFound }),
+      },
     ],
   },
 ];

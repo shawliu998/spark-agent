@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <clipPath id="product-shot">
+      <rect x="526" y="48" width="706" height="544" rx="12"/>
+    </clipPath>
+  </defs>
+
+  <rect width="1280" height="640" fill="#f4f6f8"/>
+  <rect x="0" y="0" width="10" height="640" fill="#5b63d3"/>
+
+  <g font-family="Helvetica" fill="#1f2429">
+    <text x="64" y="88" font-size="23" font-weight="600" letter-spacing="-0.2">spark agent</text>
+
+    <text x="64" y="184" font-size="50" font-weight="650" letter-spacing="-1.6">
+      <tspan x="64" dy="0">Research that</tspan>
+      <tspan x="64" dy="58">stays connected</tspan>
+      <tspan x="64" dy="58">to its evidence.</tspan>
+    </text>
+
+    <text x="64" y="394" font-size="21" fill="#525b65">
+      <tspan x="64" dy="0">A local-first workspace for screened</tspan>
+      <tspan x="64" dy="31">literature, page-level evidence, and</tspan>
+      <tspan x="64" dy="31">editable cited reports.</tspan>
+    </text>
+
+    <line x1="64" y1="506" x2="454" y2="506" stroke="#cdd2d8"/>
+    <text x="64" y="546" font-size="16" font-weight="600" fill="#49515a">
+      Approve scope · Capture evidence · Write with citations
+    </text>
+  </g>
+
+  <rect x="526" y="48" width="706" height="544" rx="12" fill="#ffffff"/>
+  <image
+    href="../../apps/desktop/design-qa/report-p2-citation-1280x720.jpg"
+    x="526"
+    y="48"
+    width="706"
+    height="544"
+    preserveAspectRatio="xMidYMid slice"
+    clip-path="url(#product-shot)"
+  />
+  <rect x="526.5" y="48.5" width="705" height="543" rx="11.5" fill="none" stroke="#c8ced5"/>
+</svg>

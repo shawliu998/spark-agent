@@ -16,15 +16,20 @@ from open_science_core import migration
 from open_science_core.db import Base
 from open_science_core.models import (
     ApprovalRecord,
+    DiscoverySpecRecord,
     EventRecord,
     JobRecord,
     PlanRecord,
     ProjectRecord,
+    ResearchMemoryRecord,
     ReviewRecord,
+    SkillActivationRecord,
+    SkillCandidateRecord,
     SourcePageRecord,
     SourceRecord,
     TaskRecord,
     WorkflowRecord,
+    utc_now,
 )
 from open_science_core.workflow.schemas import WorkflowCreateIn
 from open_science_core.workflow.service import (
@@ -39,12 +44,30 @@ from open_science_core.workflow.worker import WorkflowWorker
 
 LEGACY_TABLES = tuple(sorted(migration.LEGACY_COLUMNS))
 CONTROL_PLANE_TABLES = {
+    "agent_decisions",
     "analysis_specs",
+    "candidate_triage_decisions",
     "intent_decisions",
     "interaction_requests",
     "model_invocations",
+    "screening_decisions",
+    "evidence_direction_judgments",
+    "extraction_columns",
+    "extraction_cells",
+    "extraction_cell_evidence",
+    "discovery_candidate_occurrences",
+    "discovery_candidates",
+    "discovery_specs",
     "structured_analysis_results",
+    "step_observations",
+    "tool_invocations",
     "user_responses",
+    "research_memories",
+    "report_drafts",
+    "report_draft_mutations",
+    "skill_candidates",
+    "skill_activations",
+    "agent_context_snapshots",
     "workflow_jobs",
     "workflow_plans",
     "workflow_reviews",
@@ -560,9 +583,9 @@ def _insert_goal_aware_analysis_fixture(
             1,
             None,
             "1",
-                "local-deterministic",
-                "Deterministic fixture method-selection reason.",
-                None,
+            "local-deterministic",
+            "Deterministic fixture method-selection reason.",
+            None,
             None,
             source_id,
             "a" * 64,
@@ -632,6 +655,54 @@ def _insert_goal_aware_analysis_fixture(
 
 
 class DatabaseMigrationTest(unittest.TestCase):
+    def test_report_draft_downgrade_refuses_business_data_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "report-draft-downgrade.sqlite3"
+            config = migration.alembic_config(database_path)
+            command.upgrade(config, "0019_report_drafts")
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO report_drafts (
+                        id, project_id, workflow_id, schema_version, revision,
+                        content_markdown, content_sha256, base_workflow_sha256,
+                        base_result_sha256, base_evidence_sha256, status,
+                        create_idempotency_key, create_payload_sha256,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "draft-1",
+                        "project-1",
+                        "workflow-1",
+                        "1",
+                        1,
+                        "Persisted report",
+                        "a" * 64,
+                        "b" * 64,
+                        "c" * 64,
+                        "d" * 64,
+                        "draft",
+                        "create-key",
+                        "e" * 64,
+                        "2026-07-24 00:00:00",
+                        "2026-07-24 00:00:00",
+                    ),
+                )
+                connection.commit()
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "Cannot downgrade while report draft business data exists",
+            ):
+                command.downgrade(config, "0018_project_archive_state")
+
+            self.assertEqual(_revision(database_path), "0019_report_drafts")
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
     def test_fresh_database_upgrades_to_head(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database_path = Path(directory) / "fresh.sqlite3"
@@ -655,6 +726,537 @@ class DatabaseMigrationTest(unittest.TestCase):
                     set(LEGACY_TABLES) | CONTROL_PLANE_TABLES,
                 )
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_skill_candidate_downgrade_owns_only_skill_candidate_state(self) -> None:
+        for has_skill_candidate in (False, True):
+            with self.subTest(has_skill_candidate=has_skill_candidate):
+                with tempfile.TemporaryDirectory() as directory:
+                    database_path = Path(directory) / "skill-downgrade.sqlite3"
+                    migration.ensure_database(database_path)
+                    config = migration.alembic_config(database_path)
+                    engine = create_engine(f"sqlite:///{database_path}")
+                    with Session(engine) as session:
+                        project = ProjectRecord(
+                            id="skill-project",
+                            title="Skill migration",
+                            description="",
+                            project_path="/tmp/skill-migration",
+                            execution_mode="safe",
+                        )
+                        workflow = WorkflowRecord(
+                            id="skill-workflow",
+                            project_id=project.id,
+                            create_idempotency_key="skill-create",
+                            create_payload_sha256="a" * 64,
+                            creation_mode="autonomous",
+                            selected_source_ids=[],
+                            workflow_type="literature-synthesis",
+                            goal="Keep migration ownership narrow.",
+                            generation_mode="local-deterministic",
+                            status="running",
+                        )
+                        memory = ResearchMemoryRecord(
+                            id="memory-1",
+                            project_id=project.id,
+                            scope_workflow_id=workflow.id,
+                            subject_key="subject-1",
+                            revision=1,
+                            previous_id=None,
+                            schema_version="1",
+                            type="user-decision",
+                            content_json={"kind": "fixture"},
+                            source_refs=[],
+                            artifact_refs=[],
+                            invalidation_rule=None,
+                            status="committed",
+                            created_by="fixture",
+                            creation_key="fixture-memory",
+                            memory_sha256="b" * 64,
+                        )
+                        session.add_all([project, workflow])
+                        session.flush()
+                        session.add(memory)
+                        if has_skill_candidate:
+                            session.add(
+                                SkillCandidateRecord(
+                                    id="skill-candidate-1",
+                                    project_id=project.id,
+                                    workflow_id=workflow.id,
+                                    schema_version="1",
+                                    name="remember-verified-evidence",
+                                    description="Fixture",
+                                    scope="project",
+                                    trigger_json={},
+                                    inputs_json={},
+                                    preconditions_json=[],
+                                    allowed_tools_json=[],
+                                    required_permissions_json=[],
+                                    procedure_json=[],
+                                    postconditions_json=[],
+                                    failure_policy_json={},
+                                    provenance_requirements_json=[],
+                                    origin_trace_ids=["episode-1"],
+                                    sanitized_source_hash="c" * 64,
+                                    parent_skill_id=None,
+                                    version=1,
+                                    content_hash="d" * 64,
+                                    status="awaiting-approval",
+                                    generated_skill_md="---\nname: fixture\ndescription: Fixture\n---\n",
+                                    evaluation_json={},
+                                )
+                            )
+                        session.commit()
+                    engine.dispose()
+
+                    if has_skill_candidate:
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "skill candidates exist",
+                        ):
+                            command.downgrade(
+                                config,
+                                "0015_memory_context_generation",
+                            )
+                        self.assertEqual(
+                            _revision(database_path),
+                            "0016_skill_candidates",
+                        )
+                    else:
+                        command.downgrade(
+                            config,
+                            "0015_memory_context_generation",
+                        )
+                        self.assertEqual(
+                            _revision(database_path),
+                            "0015_memory_context_generation",
+                        )
+                        with sqlite3.connect(database_path) as connection:
+                            self.assertEqual(
+                                connection.execute("SELECT id FROM research_memories").fetchall(),
+                                [("memory-1",)],
+                            )
+                            self.assertIsNone(
+                                connection.execute(
+                                    "SELECT 1 FROM sqlite_master "
+                                    "WHERE type='table' AND name='skill_candidates'"
+                                ).fetchone()
+                            )
+
+    def test_skill_activation_downgrade_owns_only_activation_state(self) -> None:
+        for has_activation in (False, True):
+            with self.subTest(has_activation=has_activation):
+                with tempfile.TemporaryDirectory() as directory:
+                    database_path = Path(directory) / "activation-downgrade.sqlite3"
+                    migration.ensure_database(database_path)
+                    config = migration.alembic_config(database_path)
+                    engine = create_engine(f"sqlite:///{database_path}")
+                    with Session(engine) as session:
+                        project = ProjectRecord(
+                            id="activation-project",
+                            title="Activation migration",
+                            description="",
+                            project_path="/data/projects/activation-project",
+                            execution_mode="safe",
+                        )
+                        workflow = WorkflowRecord(
+                            id="activation-workflow",
+                            project_id=project.id,
+                            create_idempotency_key="activation-create",
+                            create_payload_sha256="a" * 64,
+                            creation_mode="autonomous",
+                            selected_source_ids=[],
+                            workflow_type="literature-synthesis",
+                            goal="Test activation ownership.",
+                            generation_mode="local-deterministic",
+                            status="running",
+                        )
+                        candidate = SkillCandidateRecord(
+                            id="activation-candidate",
+                            project_id=project.id,
+                            workflow_id=workflow.id,
+                            schema_version="1",
+                            name="remember-verified-evidence",
+                            description="Fixture",
+                            scope="project",
+                            trigger_json={},
+                            inputs_json={},
+                            preconditions_json=[],
+                            allowed_tools_json=[],
+                            required_permissions_json=[],
+                            procedure_json=[],
+                            postconditions_json=[],
+                            failure_policy_json={},
+                            provenance_requirements_json=[],
+                            origin_trace_ids=["episode-1"],
+                            sanitized_source_hash="b" * 64,
+                            parent_skill_id=None,
+                            version=1,
+                            content_hash="c" * 64,
+                            status="awaiting-approval",
+                            generated_skill_md="fixture",
+                            evaluation_json={},
+                        )
+                        session.add_all([project, workflow, candidate])
+                        session.flush()
+                        if has_activation:
+                            session.add(
+                                SkillActivationRecord(
+                                    id="activation-1",
+                                    project_id=project.id,
+                                    workflow_id=workflow.id,
+                                    candidate_id=candidate.id,
+                                    schema_version="1",
+                                    skill_name="remember-verified-evidence",
+                                    target_relative_path=(
+                                        ".opencode/skills/remember-verified-evidence/SKILL.md"
+                                    ),
+                                    candidate_content_hash="c" * 64,
+                                    template_sha256="d" * 64,
+                                    evaluation_sha256="e" * 64,
+                                    approval_sha256="f" * 64,
+                                    request_sha256="1" * 64,
+                                    idempotency_key="activate-once",
+                                    prior_present=False,
+                                    prior_bytes=None,
+                                    prior_sha256=None,
+                                    installed_sha256="d" * 64,
+                                    created_directory=True,
+                                    status="active",
+                                )
+                            )
+                        session.commit()
+                    engine.dispose()
+
+                    if has_activation:
+                        with self.assertRaisesRegex(RuntimeError, "skill activations exist"):
+                            command.downgrade(config, "0016_skill_candidates")
+                        self.assertEqual(_revision(database_path), "0017_skill_activations")
+                    else:
+                        command.downgrade(config, "0016_skill_candidates")
+                        self.assertEqual(_revision(database_path), "0016_skill_candidates")
+                        with sqlite3.connect(database_path) as connection:
+                            self.assertEqual(
+                                connection.execute("SELECT id FROM skill_candidates").fetchall(),
+                                [("activation-candidate",)],
+                            )
+                            self.assertIsNone(
+                                connection.execute(
+                                    "SELECT 1 FROM sqlite_master "
+                                    "WHERE type='table' AND name='skill_activations'"
+                                ).fetchone()
+                            )
+
+    def test_discovery_downgrade_refuses_provenance_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "discovery-downgrade.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            command.downgrade(config, "0015_memory_context_generation")
+            project_id = "discovery-project"
+            now = utc_now()
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO projects (
+                        id, title, description, project_path, research_domain,
+                        execution_mode, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        "Discovery provenance",
+                        "",
+                        "/tmp/discovery-provenance",
+                        None,
+                        "safe",
+                        now,
+                        now,
+                    ),
+                )
+                connection.commit()
+            engine = create_engine(f"sqlite:///{database_path}")
+            factory = sessionmaker(bind=engine, expire_on_commit=False)
+            with factory() as session:
+                workflow = WorkflowRecord(
+                    id="discovery-workflow",
+                    project_id=project_id,
+                    create_idempotency_key="discovery-create",
+                    create_payload_sha256="a" * 64,
+                    creation_mode="autonomous",
+                    selected_source_ids=[],
+                    current_intent_decision_id=None,
+                    workflow_type=None,
+                    dataset_source_id=None,
+                    dataset_content_hash=None,
+                    goal="Keep discovery provenance durable.",
+                    generation_mode="local-deterministic",
+                    status="routing",
+                    row_version=1,
+                    event_sequence=0,
+                )
+                session.add_all(
+                    [
+                        workflow,
+                        DiscoverySpecRecord(
+                            id="discovery-spec",
+                            workflow_id=workflow.id,
+                            revision=1,
+                            previous_spec_id=None,
+                            schema_version="1",
+                            spec_json={},
+                            spec_sha256="b" * 64,
+                            status="approved",
+                            approved_at=utc_now(),
+                        ),
+                    ]
+                )
+                session.commit()
+            engine.dispose()
+            before_schema = _schema_snapshot(database_path)
+            before_data = _data_snapshot(database_path)
+
+            with self.assertRaisesRegex(RuntimeError, "discovery provenance exists"):
+                command.downgrade(config, "0011_repair_extraction_source_parent_key")
+
+            self.assertEqual(_revision(database_path), "0015_memory_context_generation")
+            self.assertEqual(_schema_snapshot(database_path), before_schema)
+            self.assertEqual(_data_snapshot(database_path), before_data)
+
+    def test_tool_invocation_rejects_cross_project_or_workflow_job_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "discovery-ownership.sqlite3"
+            migration.ensure_database(database_path)
+            engine = create_engine(f"sqlite:///{database_path}")
+            factory = sessionmaker(bind=engine, expire_on_commit=False)
+            with factory() as session:
+                projects = [
+                    ProjectRecord(
+                        id=f"project-{suffix}",
+                        title=f"Project {suffix}",
+                        description="",
+                        project_path=f"/tmp/discovery-project-{suffix}",
+                        execution_mode="safe",
+                    )
+                    for suffix in ("a", "b")
+                ]
+                workflows = [
+                    WorkflowRecord(
+                        id=f"workflow-{suffix}",
+                        project_id=f"project-{suffix}",
+                        create_idempotency_key=f"create-{suffix}",
+                        create_payload_sha256=suffix * 64,
+                        creation_mode="autonomous",
+                        selected_source_ids=[],
+                        current_intent_decision_id=None,
+                        workflow_type=None,
+                        dataset_source_id=None,
+                        dataset_content_hash=None,
+                        goal=f"Discovery {suffix}",
+                        generation_mode="local-deterministic",
+                        status="routing",
+                        row_version=1,
+                        event_sequence=0,
+                    )
+                    for suffix in ("a", "b")
+                ]
+                session.add_all(projects + workflows)
+                session.flush()
+                session.add_all(
+                    [
+                        JobRecord(
+                            id=f"job-{suffix}",
+                            workflow_id=f"workflow-{suffix}",
+                            task_id=None,
+                            kind="execute-task",
+                            operation_key=f"operation-{suffix}",
+                            attempt=1,
+                            input_sha256=suffix * 64,
+                            handler_version="test",
+                            status="queued",
+                        )
+                        for suffix in ("a", "b")
+                    ]
+                    + [
+                        DiscoverySpecRecord(
+                            id="spec-a",
+                            workflow_id="workflow-a",
+                            revision=1,
+                            previous_spec_id=None,
+                            schema_version="1",
+                            spec_json={},
+                            spec_sha256="c" * 64,
+                            status="approved",
+                            approved_at=utc_now(),
+                        )
+                    ]
+                )
+                session.commit()
+            engine.dispose()
+
+            insert_sql = """
+                INSERT INTO tool_invocations (
+                    id, project_id, workflow_id, discovery_spec_id, job_id,
+                    schema_version, tool_name, connector_name, connector_version,
+                    query_id, provider, operation_key, attempt,
+                    request_idempotency_key, request_payload_sha256, request_json,
+                    output_sha256, returned_count, novel_candidate_count,
+                    duplicate_count, candidate_set_sha256, status, error_code,
+                    error_message, created_at, finished_at
+                ) VALUES (
+                    :id, :project_id, 'workflow-a', 'spec-a', :job_id,
+                    '1', 'search_arxiv', 'paper-search-mcp', '0.1.4',
+                    'query-a', 'arxiv', :operation_key, 1,
+                    :idempotency_key, :request_sha256, '{}',
+                    NULL, NULL, NULL, NULL, NULL, 'pending', NULL, NULL,
+                    '2026-07-23 00:00:00', NULL
+                )
+            """
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                for values in (
+                    {
+                        "id": "invocation-cross-project",
+                        "project_id": "project-b",
+                        "job_id": "job-a",
+                        "operation_key": "cross-project",
+                        "idempotency_key": "cross-project",
+                        "request_sha256": "d" * 64,
+                    },
+                    {
+                        "id": "invocation-cross-job",
+                        "project_id": "project-a",
+                        "job_id": "job-b",
+                        "operation_key": "cross-job",
+                        "idempotency_key": "cross-job",
+                        "request_sha256": "e" * 64,
+                    },
+                ):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        connection.execute(insert_sql, values)
+                    connection.rollback()
+
+    def test_screening_and_extraction_schema_round_trips_from_prior_head(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "screening-schema.sqlite3"
+            config = migration.alembic_config(database_path)
+            command.upgrade(config, "0008_agent_observe_replan")
+
+            migration.ensure_database(database_path)
+            self.assertEqual(_revision(database_path), migration.single_head(config))
+            with sqlite3.connect(database_path) as connection:
+                source_unique_column_sets = {
+                    tuple(
+                        str(column[2])
+                        for column in connection.execute(f'PRAGMA index_info("{row[1]}")')
+                    )
+                    for row in connection.execute("PRAGMA index_list(sources)")
+                    if int(row[2]) == 1
+                }
+                self.assertIn(("project_id", "id"), source_unique_column_sets)
+                composite_foreign_key = [
+                    tuple(row[2:7])
+                    for row in connection.execute("PRAGMA foreign_key_list(screening_decisions)")
+                    if str(row[2]) == "sources"
+                ]
+                self.assertEqual(
+                    composite_foreign_key,
+                    [
+                        ("sources", "project_id", "project_id", "NO ACTION", "CASCADE"),
+                        ("sources", "source_id", "id", "NO ACTION", "CASCADE"),
+                    ],
+                )
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM extraction_columns").fetchone()[0],
+                    0,
+                )
+
+            command.downgrade(config, "0010_extraction_matrix")
+            self.assertEqual(_revision(database_path), "0010_extraction_matrix")
+            with sqlite3.connect(database_path) as connection:
+                self.assertIsNotNone(
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='extraction_cells'"
+                    ).fetchone()
+                )
+                unique_column_sets = {
+                    tuple(
+                        str(column[2])
+                        for column in connection.execute(f'PRAGMA index_info("{row[1]}")')
+                    )
+                    for row in connection.execute("PRAGMA index_list(sources)")
+                    if int(row[2]) == 1
+                }
+                self.assertIn(("project_id", "id"), unique_column_sets)
+
+            command.downgrade(config, "0009_screening_decisions")
+            self.assertEqual(_revision(database_path), "0009_screening_decisions")
+            with sqlite3.connect(database_path) as connection:
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='extraction_cells'"
+                    ).fetchone()
+                )
+
+    def test_extraction_repair_restores_stamped_0010_source_parent_key_without_data_loss(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "extraction-repair.sqlite3"
+            _create_unversioned_legacy_database(database_path)
+            config = migration.alembic_config(database_path)
+            migration.ensure_database(database_path)
+            command.downgrade(config, "0010_extraction_matrix")
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=OFF")
+                connection.execute(
+                    """
+                    CREATE TABLE sources_repair (
+                        id VARCHAR(36) NOT NULL PRIMARY KEY,
+                        project_id VARCHAR(36) NOT NULL,
+                        title VARCHAR(500) NOT NULL,
+                        source_kind VARCHAR(32) NOT NULL,
+                        authors JSON NOT NULL,
+                        doi VARCHAR(255), arxiv_id VARCHAR(100), local_path TEXT NOT NULL,
+                        publication_date VARCHAR(32), ingestion_status VARCHAR(32) NOT NULL,
+                        content_hash VARCHAR(64) NOT NULL, page_count INTEGER,
+                        created_at DATETIME NOT NULL,
+                        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                        CONSTRAINT uq_source_project_hash UNIQUE(project_id, content_hash)
+                    )
+                    """
+                )
+                connection.execute("INSERT INTO sources_repair SELECT * FROM sources")
+                connection.execute("DROP TABLE sources")
+                connection.execute("ALTER TABLE sources_repair RENAME TO sources")
+                connection.execute("CREATE INDEX ix_sources_project_id ON sources(project_id)")
+                connection.execute("CREATE INDEX ix_sources_content_hash ON sources(content_hash)")
+                connection.commit()
+                with self.assertRaisesRegex(sqlite3.OperationalError, "foreign key mismatch"):
+                    connection.execute("PRAGMA foreign_key_check").fetchall()
+
+            migration.ensure_database(database_path)
+            self.assertEqual(_revision(database_path), migration.single_head(config))
+            with sqlite3.connect(database_path) as connection:
+                source_unique_columns = {
+                    tuple(
+                        str(column[2])
+                        for column in connection.execute(f'PRAGMA index_info("{row[1]}")')
+                    )
+                    for row in connection.execute("PRAGMA index_list(sources)")
+                    if int(row[2]) == 1
+                }
+                self.assertIn(("project_id", "id"), source_unique_columns)
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM sources").fetchone()[0], 1
+                )
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM evidence_spans").fetchone()[0], 1
+                )
+                self.assertEqual(
+                    connection.execute("SELECT COUNT(*) FROM claim_evidence").fetchone()[0], 1
+                )
                 self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
     def test_goal_aware_analysis_schema_enforces_provenance_constraints(self) -> None:
@@ -689,9 +1291,7 @@ class DatabaseMigrationTest(unittest.TestCase):
                     for row in connection.execute("PRAGMA index_list(model_invocations)")
                 }
                 self.assertEqual(
-                    model_invocation_indexes[
-                        "uq_model_invocations_workflow_id_id_compat"
-                    ],
+                    model_invocation_indexes["uq_model_invocations_workflow_id_id_compat"],
                     1,
                 )
                 result_unique_columns = {
@@ -699,9 +1299,7 @@ class DatabaseMigrationTest(unittest.TestCase):
                         str(column[2])
                         for column in connection.execute(f'PRAGMA index_info("{row[1]}")')
                     )
-                    for row in connection.execute(
-                        "PRAGMA index_list(structured_analysis_results)"
-                    )
+                    for row in connection.execute("PRAGMA index_list(structured_analysis_results)")
                     if int(row[2]) == 1
                 }
                 self.assertTrue(
@@ -718,15 +1316,13 @@ class DatabaseMigrationTest(unittest.TestCase):
 
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
-                        "UPDATE analysis_intents SET code_sha256 = NULL "
-                        "WHERE id = 'intent-schema'"
+                        "UPDATE analysis_intents SET code_sha256 = NULL WHERE id = 'intent-schema'"
                     )
                 connection.rollback()
 
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.execute(
-                        "UPDATE analysis_specs SET spec_json = '[]' "
-                        "WHERE id = 'spec-schema'"
+                        "UPDATE analysis_specs SET spec_json = '[]' WHERE id = 'spec-schema'"
                     )
                 connection.rollback()
 
@@ -758,6 +1354,177 @@ class DatabaseMigrationTest(unittest.TestCase):
                         ),
                     )
                 connection.rollback()
+
+    def test_agent_loop_schema_and_run_attempt_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "agent-loop-schema.sqlite3"
+            migration.ensure_database(database_path)
+
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_goal_aware_analysis_fixture(
+                    connection,
+                    "agent-loop",
+                    include_result=False,
+                )
+                run = connection.execute(
+                    "SELECT attempt, previous_run_id FROM runs "
+                    "WHERE id = 'run-agent-loop-goal-aware'"
+                ).fetchone()
+                self.assertEqual(run, (1, None))
+                connection.commit()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        "UPDATE analysis_intents SET workflow_id = 'workflow-agent-loop', "
+                        "plan_step_id = 'execute-analysis', dataset_content_hash = ?, "
+                        "expected_outputs = '[]', timeout_seconds = 60, risk_level = 'high', "
+                        "repair_attempt = 0, previous_intent_id = id "
+                        "WHERE id = 'intent-agent-loop'",
+                        ("a" * 64,),
+                    )
+                connection.rollback()
+                connection.execute(
+                    "UPDATE analysis_intents SET workflow_id = 'workflow-agent-loop', "
+                    "plan_step_id = 'execute-analysis', dataset_content_hash = ?, "
+                    "expected_outputs = '[]', timeout_seconds = 60, risk_level = 'high', "
+                    "repair_attempt = 0, previous_intent_id = NULL "
+                    "WHERE id = 'intent-agent-loop'",
+                    ("a" * 64,),
+                )
+                connection.execute(
+                    "UPDATE analysis_intents SET previous_intent_id = NULL "
+                    "WHERE id = 'intent-agent-loop'"
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runs (
+                        id, task_id, analysis_intent_id, previous_run_id, attempt,
+                        input_artifacts, output_artifacts, token_usage, cost,
+                        status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "run-agent-loop-retry",
+                        "task-agent-loop",
+                        "intent-agent-loop",
+                        "run-agent-loop-goal-aware",
+                        2,
+                        "[]",
+                        "[]",
+                        "{}",
+                        0.0,
+                        "completed",
+                        "2026-07-16 00:01:00",
+                    ),
+                )
+                connection.commit()
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(
+                        """
+                        INSERT INTO runs (
+                            id, task_id, analysis_intent_id, previous_run_id, attempt,
+                            input_artifacts, output_artifacts, token_usage, cost,
+                            status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "run-agent-loop-invalid",
+                            "task-agent-loop",
+                            "intent-agent-loop",
+                            None,
+                            3,
+                            "[]",
+                            "[]",
+                            "{}",
+                            0.0,
+                            "completed",
+                            "2026-07-16 00:02:00",
+                        ),
+                    )
+                connection.rollback()
+
+                observation_columns = {
+                    str(row[1])
+                    for row in connection.execute("PRAGMA table_info(step_observations)")
+                }
+                self.assertTrue(
+                    {
+                        "source_job_id",
+                        "step_key",
+                        "attempt",
+                        "artifact_ids_json",
+                        "input_sha256",
+                        "output_sha256",
+                    }
+                    <= observation_columns
+                )
+                decision_columns = {
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(agent_decisions)")
+                }
+                self.assertTrue(
+                    {
+                        "expected_workflow_revision",
+                        "reason_code",
+                        "analysis_spec_diff_json",
+                        "proposed_analysis_spec_sha256",
+                    }
+                    <= decision_columns
+                )
+                job_sql = str(
+                    connection.execute(
+                        "SELECT sql FROM sqlite_master "
+                        "WHERE type = 'table' AND name = 'workflow_jobs'"
+                    ).fetchone()[0]
+                )
+                self.assertIn("observe-step", job_sql)
+                self.assertIn("decide-next-action", job_sql)
+                self.assertIn("apply-agent-decision", job_sql)
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+    def test_agent_loop_downgrade_refuses_repeated_run_lineage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "agent-loop-downgrade.sqlite3"
+            migration.ensure_database(database_path)
+            config = migration.alembic_config(database_path)
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
+            with sqlite3.connect(database_path) as connection:
+                connection.execute("PRAGMA foreign_keys=ON")
+                _insert_goal_aware_analysis_fixture(
+                    connection,
+                    "agent-loop-downgrade",
+                    include_result=False,
+                )
+                connection.execute(
+                    """
+                    INSERT INTO runs (
+                        id, task_id, analysis_intent_id, previous_run_id, attempt,
+                        input_artifacts, output_artifacts, token_usage, cost,
+                        status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "run-agent-loop-downgrade-retry",
+                        "task-agent-loop-downgrade",
+                        "intent-agent-loop-downgrade",
+                        "run-agent-loop-downgrade-goal-aware",
+                        2,
+                        "[]",
+                        "[]",
+                        "{}",
+                        0.0,
+                        "completed",
+                        "2026-07-16 00:01:00",
+                    ),
+                )
+                connection.commit()
+            before = _schema_snapshot(database_path)
+
+            with self.assertRaisesRegex(RuntimeError, "repeated analysis run lineage"):
+                command.downgrade(config, "0007_goal_aware_dataset_analysis")
+
+            self.assertEqual(_revision(database_path), head)
+            self.assertEqual(_schema_snapshot(database_path), before)
 
     def test_goal_aware_analysis_migration_round_trip_preserves_legacy_rows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -809,7 +1576,8 @@ class DatabaseMigrationTest(unittest.TestCase):
             database_path = Path(directory) / "goal-aware-downgrade.sqlite3"
             migration.ensure_database(database_path)
             config = migration.alembic_config(database_path)
-            head = migration.single_head(config)
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 _insert_goal_aware_analysis_fixture(connection, "downgrade")
@@ -833,7 +1601,8 @@ class DatabaseMigrationTest(unittest.TestCase):
             database_path = Path(directory) / "goal-aware-event-downgrade.sqlite3"
             migration.ensure_database(database_path)
             config = migration.alembic_config(database_path)
-            head = migration.single_head(config)
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 _insert_analysis_fixture(connection, "event-downgrade")
@@ -891,8 +1660,7 @@ class DatabaseMigrationTest(unittest.TestCase):
 
                 workflow_sql = str(
                     connection.execute(
-                        "SELECT sql FROM sqlite_master "
-                        "WHERE type = 'table' AND name = 'workflows'"
+                        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'workflows'"
                     ).fetchone()[0]
                 )
                 job_sql = str(
@@ -1413,8 +2181,7 @@ class DatabaseMigrationTest(unittest.TestCase):
                 connection.rollback()
                 self.assertIsNone(
                     connection.execute(
-                        "SELECT id FROM intent_decisions "
-                        "WHERE id = 'cross-workflow-decision'"
+                        "SELECT id FROM intent_decisions WHERE id = 'cross-workflow-decision'"
                     ).fetchone()
                 )
 
@@ -1432,37 +2199,30 @@ class DatabaseMigrationTest(unittest.TestCase):
                     ).fetchone()[0]
                 )
 
-                connection.execute(
-                    "DELETE FROM model_invocations WHERE id = 'router-invocation'"
-                )
+                connection.execute("DELETE FROM model_invocations WHERE id = 'router-invocation'")
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.commit()
                 connection.rollback()
                 self.assertEqual(
                     connection.execute(
-                        "SELECT COUNT(*) FROM model_invocations "
-                        "WHERE id = 'router-invocation'"
+                        "SELECT COUNT(*) FROM model_invocations WHERE id = 'router-invocation'"
                     ).fetchone()[0],
                     1,
                 )
                 self.assertEqual(
                     connection.execute(
-                        "SELECT COUNT(*) FROM intent_decisions "
-                        "WHERE id = 'intent-decision-1'"
+                        "SELECT COUNT(*) FROM intent_decisions WHERE id = 'intent-decision-1'"
                     ).fetchone()[0],
                     1,
                 )
 
-                connection.execute(
-                    "DELETE FROM intent_decisions WHERE id = 'intent-decision-1'"
-                )
+                connection.execute("DELETE FROM intent_decisions WHERE id = 'intent-decision-1'")
                 with self.assertRaises(sqlite3.IntegrityError):
                     connection.commit()
                 connection.rollback()
                 self.assertEqual(
                     connection.execute(
-                        "SELECT COUNT(*) FROM intent_decisions "
-                        "WHERE id = 'intent-decision-1'"
+                        "SELECT COUNT(*) FROM intent_decisions WHERE id = 'intent-decision-1'"
                     ).fetchone()[0],
                     1,
                 )
@@ -1503,6 +2263,7 @@ class DatabaseMigrationTest(unittest.TestCase):
             engine.dispose()
 
             with sqlite3.connect(database_path) as connection:
+
                 def foreign_keys(
                     table: str,
                 ) -> set[tuple[str, tuple[tuple[str, str], ...]]]:
@@ -1611,8 +2372,7 @@ class DatabaseMigrationTest(unittest.TestCase):
                 run_columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
                 self.assertIn("analysis_intent_id", run_columns)
                 job_columns = {
-                    str(row[1])
-                    for row in connection.execute("PRAGMA table_info(workflow_jobs)")
+                    str(row[1]) for row in connection.execute("PRAGMA table_info(workflow_jobs)")
                 }
                 self.assertIn("request_payload_sha256", job_columns)
 
@@ -1623,11 +2383,15 @@ class DatabaseMigrationTest(unittest.TestCase):
                 self.assertEqual(intent_indexes["ix_analysis_intents_task_id"], (0, 0))
                 self.assertEqual(intent_indexes["uq_analysis_intent_active_task"], (1, 1))
                 self.assertIn("ix_analysis_intents_workflow_step", intent_indexes)
-                run_indexes = {
-                    str(row[1]): (int(row[2]), int(row[4]))
+                run_unique_columns = {
+                    tuple(
+                        str(column[2])
+                        for column in connection.execute(f'PRAGMA index_info("{row[1]}")')
+                    )
                     for row in connection.execute("PRAGMA index_list(runs)")
+                    if int(row[2]) == 1
                 }
-                self.assertEqual(run_indexes["uq_run_analysis_intent"], (1, 1))
+                self.assertIn(("analysis_intent_id", "attempt"), run_unique_columns)
 
                 workflow_sql = str(
                     connection.execute(
@@ -1824,18 +2588,14 @@ class DatabaseMigrationTest(unittest.TestCase):
                 )
                 connection.commit()
 
-                connection.execute(
-                    "DELETE FROM tasks WHERE id = 'task-workflow-partial'"
-                )
+                connection.execute("DELETE FROM tasks WHERE id = 'task-workflow-partial'")
                 connection.commit()
                 remaining_workflow_intents = connection.execute(
                     "SELECT id FROM analysis_intents WHERE id IN (?, ?) ORDER BY id",
                     ("intent-workflow-partial", "intent-workflow-repair"),
                 ).fetchall()
                 self.assertEqual(remaining_workflow_intents, [])
-                self.assertEqual(
-                    connection.execute("PRAGMA foreign_key_check").fetchall(), []
-                )
+                self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
 
                 connection.execute(
                     """
@@ -2069,7 +2829,8 @@ class DatabaseMigrationTest(unittest.TestCase):
             database_path = Path(directory) / "autonomous-downgrade.sqlite3"
             migration.ensure_database(database_path)
             config = migration.alembic_config(database_path)
-            head = migration.single_head(config)
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 connection.execute(
@@ -2189,7 +2950,8 @@ class DatabaseMigrationTest(unittest.TestCase):
             database_path = Path(directory) / "dataset-downgrade.sqlite3"
             migration.ensure_database(database_path)
             config = migration.alembic_config(database_path)
-            head = migration.single_head(config)
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 _insert_analysis_fixture(connection, "downgrade")
@@ -2239,7 +3001,8 @@ class DatabaseMigrationTest(unittest.TestCase):
             database_path = Path(directory) / "intent-lineage-downgrade.sqlite3"
             migration.ensure_database(database_path)
             config = migration.alembic_config(database_path)
-            head = migration.single_head(config)
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 _insert_analysis_fixture(connection, "lineage")
@@ -2864,59 +3627,89 @@ class DatabaseMigrationTest(unittest.TestCase):
             database_path = Path(directory) / "approval-event.sqlite3"
             migration.ensure_database(database_path)
             config = migration.alembic_config(database_path)
-            head = migration.single_head(config)
-            engine = create_engine(
-                f"sqlite:///{database_path}",
-                connect_args={"check_same_thread": False},
-            )
-            with Session(engine) as session:
-                project = ProjectRecord(
-                    id="approval-event-project",
-                    title="Approval event project",
-                    description="",
-                    project_path="/tmp/approval-event-project",
-                    execution_mode="safe",
-                )
-                workflow = WorkflowRecord(
-                    id="approval-event-workflow",
-                    project_id=project.id,
-                    create_idempotency_key="approval-event-key",
-                    create_payload_sha256=content_sha256(
-                        create_payload.model_dump(
-                            mode="json",
-                            by_alias=True,
-                            exclude_none=True,
-                        )
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
+            project_id = "approval-event-project"
+            workflow_id = "approval-event-workflow"
+            now = utc_now()
+            with sqlite3.connect(database_path) as connection:
+                connection.execute(
+                    """
+                    INSERT INTO projects (
+                        id, title, description, project_path, research_domain,
+                        execution_mode, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        "Approval event project",
+                        "",
+                        "/tmp/approval-event-project",
+                        None,
+                        "safe",
+                        now,
+                        now,
                     ),
-                    workflow_type=create_payload.workflow_type,
-                    goal=goal,
-                    generation_mode="local-deterministic",
-                    status="waiting-plan-approval",
-                    row_version=1,
-                    event_sequence=1,
                 )
-                session.add_all([project, workflow])
-                session.flush()
-                session.add(
-                    EventRecord(
-                        id="approval-event",
-                        project_id=project.id,
-                        workflow_id=workflow.id,
-                        sequence=1,
-                        event_type="approval.requested",
-                        payload={
-                            "approvalId": "approval-id",
-                            "planId": "plan-id",
-                            "payloadSha256": "a" * 64,
-                            "riskLevel": "low",
-                            "reason": "Review the deterministic local research plan.",
-                            "affectedResources": [f"project:{project.id}"],
-                            "approvalSchemaVersion": "workflow-plan-approval-v2",
-                        },
-                    )
+                connection.execute(
+                    """
+                    INSERT INTO workflows (
+                        id, project_id, create_idempotency_key, create_payload_sha256,
+                        workflow_type, goal, status, row_version, event_sequence,
+                        generation_mode, creation_mode, selected_source_ids,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workflow_id,
+                        project_id,
+                        "approval-event-key",
+                        content_sha256(
+                            create_payload.model_dump(
+                                mode="json",
+                                by_alias=True,
+                                exclude_none=True,
+                            )
+                        ),
+                        create_payload.workflow_type,
+                        goal,
+                        "waiting-plan-approval",
+                        1,
+                        1,
+                        "local-deterministic",
+                        "fixed-workflow",
+                        "[]",
+                        now,
+                        now,
+                    ),
                 )
-                session.commit()
-            engine.dispose()
+                connection.execute(
+                    """
+                    INSERT INTO events (
+                        id, project_id, workflow_id, sequence, event_type, payload, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "approval-event",
+                        project_id,
+                        workflow_id,
+                        1,
+                        "approval.requested",
+                        json.dumps(
+                            {
+                                "approvalId": "approval-id",
+                                "planId": "plan-id",
+                                "payloadSha256": "a" * 64,
+                                "riskLevel": "low",
+                                "reason": "Review the deterministic local research plan.",
+                                "affectedResources": [f"project:{project_id}"],
+                                "approvalSchemaVersion": "workflow-plan-approval-v2",
+                            }
+                        ),
+                        now,
+                    ),
+                )
+                connection.commit()
             before = _schema_snapshot(database_path)
 
             with self.assertRaisesRegex(
@@ -2958,7 +3751,8 @@ class DatabaseMigrationTest(unittest.TestCase):
             database_path = Path(directory) / "remote.sqlite3"
             migration.ensure_database(database_path)
             config = migration.alembic_config(database_path)
-            head = migration.single_head(config)
+            command.downgrade(config, "0008_agent_observe_replan")
+            head = "0008_agent_observe_replan"
             with sqlite3.connect(database_path) as connection:
                 connection.execute("PRAGMA foreign_keys=ON")
                 connection.execute(

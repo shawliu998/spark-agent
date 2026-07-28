@@ -219,6 +219,61 @@ function pendingAgentSnapshot(
 }
 
 describe("WorkflowWorkspace", () => {
+  it("leads an empty workspace to project creation instead of a disabled composer", () => {
+    const onCreateProject = vi.fn();
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart={false}
+        projectReady={false}
+        serviceReady
+        projectTitle="Evidence review"
+        onCreateProject={onCreateProject}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Create a research project" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Research question")).not.toBeInTheDocument();
+    const createButton = screen.getByRole("button", { name: "Create project" });
+    fireEvent.submit(createButton.closest("form")!);
+    expect(onCreateProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes source import the next action before showing the research composer", () => {
+    const onImportPdfRequest = vi.fn();
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart={false}
+        projectReady
+        serviceReady
+        onImportPdfRequest={onImportPdfRequest}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Add the first source" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Research question")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Import PDF" }));
+    expect(onImportPdfRequest).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Import CSV" })).toBeEnabled();
+  });
+
   it("defaults to local Auto without preselecting a ready source", () => {
     render(
       <WorkflowWorkspace
@@ -235,19 +290,19 @@ describe("WorkflowWorkspace", () => {
 
     expect(
       screen.getByRole("button", {
-        name: /^Auto Choose local or explicitly approved/i,
+        name: /^Recommended Let the research question/i,
       }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("Workflow type")).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Auto · Local routing/i }),
+      screen.getByRole("button", { name: /Local workflow/i }),
     ).toHaveAttribute("aria-pressed", "true");
     const source = screen.getByRole("checkbox", { name: "Use Ready paper" });
     expect(source).not.toBeChecked();
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Research question"), {
       target: { value: "Compare this paper with the available evidence" },
     });
-    const start = screen.getByRole("button", { name: "Start research" });
+    const start = screen.getByRole("button", { name: "Create review plan" });
     expect(start).toBeDisabled();
     fireEvent.click(source);
     expect(start).toBeEnabled();
@@ -317,11 +372,11 @@ describe("WorkflowWorkspace", () => {
     );
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Use Ready paper" }));
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Research question"), {
       target: { value: "Route this research goal" },
     });
     fireEvent.click(
-      screen.getByRole("button", { name: /Auto · Model-assisted routing/i }),
+      screen.getByRole("button", { name: /Model-assisted workflow/i }),
     );
 
     expect(screen.getByText("openai-compatible")).toBeInTheDocument();
@@ -336,7 +391,7 @@ describe("WorkflowWorkspace", () => {
       name: /I approve sending this goal and the listed source metadata/i,
     });
     fireEvent.click(metadataOnlyApproval);
-    expect(screen.getByRole("button", { name: "Start research" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Create review plan" })).toBeEnabled();
 
     fireEvent.click(
       screen.getByRole("checkbox", { name: "Use Ready dataset" }),
@@ -356,7 +411,7 @@ describe("WorkflowWorkspace", () => {
       screen.getByText(/source-ready-dataset · dataset · ready/i),
     ).toBeInTheDocument();
 
-    const start = screen.getByRole("button", { name: "Start research" });
+    const start = screen.getByRole("button", { name: "Create review plan" });
     expect(start).toBeDisabled();
     const profileApproval = screen.getByRole("checkbox", {
       name: /I approve sending this goal, the listed source metadata, and the bounded Dataset Profile fields/i,
@@ -373,31 +428,47 @@ describe("WorkflowWorkspace", () => {
     });
   });
 
-  it("requires a ready source before starting Auto research", () => {
+  it("shows source preparation instead of exposing a disabled composer", () => {
     render(
       <WorkflowWorkspace
         {...handlers}
         snapshot={null}
-        sources={[]}
+        sources={[{ ...READY_PDF, ingestionStatus: "processing" }]}
         loading={false}
         mutating={false}
         connection="idle"
         error={null}
-        canStart
+        canStart={false}
       />,
     );
 
-    expect(
-      screen.getByText(/Choose at least one ready PDF or CSV source/i),
-    ).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
-      target: { value: "Help me investigate this research question" },
-    });
-    const start = screen.getByRole("button", { name: "Start research" });
-    expect(start).toBeDisabled();
-    fireEvent.click(start);
-
+    expect(screen.getByText("Preparing your sources")).toBeInTheDocument();
+    expect(screen.getByText("Ready paper")).toBeInTheDocument();
+    expect(screen.getByText("processing")).toBeInTheDocument();
+    expect(screen.getByText("Sources (1)")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Research question")).not.toBeInTheDocument();
     expect(handlers.onCreate).not.toHaveBeenCalled();
+  });
+
+  it("keeps failed imports local and offers a truthful recovery action", () => {
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={null}
+        sources={[{ ...READY_PDF, ingestionStatus: "failed" }]}
+        loading={false}
+        mutating={false}
+        connection="idle"
+        error={null}
+        canStart={false}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Add a usable source" })).toBeInTheDocument();
+    expect(screen.getByText(/The originals remain local/)).toBeInTheDocument();
+    expect(screen.getByText("failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Import PDF" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Import CSV" })).toBeEnabled();
   });
 
   it("renders routing, durable clarification, and unsupported agent states", () => {
@@ -470,6 +541,60 @@ describe("WorkflowWorkspace", () => {
         "Spark cannot execute a mixed literature-and-dataset workflow yet.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("shows a scientific clarification emitted during dataset planning", () => {
+    const base = planSnapshot();
+    const planningSnapshot: LiteratureResearchWorkflowSnapshot = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        status: "planning",
+      },
+      plan: null,
+      pendingApprovals: [],
+      allowedActions: ["cancel"],
+    };
+    const request: InteractionRequest = {
+      id: "interaction-analysis-objective",
+      workflowId: "workflow-1",
+      stepId: "select-analysis-method",
+      requestType: "single-choice",
+      question:
+        "Should this analysis describe columns, compare two independent groups, or examine a correlation?",
+      options: [
+        { value: "descriptive", label: "descriptive" },
+        { value: "two-group-comparison", label: "two-group-comparison" },
+        { value: "correlation", label: "correlation" },
+      ],
+      required: true,
+      status: "pending",
+      responseSchema: { type: "string" },
+      workflowRevision: 2,
+      latestResponse: null,
+      createdAt: "2026-07-18T07:16:33Z",
+      answeredAt: null,
+    };
+
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={planningSnapshot}
+        interactions={[request]}
+        sources={[READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+      />,
+    );
+
+    expect(screen.getByText("Clarification required")).toBeInTheDocument();
+    expect(screen.getByText(request.question)).toBeInTheDocument();
+    expect(
+      screen.queryByText(/preparing a typed four-step plan/i),
+    ).not.toBeInTheDocument();
   });
 
   it("offers an answered clarification for revision before plan approval", () => {
@@ -591,6 +716,82 @@ describe("WorkflowWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not offer retry or resume when the canonical execution outcome is unknown", () => {
+    const base = pendingAgentSnapshot("routing");
+    const unknown: AgentResearchWorkflowSnapshot = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        status: "failed",
+        statusReason: {
+          code: "execution-outcome-unknown",
+          userMessage: "A stale message must not authorize recovery.",
+        },
+      },
+      allowedActions: ["retry", "resume", "cancel"],
+    };
+
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={unknown}
+        sources={[READY_PDF]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Check Activity" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Check Activity" }));
+    expect(handlers.onOpenActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "analysis-execution-rejected",
+    "analysis-repair-not-safe",
+    "analysis-repair-limit-exceeded",
+    "analysis-compiled-execution-failed",
+    "analysis-review-required",
+  ])("routes %s through resume to create a revised immutable plan", (code) => {
+    const base = pendingAgentSnapshot("routing");
+    const rejected: AgentResearchWorkflowSnapshot = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        status: "failed",
+        statusReason: {
+          code,
+          userMessage: "Ignored in favor of canonical repair guidance.",
+        },
+      },
+      allowedActions: ["resume"],
+    };
+
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={rejected}
+        sources={[READY_PDF]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Create revised plan" })).toBeInTheDocument();
+    expect(screen.getByText(/new immutable plan, re-plan approval, and a new exact Python approval/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create revised plan" }));
+    expect(handlers.onResume).toHaveBeenCalledTimes(1);
+    expect(handlers.onRetry).not.toHaveBeenCalled();
+  });
+
   it("defaults to local generation and requires explicit approval before sending a goal remotely", async () => {
     render(
       <WorkflowWorkspace
@@ -605,11 +806,11 @@ describe("WorkflowWorkspace", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Choose workflow/i }));
     expect(
       screen.getByRole("button", { name: /Local deterministic/i }),
     ).toHaveAttribute("aria-pressed", "true");
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Research question"), {
       target: { value: "Compare the imported studies" },
     });
     fireEvent.click(
@@ -632,7 +833,7 @@ describe("WorkflowWorkspace", () => {
     );
     expect(start).toBeEnabled();
 
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Research question"), {
       target: { value: "Compare the imported studies and private notes" },
     });
     expect(start).toBeDisabled();
@@ -688,7 +889,25 @@ describe("WorkflowWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Local only.")).toBeInTheDocument();
     expect(screen.getByText("local deterministic")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Approve & run" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Approve plan" })).toBeEnabled();
+  });
+
+  it("does not render plan approval for a stale or missing envelope", () => {
+    const snapshot = planSnapshot();
+    snapshot.pendingApprovals = [];
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={snapshot}
+        sources={[]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Approve plan" })).not.toBeInTheDocument();
   });
 
   it("revokes goal disclosure approval when the remote destination changes", () => {
@@ -704,8 +923,8 @@ describe("WorkflowWorkspace", () => {
         canStart
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /Advanced/i }));
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.click(screen.getByRole("button", { name: /Choose workflow/i }));
+    fireEvent.change(screen.getByLabelText("Research question"), {
       target: { value: "Compare the imported studies" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Model-assisted remote/i }));
@@ -825,7 +1044,7 @@ describe("WorkflowWorkspace", () => {
         `source:paper-1:sha256:${"f".repeat(64)}:verified-passages:remote`,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("medium risk")).toBeInTheDocument();
+    expect(screen.getAllByText("Medium risk")).toHaveLength(1);
     expect(
       screen.getByText(/Approving this plan permits only verified passages/i),
     ).toBeInTheDocument();
@@ -924,13 +1143,15 @@ describe("WorkflowWorkspace", () => {
     );
     render(<WorkflowReviewSummary review={snapshot.latestReview} />);
 
-    expect(screen.getByText("supported")).toBeInTheDocument();
+    expect(screen.getAllByText("Supported")).toHaveLength(2);
     expect(screen.getByText("Evidence-integrity review passed")).toBeInTheDocument();
     expect(screen.getByText(/Frozen result SHA-256/i)).toBeInTheDocument();
     expect(screen.getByText(/does not establish the scientific correctness/i)).toBeInTheDocument();
     expect(screen.queryByText(/73%/)).not.toBeInTheDocument();
     expect(screen.queryByText("Changed live title")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Frozen imported study, page 4/i }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: /Frozen imported study, page 4/i })[0],
+    );
     expect(handlers.onSelectEvidence).toHaveBeenCalledWith(
       expect.objectContaining({ evidenceId: "evidence-1" }),
     );
@@ -974,7 +1195,7 @@ describe("WorkflowWorkspace", () => {
     );
 
     expect(screen.getByText("Provisional evidence map — review pending")).toBeInTheDocument();
-    expect(screen.getByText("pending review")).toBeInTheDocument();
+    expect(screen.getByText("Pending review")).toBeInTheDocument();
     expect(screen.getByText(/Unfrozen result/i)).toBeInTheDocument();
     expect(screen.queryByText("Evidence-integrity review passed")).not.toBeInTheDocument();
   });

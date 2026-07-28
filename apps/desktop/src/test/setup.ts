@@ -1,5 +1,10 @@
 import "@testing-library/jest-dom/vitest";
+import { configure } from "@testing-library/react";
 import "@/i18n";
+
+// Route modules are intentionally loaded on demand. Give integration tests
+// enough headroom when Vitest is transforming many lazy modules in parallel.
+configure({ asyncUtilTimeout: 5_000 });
 
 // DOM stubs — only in a browser-like (jsdom) environment. The node-env tests
 // (e.g. the OpenCode integration test) skip these.

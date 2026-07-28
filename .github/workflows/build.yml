@@ -19,12 +19,12 @@ jobs:
   preflight:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
 
@@ -32,10 +32,67 @@ jobs:
         shell: bash
         run: bash scripts/quality/check-release-assets.sh --version-only
 
-  build:
+      - name: Verify release-gate sources are tracked
+        shell: bash
+        run: bash scripts/quality/check-release-assets.sh --tracked-release-gate
+
+      - name: Test Science supply-chain fixtures
+        shell: bash
+        run: |
+          bash scripts/quality/check-release-assets.sh --science-supply-chain-static
+          python3 scripts/release/science-sbom.py fixtures --root .
+
+  build-science-images:
     needs: preflight
-    permissions:
-      contents: write
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            docker_platform: linux/arm64
+            image_arch: arm64
+          - target: x86_64-apple-darwin
+            docker_platform: linux/amd64
+            image_arch: amd64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+        with:
+          platforms: arm64,amd64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build and verify offline Science resources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bundle="$RUNNER_TEMP/science-${{ matrix.target }}"
+          mkdir -p "$bundle"
+          bash scripts/release/build-science-images.sh \
+            --platform "${{ matrix.docker_platform }}" \
+            --output "$bundle/runtime"
+          python3 scripts/release/science-sbom.py verify \
+            --root . \
+            --runtime-dir "$bundle/runtime" \
+            --sbom-dir "$bundle/science-core-sbom" \
+            --arch "${{ matrix.image_arch }}"
+
+      - name: Upload offline Science resources
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: spark-science-runtime-${{ matrix.target }}
+          path: ${{ runner.temp }}/science-${{ matrix.target }}/
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    needs: [preflight, build-science-images]
     strategy:
       fail-fast: false
       matrix:
@@ -50,9 +107,39 @@ jobs:
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      - name: Download matching offline Science resources
+        if: startsWith(matrix.platform, 'macos')
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: spark-science-runtime-${{ matrix.target }}
+          path: science-runtime-bundle
+
+      - name: Verify matching offline Science resources
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) image_arch=arm64 ;;
+            x86_64-apple-darwin) image_arch=amd64 ;;
+            *) echo "unsupported macOS Science target" >&2; exit 1 ;;
+          esac
+          entries=()
+          while IFS= read -r entry; do entries+=("$entry"); done < <(
+            find science-runtime-bundle -mindepth 1 -maxdepth 1 -print | LC_ALL=C sort
+          )
+          [[ ${#entries[@]} -eq 2 ]]
+          [[ -d science-runtime-bundle/runtime && ! -L science-runtime-bundle/runtime ]]
+          [[ -d science-runtime-bundle/science-core-sbom && ! -L science-runtime-bundle/science-core-sbom ]]
+          python3 scripts/release/science-sbom.py verify \
+            --root . \
+            --runtime-dir science-runtime-bundle/runtime \
+            --sbom-dir science-runtime-bundle/science-core-sbom \
+            --arch "$image_arch"
 
       - name: Install Linux system dependencies
         if: startsWith(matrix.platform, 'ubuntu')
@@ -63,16 +150,16 @@ jobs:
             librsvg2-dev
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4   # version comes from package.json "packageManager"
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
 
       - name: Install Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: pnpm
 
       - name: Install Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
         with:
           toolchain: stable
           target: ${{ matrix.target }}
@@ -80,7 +167,7 @@ jobs:
           rustflags: ""
 
       - name: Cache cargo
-        uses: swatinem/rust-cache@v2
+        uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: apps/desktop/src-tauri
 
@@ -88,18 +175,22 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Fetch bundled OpenCode sidecar
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
         shell: bash
         run: bash scripts/dev/fetch-opencode.sh ${{ matrix.target }}
 
       - name: Fetch bundled ai4s-skills pack
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
         shell: bash
         run: bash scripts/dev/fetch-skills.sh
 
       - name: Fetch bundled uv sidecar
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
         shell: bash
         run: bash scripts/dev/fetch-uv.sh ${{ matrix.target }}
 
       - name: Verify release version and asset integrity policy
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
         shell: bash
         env:
           # Git for Windows otherwise emulates `ln -s` by copying directories,
@@ -107,50 +198,53 @@ jobs:
           MSYS: winsymlinks:nativestrict
         run: pnpm test:release-assets
 
+      - name: Build and verify macOS release bundle
+        id: macos_release
+        if: startsWith(matrix.platform, 'macos')
+        shell: bash
+        run: bash scripts/release/build-macos.sh --target ${{ matrix.target }} --science-runtime-bundle "$PWD/science-runtime-bundle"
+
       - name: Build the app (Tauri)
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         with:
           projectPath: apps/desktop
           # Linux: deb+rpm only. AppImage is off because linuxdeploy runs ldd
           # on every bundled ELF and ldd exits 1 on the Bun-built opencode
           # sidecar, aborting the whole bundle (tauri-apps/tauri#8929).
           args: --target ${{ matrix.target }} ${{ startsWith(matrix.platform, 'ubuntu') && '--bundles deb,rpm' || '' }}
-          # On a v* tag push, attach installers to a draft GitHub Release.
-          # Empty tagName (workflow_dispatch) skips release creation.
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-          releaseName: ${{ github.ref_type == 'tag' && format('Spark Agent {0}', github.ref_name) || '' }}
-          releaseDraft: true
-          # Standing install/first-launch notes — every draft is born with these
-          # (the builds are unsigned/un-notarized, so users must clear Gatekeeper /
-          # SmartScreen once). Prepend the per-version changelog before publishing.
-          releaseBody: |
-            ## ⚠️ Install & first launch — unsigned builds
 
-            These installers are **not code-signed or notarized**, so your OS warns on first launch. This is expected; clear it once:
+      - name: Verify exact installers for this target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bundle="apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          files=()
+          if [[ "${{ matrix.platform }}" == macos-* ]]; then
+            while IFS= read -r file; do files+=("$file"); done < <(
+              find "${{ steps.macos_release.outputs.artifact_dir }}" -maxdepth 1 -type f -name '*.dmg' -print | LC_ALL=C sort
+            )
+            [[ ${#files[@]} -eq 1 ]]
+          elif [[ "${{ matrix.platform }}" == windows-* ]]; then
+            while IFS= read -r file; do files+=("$file"); done < <(
+              find "$bundle" -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -print | LC_ALL=C sort
+            )
+            [[ ${#files[@]} -eq 2 && "${files[*]}" == *.exe* && "${files[*]}" == *.msi* ]]
+          else
+            while IFS= read -r file; do files+=("$file"); done < <(
+              find "$bundle" -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) -print | LC_ALL=C sort
+            )
+            [[ ${#files[@]} -eq 2 && "${files[*]}" == *.deb* && "${files[*]}" == *.rpm* ]]
+          fi
 
-            **macOS** — Apple Silicon: `…_aarch64.dmg` · Intel: `…_x64.dmg` (requires macOS 13+)
-            1. Open the DMG and drag **Spark Agent** into Applications.
-            2. If you see *"… is damaged and can't be opened"* or *"unidentified developer"*, clear the quarantine attribute in Terminal, then open normally:
-               ```
-               xattr -cr "/Applications/Spark Agent.app"
-               ```
-
-            **Windows** — `…_x64-setup.exe` or `…_x64_en-US.msi`
-            - SmartScreen shows *"Windows protected your PC"* → **More info** → **Run anyway**.
-
-            **Linux** — `.deb` / `.rpm`
-            - `sudo apt install ./…_amd64.deb`  or  `sudo rpm -i …x86_64.rpm`
-
-            > **No in-app auto-update** — download new versions from this Releases page. (The `.app.tar.gz` assets are build artifacts, not an update channel.)
-
-            ---
-
-            <!-- Prepend this release's changelog above this line before publishing. -->
+      - name: Test macOS release trust gate
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: pnpm test:macos-release-gate
 
       - name: Upload installers
-        uses: actions/upload-artifact@v4
+        if: ${{ !startsWith(matrix.platform, 'macos') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: spark-agent-${{ matrix.target }}
           path: |
@@ -160,4 +254,59 @@ jobs:
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.rpm
             apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
-          if-no-files-found: warn
+          if-no-files-found: error
+
+      - name: Upload macOS installers
+        if: startsWith(matrix.platform, 'macos')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: spark-agent-${{ matrix.target }}
+          path: |
+            ${{ steps.macos_release.outputs.dmg_path }}
+          if-no-files-found: error
+
+  finalize-release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: release-artifacts
+          pattern: spark-agent-*
+          merge-multiple: false
+      - name: Verify release artifact contract and upload draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          declare -A expected=(
+            [aarch64-apple-darwin]='dmg:1'
+            [x86_64-apple-darwin]='dmg:1'
+            [x86_64-pc-windows-msvc]='exe:1 msi:1'
+            [x86_64-unknown-linux-gnu]='deb:1 rpm:1'
+          )
+          assets=()
+          for target in "${!expected[@]}"; do
+            dir="release-artifacts/spark-agent-$target"
+            [[ -d "$dir" && ! -L "$dir" ]] || { echo "missing artifact directory: $dir" >&2; exit 1; }
+            mapfile -t files < <(find "$dir" -type f -print | LC_ALL=C sort)
+            expected_count=0
+            for spec in ${expected[$target]}; do expected_count=$((expected_count + ${spec#*:})); done
+            [[ ${#files[@]} -eq $expected_count ]] || { echo "unexpected artifact count for $target" >&2; exit 1; }
+            for spec in ${expected[$target]}; do
+              ext="${spec%%:*}"; required="${spec#*:}"
+              actual=0
+              for file in "${files[@]}"; do [[ "$file" == *."$ext" ]] && actual=$((actual + 1)); done
+              [[ $actual -eq $required ]] || { echo "unexpected .$ext count for $target" >&2; exit 1; }
+            done
+            assets+=("${files[@]}")
+          done
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "Spark Agent $TAG" --notes $'## Install & first launch — unsigned builds\n\nThese installers are **not code-signed or notarized**. Clear Gatekeeper/SmartScreen once if prompted.\n\n**macOS:** open the DMG and drag Spark Agent into Applications; if needed run `xattr -cr "/Applications/Spark Agent.app"`.\n\n**Windows:** choose **More info** → **Run anyway** in SmartScreen.\n\n**Linux:** install the `.deb` or `.rpm` package.\n\nNo in-app auto-update is provided.'
+          fi
+          gh release upload "$TAG" "${assets[@]}" --clobber

@@ -583,9 +583,10 @@ def _csv_value_matches(actual: str, expected: int | float | str | None) -> bool:
         return actual == str(expected)
     if isinstance(expected, int):
         try:
-            return int(actual) == expected and float(actual).is_integer()
+            value = float(actual)
         except ValueError:
             return False
+        return math.isfinite(value) and value.is_integer() and value == expected
     if isinstance(expected, float):
         try:
             value = float(actual)

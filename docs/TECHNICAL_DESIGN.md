@@ -1,5 +1,10 @@
 # Spark Agent Desktop — Technical Design
 
+> The current agent-native delivery plan, version gates, data boundaries, and
+> controlled skill-learning design are defined in
+> [`AGENT_NATIVE_ROADMAP.md`](./AGENT_NATIVE_ROADMAP.md). This document retains the
+> broader system design and historical target architecture.
+
 > **Implementation status (internal MVP, 2026-07-14).** The Tauri/React desktop,
 > isolated OpenCode agent shell, science-core (FastAPI/SQLite/PaperQA), and
 > no-network Jupyter science-runtime are implemented. science-core is now the

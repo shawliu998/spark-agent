@@ -119,12 +119,17 @@ async def test_router_accepts_each_whitelisted_intent(
 
     result = await route_intent("Review the selected research inputs.", sources, gateway)
 
-    assert result.decision.intent == intent
-    assert result.decision.proposed_workflow_type == (
-        intent
-        if intent in {"literature-synthesis", "dataset-analysis", "mixed-research"}
-        else None
+    expected_intent = (
+        "clarification-required" if intent == "mixed-research" else intent
     )
+    assert result.decision.intent == expected_intent
+    assert result.decision.proposed_workflow_type == (
+        intent if intent in {"literature-synthesis", "dataset-analysis"} else None
+    )
+    if intent == "mixed-research":
+        assert result.decision.missing_inputs == [
+            "select-supported-single-workflow"
+        ]
     assert result.parse_result == "valid"
     assert result.used_model is True
     assert result.model_used == "test-router-model"
@@ -324,6 +329,35 @@ def test_fallback_honors_latest_compatible_single_choice_answer() -> None:
 
     assert decision.intent == "dataset-analysis"
     assert decision.selected_source_ids == ["data-1"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_workflow_choice_bypasses_model_rerouting() -> None:
+    sources = [source("paper-1", "pdf"), source("data-1", "dataset")]
+    gateway = FakeGateway(model_decision("mixed-research", ["paper-1", "data-1"]))
+
+    result = await route_intent(
+        "Compare literature claims with the observed dataset outcomes.",
+        sources,
+        gateway,
+        answered_context=[
+            {
+                "requestType": "single-choice",
+                "options": [
+                    {"value": "literature-synthesis"},
+                    {"value": "dataset-analysis"},
+                ],
+                "response": "dataset-analysis",
+            }
+        ],
+    )
+
+    assert result.decision.intent == "dataset-analysis"
+    assert result.decision.selected_source_ids == ["data-1"]
+    assert result.parse_result == "deterministic-capability-guard"
+    assert result.validation_errors == ("explicit-user-workflow-choice",)
+    assert result.used_model is False
+    assert gateway.calls == []
 
 
 @pytest.mark.asyncio

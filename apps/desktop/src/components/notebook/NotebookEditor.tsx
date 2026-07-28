@@ -249,7 +249,7 @@ export function NotebookEditor({
         <PaneTitlebarInset />
         {onBack && (
           <button
-            className="text-text hover:opacity-60"
+            className="flex h-11 w-11 shrink-0 items-center justify-center text-text hover:opacity-60"
             aria-label={t("notebooks.editor.backAria")}
             onClick={onBack}
           >
@@ -279,7 +279,7 @@ export function NotebookEditor({
         <span className="hidden shrink-0 text-xs text-muted xl:inline">{t("notebooks.editor.shortcutHint")}</span>
         {isTauri && jupyterInstalled && (
           <button
-            className="flex items-center gap-1 text-text hover:opacity-60 disabled:opacity-40"
+            className="flex h-11 min-w-11 items-center justify-center gap-1 text-text hover:opacity-60 disabled:opacity-40"
             aria-label={t("notebooks.editor.openJupyterLabAria")}
             title={t("notebooks.openJupyterLabTitle")}
             disabled={openingLab}
@@ -289,7 +289,10 @@ export function NotebookEditor({
           </button>
         )}
         <button
-          className={cn(showHistory ? "text-accent" : "text-text hover:opacity-60")}
+          className={cn(
+            "flex h-11 w-11 items-center justify-center",
+            showHistory ? "text-accent" : "text-text hover:opacity-60",
+          )}
           aria-label={t("notebooks.editor.historyAria")}
           title={t("notebooks.editor.historyTitle")}
           aria-pressed={showHistory}
@@ -298,7 +301,7 @@ export function NotebookEditor({
           <History size={14} strokeWidth={1.5} />
         </button>
         <button
-          className="text-text hover:opacity-60"
+          className="flex h-11 w-11 items-center justify-center text-text hover:opacity-60"
           aria-label={t("notebooks.editor.reloadAria")}
           title={t("notebooks.editor.reloadTitle")}
           onClick={() => void load()}
@@ -308,7 +311,7 @@ export function NotebookEditor({
         {controls}
         {onClose && (
           <button
-            className="text-text hover:opacity-60"
+            className="flex h-11 w-11 items-center justify-center text-text hover:opacity-60"
             aria-label={t("notebooks.editor.closeAria")}
             onClick={onClose}
           >
@@ -340,7 +343,7 @@ export function NotebookEditor({
                     // Always visible while running (not hover-gated): a hung
                     // cell must offer a way out without restarting the app.
                     <button
-                      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-error hover:bg-surface-2"
+                      className="flex h-11 min-w-11 items-center justify-center gap-1 rounded px-2 text-xs text-error hover:bg-surface-2"
                       aria-label={`Stop cell ${cell.index}`}
                       title={t("notebooks.editor.stopCellTitle")}
                       onClick={() => void stop()}
@@ -350,7 +353,7 @@ export function NotebookEditor({
                     </button>
                   ) : (
                     <button
-                      className="hidden items-center gap-1 rounded px-1.5 py-0.5 text-xs hover:bg-surface-2 hover:text-text group-hover:flex"
+                      className="pointer-events-none flex h-11 min-w-11 items-center justify-center gap-1 rounded px-2 text-xs opacity-0 transition-opacity hover:bg-surface-2 hover:text-text focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
                       aria-label={`Run cell ${cell.index}`}
                       onClick={() => void run(cell)}
                       disabled={running !== null}
@@ -360,7 +363,7 @@ export function NotebookEditor({
                     </button>
                   ))}
                 <button
-                  className="hidden rounded px-1 py-0.5 hover:bg-surface-2 hover:text-error group-hover:block"
+                  className="pointer-events-none flex h-11 w-11 items-center justify-center rounded opacity-0 transition-opacity hover:bg-surface-2 hover:text-error focus-visible:pointer-events-auto focus-visible:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
                   aria-label={`Delete cell ${cell.index}`}
                   onClick={() => removeCell(cell.index)}
                 >
@@ -395,7 +398,7 @@ export function NotebookEditor({
           ))}
           {cells && (
             <button
-              className="flex items-center gap-1.5 rounded-input border border-dashed border-border px-3 py-1.5 text-xs text-muted hover:bg-surface-2 hover:text-text"
+              className="flex min-h-11 items-center gap-1.5 rounded-input border border-dashed border-border px-3 py-2 text-xs text-muted hover:bg-surface-2 hover:text-text"
               onClick={addCell}
             >
               <Plus size={12} /> {t("notebooks.editor.addCellLabel")}

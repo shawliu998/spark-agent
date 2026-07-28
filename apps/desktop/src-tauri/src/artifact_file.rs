@@ -610,6 +610,29 @@ pub async fn save_text_file(
     Ok(Some(path.to_string_lossy().to_string()))
 }
 
+/// Save binary output through the same native "Save As" flow used for text.
+/// The frontend supplies an explicit byte array so no base64 decoder or new
+/// dependency is required in the desktop shell.
+#[tauri::command]
+pub async fn save_binary_file(
+    app: AppHandle,
+    filename: String,
+    content: Vec<u8>,
+) -> Result<Option<String>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(choice) = app
+        .dialog()
+        .file()
+        .set_file_name(&filename)
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+    let path = choice.into_path().map_err(|e| e.to_string())?;
+    std::fs::write(&path, content).map_err(|e| format!("write failed: {e}"))?;
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
 /// Minimal std-only base64 (avoids adding a dependency).
 fn base64_encode(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

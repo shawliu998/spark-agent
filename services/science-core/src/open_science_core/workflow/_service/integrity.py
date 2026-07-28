@@ -9,12 +9,27 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...models import ApprovalRecord, EventRecord, PlanRecord, TaskRecord, WorkflowRecord
+from ...models import (
+    ApprovalRecord,
+    DiscoverySpecRecord,
+    EventRecord,
+    PlanRecord,
+    TaskRecord,
+    WorkflowRecord,
+)
+from ..discovery_schemas import (
+    DISCOVERY_PLAN_APPROVAL_REASON,
+    DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
+    DiscoverySpec,
+    discovery_approval_resources,
+    discovery_sha256,
+)
 from ..schemas import (
     AUTONOMOUS_REMOTE_DATA_CATEGORIES,
     DatasetAnalysisPlanSpec,
     ExecuteAnalysisPlanStep,
     InspectSourcesInput,
+    PaperDiscoveryPlanSpec,
     PlanSpec,
     ResearchPlanSpec,
     ResearchWorkflowCreateIn,
@@ -66,6 +81,7 @@ TASK_PERMISSIONS_BY_TYPE: dict[str, list[str]] = {
     "prepare-analysis": ["dataset-profile:read", "analysis-intent:write"],
     "python-data-analysis": ["dataset:read", "python:execute", "run-artifacts:write"],
     "collect-artifacts": ["run-artifacts:read"],
+    "paper-discovery": ["remote-paper-search"],
 }
 
 
@@ -123,7 +139,11 @@ def plan_approval_hash(
         "schemaVersion": schema_version,
         "workflowId": plan.workflow_id,
     }
-    if schema_version in {"workflow-plan-approval-v2", "workflow-plan-approval-v3"}:
+    if schema_version in {
+        "workflow-plan-approval-v2",
+        "workflow-plan-approval-v3",
+        DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
+    }:
         if workflow_goal is None or risk_level is None or reason is None:
             raise ValueError(
                 "workflow_goal, risk_level, and reason are required for a v2 approval hash"
@@ -169,6 +189,55 @@ def expected_plan_approval_semantics(
     workflow: WorkflowRecord,
     plan: PlanRecord,
 ) -> tuple[str, str, list[str]]:
+    if plan.generator == "paper-discovery-v1":
+        try:
+            plan_spec = PaperDiscoveryPlanSpec.model_validate(plan.spec_json)
+            discovery_record = session.get(
+                DiscoverySpecRecord,
+                plan_spec.discovery_spec_id,
+            )
+            if discovery_record is None:
+                raise ValueError("missing discovery specification")
+            discovery_spec = DiscoverySpec.model_validate(discovery_record.spec_json)
+            from ..discovery_adapter import discovery_plan_spec
+
+            expected_plan = discovery_plan_spec(discovery_record, discovery_spec)
+        except (ValidationError, ValueError):
+            raise WorkflowConflict(
+                "discovery-plan-approval-invalid",
+                "The discovery plan no longer has a valid immutable specification.",
+            ) from None
+        expected_spec_status = (
+            "approved" if plan.status == "approved" else "pending-approval"
+        )
+        if (
+            workflow.creation_mode != "autonomous"
+            or workflow.workflow_type != "literature-synthesis"
+            or workflow.generation_mode != "local-deterministic"
+            or discovery_record.workflow_id != workflow.id
+            or discovery_record.revision != plan_spec.discovery_spec_revision
+            or discovery_record.spec_sha256 != plan_spec.discovery_spec_sha256
+            or discovery_sha256(discovery_spec) != discovery_record.spec_sha256
+            or discovery_record.status != expected_spec_status
+            or plan_spec.goal != workflow.goal
+            or plan.spec_json != expected_plan
+            or plan.spec_sha256 != content_sha256(expected_plan)
+        ):
+            raise WorkflowConflict(
+                "discovery-plan-approval-invalid",
+                "The discovery plan, specification, and workflow scope no longer match.",
+            )
+        return (
+            "medium",
+            DISCOVERY_PLAN_APPROVAL_REASON,
+            discovery_approval_resources(
+                project_id=workflow.project_id,
+                spec_id=discovery_record.id,
+                revision=discovery_record.revision,
+                spec_sha256=discovery_record.spec_sha256,
+                spec=discovery_spec,
+            ),
+        )
     if workflow.workflow_type == "dataset-analysis":
         if workflow.dataset_source_id is None or workflow.dataset_content_hash is None:
             raise WorkflowConflict(
@@ -255,7 +324,15 @@ def assert_plan_for_workflow(
             "The workflow plan does not belong to this workflow.",
         )
     assert_plan_integrity(plan)
-    plan_type = DatasetAnalysisPlanSpec if workflow.workflow_type == "dataset-analysis" else PlanSpec
+    plan_type = (
+        DatasetAnalysisPlanSpec
+        if workflow.workflow_type == "dataset-analysis"
+        else (
+            PaperDiscoveryPlanSpec
+            if plan.generator == "paper-discovery-v1"
+            else PlanSpec
+        )
+    )
     try:
         spec = plan_type.model_validate(plan.spec_json)
     except ValidationError:
@@ -293,6 +370,20 @@ def assert_plan_for_workflow(
             and plan.prompt_version is not None
             and bool(plan.prompt_version.strip())
             else ("dataset-template-v1", None, "dataset-template-v1")
+        )
+    elif isinstance(spec, PaperDiscoveryPlanSpec):
+        if (
+            workflow.creation_mode != "autonomous"
+            or workflow.generation_mode != "local-deterministic"
+        ):
+            raise WorkflowConflict(
+                "plan-provenance-invalid",
+                "Paper discovery requires the autonomous deterministic control plane.",
+            )
+        expected_provenance = (
+            "paper-discovery-v1",
+            None,
+            "paper-discovery-v1",
         )
     else:
         expected_provenance = (
@@ -338,6 +429,7 @@ def assert_plan_approval_integrity(
         "workflow-plan-approval-v1",
         "workflow-plan-approval-v2",
         "workflow-plan-approval-v3",
+        DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
     }:
         raise WorkflowConflict(
             "plan-approval-invalid",
@@ -387,6 +479,7 @@ def assert_plan_approval_integrity(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -395,6 +488,7 @@ def assert_plan_approval_integrity(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -403,6 +497,7 @@ def assert_plan_approval_integrity(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -411,6 +506,7 @@ def assert_plan_approval_integrity(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -419,6 +515,7 @@ def assert_plan_approval_integrity(
             if approval.payload_schema_version in {
                 "workflow-plan-approval-v2",
                 "workflow-plan-approval-v3",
+                DISCOVERY_PLAN_APPROVAL_SCHEMA_VERSION,
             }
             else None
         ),
@@ -516,6 +613,9 @@ def plan_step_materialization(
             step.inputs.timeout_seconds if isinstance(step, ExecuteAnalysisPlanStep) else 120
         )
         return expected_outputs, step.risk_level, timeout_seconds
+    if isinstance(spec, PaperDiscoveryPlanSpec):
+        step = spec.steps[order_index]
+        return list(step.expected_outputs), step.risk_level, step.timeout_seconds
     step = spec.steps[order_index]
     return list(step.expected_outputs), "low", 120
 

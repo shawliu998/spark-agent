@@ -475,11 +475,19 @@ def _claim_execution(
                 code="analysis-already-claimed",
             )
 
+        previous_run = session.scalar(
+            select(RunRecord)
+            .where(RunRecord.analysis_intent_id == intent.id)
+            .order_by(RunRecord.attempt.desc(), RunRecord.id.desc())
+        )
+        run_attempt = previous_run.attempt + 1 if previous_run is not None else 1
         run_id = str(uuid.uuid4())
         run = RunRecord(
             id=run_id,
             task_id=task.id,
             analysis_intent_id=intent.id,
+            previous_run_id=previous_run.id if previous_run is not None else None,
+            attempt=run_attempt,
             environment_hash=None,
             input_artifacts=[dataset.id],
             output_artifacts=[],

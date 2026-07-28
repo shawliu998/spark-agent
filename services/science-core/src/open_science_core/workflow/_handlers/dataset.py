@@ -68,6 +68,7 @@ from ...models import (
 )
 from ...schemas import AnalysisRunOut
 from .._service.jobs import analysis_execution_operation_key, job_input_compatibility
+from ..agent_loop.coordinator import enqueue_agent_observation
 from ..schemas import (
     AnalysisApprovalEventData,
     AnalysisArtifactCreatedEventData,
@@ -526,7 +527,9 @@ def _publish_analysis_started_if_claimed(
                 "The claimed analysis run no longer matches its workflow job.",
             )
         run = session.scalar(
-            select(RunRecord).where(RunRecord.analysis_intent_id == intent.id)
+            select(RunRecord)
+            .where(RunRecord.analysis_intent_id == intent.id)
+            .order_by(RunRecord.attempt.desc(), RunRecord.created_at.desc())
         )
         if run is None:
             return None
@@ -610,7 +613,9 @@ def recover_leased_analysis_job(
             return False
         intent = session.get(AnalysisIntentRecord, intent_id)
         run = session.scalar(
-            select(RunRecord).where(RunRecord.analysis_intent_id == intent_id)
+            select(RunRecord)
+            .where(RunRecord.analysis_intent_id == intent_id)
+            .order_by(RunRecord.attempt.desc(), RunRecord.created_at.desc())
         )
         if intent is None or run is None:
             return False
@@ -676,7 +681,9 @@ def _publish_analysis_failure_or_repair(
         )
         run = (
             session.scalar(
-                select(RunRecord).where(RunRecord.analysis_intent_id == intent.id)
+                select(RunRecord)
+                .where(RunRecord.analysis_intent_id == intent.id)
+                .order_by(RunRecord.attempt.desc(), RunRecord.created_at.desc())
             )
             if intent is not None
             else None
@@ -947,6 +954,8 @@ def _publish_analysis_failure_or_repair(
             reason_code=blocking_code,
             blocking_message=blocking_message,
         )
+        if workflow.creation_mode == "autonomous" and intent.analysis_spec_id is not None:
+            enqueue_agent_observation(session, workflow, job)
         session.commit()
         return True
 
@@ -1124,12 +1133,15 @@ def _publish_analysis_result(
                 ),
             ],
         )
-        advance_after_task(
-            session,
-            workflow,
-            task,
-            preserve_legacy_review=False,
-        )
+        if workflow.creation_mode == "autonomous":
+            enqueue_agent_observation(session, workflow, job)
+        else:
+            advance_after_task(
+                session,
+                workflow,
+                task,
+                preserve_legacy_review=False,
+            )
         session.commit()
 
 
@@ -1894,7 +1906,9 @@ def handle_dataset_review(
                 ),
             ],
         )
-        if verdict == "passed":
+        if workflow.creation_mode == "autonomous" and verdict == "passed":
+            enqueue_agent_observation(session, workflow, job)
+        elif verdict == "passed":
             transition_workflow(session, workflow, "completed")
         elif verdict != "passed-with-warnings":
             transition_workflow(

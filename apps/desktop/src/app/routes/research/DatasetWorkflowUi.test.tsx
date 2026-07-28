@@ -1,12 +1,19 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   DatasetAnalysisWorkflowSnapshot,
   ResearchSource,
 } from "@spark/research-domain";
 import { DatasetWorkflowDetails } from "./DatasetWorkflowDetails";
+import {
+  DatasetResearchWorkspace,
+  datasetWorkflowDisplayState,
+  shouldDefaultToDatasetWorkspace,
+} from "./DatasetResearchWorkspace";
 import { ResearchLibrarySidebar } from "./ResearchLibrarySidebar";
+import { WorkflowProgress } from "./WorkflowExecution";
 import { WorkflowWorkspace } from "./WorkflowWorkspace";
+import i18n from "@/i18n";
 
 const core = vi.hoisted(() => ({
   fetchArtifactBlob: vi.fn(),
@@ -84,6 +91,24 @@ beforeEach(() => {
     if (artifactId === "artifact-environment") {
       return { text: async () => '{"python":"3.12"}' } as Blob;
     }
+    if (artifactId === "artifact-notebook") {
+      return {
+        text: async () => JSON.stringify({
+          cells: [
+            {
+              cell_type: "code",
+              execution_count: 1,
+              metadata: {},
+              source: ["summary = data.groupby('group').mean()\n", "summary"],
+              outputs: [{ output_type: "stream", name: "stdout", text: ["group outcome\n", "treated 2.5\n"] }],
+            },
+          ],
+          metadata: { kernelspec: { language: "python" } },
+          nbformat: 4,
+          nbformat_minor: 5,
+        }),
+      } as Blob;
+    }
     return new Blob(["verified figure"], { type: "image/png" });
   });
 });
@@ -104,14 +129,14 @@ describe("dataset workflow UI", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /Advanced/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Choose workflow/i }));
     fireEvent.click(
-      screen.getByRole("button", { name: /Dataset Analysis/i }),
+      screen.getByRole("button", { name: /^Dataset Analysis\b/i }),
     );
     expect(screen.getByLabelText("Dataset")).toHaveValue("dataset-1");
     expect(screen.getByText(DATASET_HASH)).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText("Give Spark Agent a research goal"), {
+    fireEvent.change(screen.getByLabelText("Research question"), {
       target: { value: "Summarize outcomes by group" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Create plan" }));
@@ -158,10 +183,20 @@ describe("dataset workflow UI", () => {
     expect(screen.getByText("Review the dataset analysis plan")).toBeInTheDocument();
     expect(screen.getByText("Profile the immutable dataset")).toBeInTheDocument();
     expect(screen.getByText("Prepare policy-compliant Python")).toBeInTheDocument();
-    expect(screen.getByText("Execute approved Python")).toBeInTheDocument();
+    expect(screen.getAllByText("Execute approved Python").length).toBeGreaterThan(0);
     expect(screen.getByText("Verify required artifacts")).toBeInTheDocument();
     expect(screen.getAllByText(DATASET_HASH).length).toBeGreaterThan(0);
     expect(screen.getByText("600 seconds")).toBeInTheDocument();
+    expect(screen.getByText("Separate approval required")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Plan approval may prepare code, but the exact payload remains blocked until a separate runtime approval.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Approving this plan does not approve or execute Python."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Audit details")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Approve plan" }));
     expect(handlers.onApprovePlan).toHaveBeenCalledTimes(1);
@@ -189,6 +224,21 @@ describe("dataset workflow UI", () => {
     expect(
       screen.getByText("Repair diff — requires this new approval"),
     ).toBeInTheDocument();
+    expect(screen.getByText("Payload changes")).toBeInTheDocument();
+    expect(screen.getByText("Isolated Python runtime")).toBeInTheDocument();
+    expect(screen.getByLabelText("Previous attempt error output")).toHaveTextContent("ValueError");
+    expect(screen.getByLabelText("Recorded repair diff")).toHaveTextContent("summary.to_csv");
+    expect(
+      screen.getByText("The runtime/container applies the recorded runtime policy and affected resource scope; recorded artifacts are hash-checked after execution."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Previous attempt failed safely/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Approval queues only this immutable payload. Any repair requires a new approval.",
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /execute/i }),
     ).not.toBeInTheDocument();
@@ -196,11 +246,126 @@ describe("dataset workflow UI", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Approve exact payload" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Reject" }));
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reject payload" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel task" }));
     expect(handlers.onDecideAnalysis).toHaveBeenNthCalledWith(1, "approved");
     expect(handlers.onDecideAnalysis).toHaveBeenNthCalledWith(2, "rejected");
     expect(handlers.onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a non-pending analysis intent as an immutable execution record", () => {
+    const pending = executionApprovalSnapshot();
+    const snapshot = {
+      ...pending,
+      pendingApprovals: [],
+      analysisIntent: {
+        ...pending.analysisIntent!,
+        status: "completed" as const,
+        decision: "approved" as const,
+      },
+      allowedActions: ["cancel" as const],
+    } as DatasetAnalysisWorkflowSnapshot;
+
+    render(
+      <DatasetWorkflowDetails
+        snapshot={snapshot}
+        mutating={false}
+        onDecision={handlers.onDecideAnalysis}
+        onCancel={handlers.onCancel}
+        onAcceptReviewWarnings={handlers.onAcceptReviewWarnings}
+      />,
+    );
+
+    expect(screen.getByText("Immutable execution record — Completed")).toBeInTheDocument();
+    expect(screen.getByText("This immutable record preserves the recorded payload and provenance. It is not an approval request.")).toBeInTheDocument();
+    expect(screen.getByText("Recorded Python payload")).toBeInTheDocument();
+    expect(screen.queryByText("Approval queues only this immutable payload. Any repair requires a new approval.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve exact payload|reject payload|cancel task/i })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["approved", "approved", "Approved"],
+    ["executing", "approved", "Executing"],
+    ["completed", "approved", "Completed"],
+    ["failed", "approved", "Failed"],
+    ["rejected", "rejected", "Rejected"],
+    ["waiting-approval", null, "Execution envelope unavailable"],
+  ] as const)("renders %s historical intent as a non-approval record", (status, decision, label) => {
+    const pending = executionApprovalSnapshot();
+    const snapshot = {
+      ...pending,
+      pendingApprovals: [],
+      analysisIntent: { ...pending.analysisIntent!, status, decision },
+      allowedActions: [] as const,
+    } as DatasetAnalysisWorkflowSnapshot;
+    render(
+      <DatasetWorkflowDetails
+        snapshot={snapshot}
+        mutating={false}
+        onDecision={handlers.onDecideAnalysis}
+        onCancel={handlers.onCancel}
+        onAcceptReviewWarnings={handlers.onAcceptReviewWarnings}
+      />,
+    );
+    expect(screen.getByText(`Immutable execution record — ${label}`)).toBeInTheDocument();
+    expect(screen.queryByText("Exact payload approval required")).not.toBeInTheDocument();
+    if (decision !== "approved") {
+      expect(screen.getByText("Expected outputs")).toBeInTheDocument();
+      expect(screen.getAllByText("This record does not authorize or prove execution.").length).toBeGreaterThan(0);
+      expect(screen.queryByText(/approval|approved|queues|new immutable approval/i)).not.toBeInTheDocument();
+    }
+  });
+
+  it("localizes visible dataset approval and execution-record statuses in Simplified Chinese", async () => {
+    await act(async () => { await i18n.changeLanguage("zh-Hans"); });
+    const pending = executionApprovalSnapshot();
+    pending.analysisSpec = {
+      ...analysisSpecSnapshot(),
+      status: "pending-approval",
+    };
+    const view = render(
+      <DatasetWorkflowDetails
+        snapshot={pending}
+        mutating={false}
+        onDecision={handlers.onDecideAnalysis}
+        onCancel={handlers.onCancel}
+        onAcceptReviewWarnings={handlers.onAcceptReviewWarnings}
+      />,
+    );
+    expect(screen.getByText("等待审批")).toBeInTheDocument();
+
+    const completed = {
+      ...pending,
+      pendingApprovals: [],
+      analysisSpec: { ...analysisSpecSnapshot(), status: "approved" as const },
+      analysisIntent: {
+        ...pending.analysisIntent!,
+        status: "completed" as const,
+        decision: "approved" as const,
+      },
+      allowedActions: [] as const,
+    } as DatasetAnalysisWorkflowSnapshot;
+    view.rerender(
+      <DatasetWorkflowDetails
+        snapshot={completed}
+        mutating={false}
+        onDecision={handlers.onDecideAnalysis}
+        onCancel={handlers.onCancel}
+        onAcceptReviewWarnings={handlers.onAcceptReviewWarnings}
+      />,
+    );
+    expect(screen.getByText("不可变执行记录 — 已完成")).toBeInTheDocument();
+    expect(screen.getAllByText("已批准").length).toBeGreaterThan(0);
+
+    await act(async () => { await i18n.changeLanguage("en"); });
+  });
+
+  it("shows completed count and the exact step waiting for approval", () => {
+    render(<WorkflowProgress snapshot={executionApprovalSnapshot()} />);
+
+    expect(screen.getByText("2 of 4 completed")).toBeInTheDocument();
+    expect(screen.getByText(/Waiting for approval/)).toBeInTheDocument();
+    expect(screen.getAllByText("execute analysis").length).toBeGreaterThan(0);
   });
 
   it("dispatches blocked resume and failed retry for dataset workflows", () => {
@@ -220,6 +385,9 @@ describe("dataset workflow UI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Resume" }));
     expect(handlers.onResume).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("blocked-for-test")).toBeInTheDocument();
+    expect(screen.getByText("Retryable from saved state")).toBeInTheDocument();
+    expect(screen.getByText("This task needs attention")).toHaveClass("text-error");
 
     rerender(
       <WorkflowWorkspace
@@ -237,6 +405,53 @@ describe("dataset workflow UI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(handlers.onRetry).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Execution failed safely")).toBeInTheDocument();
+  });
+
+  it("uses Resume for the canonical no-ready-pdf dataset blocker", () => {
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={recoverySnapshot("blocked", "resume", 13, "no-ready-pdf")}
+        sources={[READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+        importingDataset={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    expect(handlers.onResume).toHaveBeenCalledTimes(1);
+    expect(handlers.onRetry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "analysis-execution-rejected",
+    "analysis-repair-not-safe",
+    "analysis-repair-limit-exceeded",
+    "analysis-compiled-execution-failed",
+    "analysis-review-required",
+  ])("uses resume for blocked dataset repair blocker %s", (code) => {
+    const snapshot = recoverySnapshot("blocked", "resume", 14, code);
+    snapshot.allowedActions = ["resume", "cancel"];
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={snapshot}
+        sources={[READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+        importingDataset={false}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Create revised plan" }));
+    expect(handlers.onResume).toHaveBeenCalledTimes(1);
+    expect(handlers.onRetry).not.toHaveBeenCalled();
   });
 
   it("disables saved workflow selection while a workflow mutation is active", () => {
@@ -248,25 +463,28 @@ describe("dataset workflow UI", () => {
         serviceReady
         projects={[]}
         projectId="project-1"
-        projectTitle=""
-        showProjectForm={false}
-        creatingProject={false}
         workflows={[executionApprovalSnapshot()]}
+        snapshot={executionApprovalSnapshot()}
         selectedWorkflowId="workflow-1"
         loadingWorkflows={false}
         workflowMutating
-        sources={[]}
+        sources={[READY_DATASET]}
         loadingSources={false}
         selection={null}
         importing={false}
+        projectMutating={false}
+        showArchivedProjects={false}
         onProjectChange={vi.fn()}
-        onProjectTitleChange={vi.fn()}
-        onProjectFormToggle={vi.fn()}
-        onCreateProject={vi.fn()}
+        onNewProject={vi.fn()}
         onSelectWorkflow={onSelectWorkflow}
+        onOpenWorkflowReport={vi.fn()}
         onNewWorkflow={vi.fn()}
         onSelectSource={vi.fn()}
         onImportPdf={vi.fn()}
+        onToggleArchivedProjects={vi.fn()}
+        onRenameProject={vi.fn()}
+        onArchiveProject={vi.fn()}
+        onRestoreProject={vi.fn()}
       />,
     );
 
@@ -274,13 +492,42 @@ describe("dataset workflow UI", () => {
       name: /Summarize outcomes by group/i,
     });
     expect(workflowButton).toBeDisabled();
+    expect(screen.getAllByText("experiment.csv").length).toBeGreaterThan(0);
+    expect(screen.getByText("CSV dataset")).toBeInTheDocument();
     fireEvent.click(workflowButton);
     expect(onSelectWorkflow).not.toHaveBeenCalled();
   });
 
+  it.each(["running", "completed", "failed"])(
+    "keeps a CSV-only %s dataset workflow out of the literature fixture",
+    (status) => {
+      expect(
+        shouldDefaultToDatasetWorkspace(
+          [READY_DATASET],
+          { workflowType: "dataset-analysis", status },
+        ),
+      ).toBe(true);
+      expect(
+        shouldDefaultToDatasetWorkspace(
+          [READY_DATASET, READY_PDF],
+          { workflowType: "dataset-analysis", status },
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("keeps canonical dataset workflow states distinct", () => {
+    expect(datasetWorkflowDisplayState("waiting-plan-approval", [])).toBe("Awaiting approval");
+    expect(datasetWorkflowDisplayState("running", [])).toBe("Running");
+    expect(datasetWorkflowDisplayState("reviewing", [])).toBe("Reviewing");
+    expect(datasetWorkflowDisplayState("failed", [])).toBe("Failed");
+    expect(datasetWorkflowDisplayState("completed", [])).toBe("Completed");
+    expect(datasetWorkflowDisplayState("completed", [{ type: "job.retried" } as never])).toBe("Completed");
+  });
+
   it("renders canonical run streams, environment, dataset-classified CSV table, figure, artifacts, and warning acceptance", async () => {
     const snapshot = reviewSnapshot();
-    render(
+    const { container } = render(
       <WorkflowWorkspace
         {...handlers}
         snapshot={snapshot}
@@ -305,7 +552,17 @@ describe("dataset workflow UI", () => {
     expect(screen.getAllByText("welch-t-test").length).toBeGreaterThan(0);
     expect(screen.getByText("p-value")).toBeInTheDocument();
     expect(screen.getByText("hedges-g: 0.81")).toBeInTheDocument();
-    expect(screen.getByText("Reproducibility artifacts")).toBeInTheDocument();
+    expect(screen.getByText("Artifact browser (9)")).toBeInTheDocument();
+    expect(screen.getByText("Reproducibility")).toBeInTheDocument();
+    expect(screen.getByText("Results")).toBeInTheDocument();
+    expect(screen.getAllByText("Artifact provenance")).toHaveLength(9);
+    expect(screen.getAllByText("Preview").length).toBeGreaterThan(0);
+    const previewLink = screen.getAllByRole("link", { name: "Preview" })[0];
+    fireEvent.click(previewLink);
+    const previewTarget = container.querySelector(
+      previewLink.getAttribute("href") ?? "",
+    );
+    expect(previewTarget).toHaveFocus();
     expect(screen.getAllByText("analysis-spec.json").length).toBeGreaterThan(0);
     expect(screen.getAllByText("results.json").length).toBeGreaterThan(0);
     expect(screen.getByText("analysis-spec-compiler-v1")).toBeInTheDocument();
@@ -334,6 +591,214 @@ describe("dataset workflow UI", () => {
       screen.getByRole("button", { name: "Accept warnings and complete" }),
     );
     expect(handlers.onAcceptReviewWarnings).toHaveBeenCalledTimes(1);
+  });
+
+  it("turns a completed workflow into a result-first report with process records collapsed", async () => {
+    const reviewing = reviewSnapshot();
+    const snapshot = {
+      ...reviewing,
+      workflow: {
+        ...reviewing.workflow,
+        status: "completed" as const,
+        currentStepId: null,
+        completedAt: "2026-07-15T00:02:00Z",
+      },
+      reviewWarningAcceptance: {
+        eventId: "event-warning-accepted",
+        reviewId: "review-1",
+        reviewInputSha256: REVIEW_HASH,
+        expectedWorkflowRevision: 8,
+        decision: "accepted" as const,
+        acceptedAt: "2026-07-15T00:01:30Z",
+      },
+      allowedActions: [] as const,
+    } as unknown as DatasetAnalysisWorkflowSnapshot;
+
+    render(
+      <WorkflowWorkspace
+        {...handlers}
+        snapshot={snapshot}
+        sources={[READY_DATASET]}
+        loading={false}
+        mutating={false}
+        connection="live"
+        error={null}
+        canStart
+        importingDataset={false}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Analysis results" }),
+    ).toBeInTheDocument();
+    const structuredResult = screen
+      .getByText("Structured statistical results")
+      .closest("section");
+    const figuresAndTables = screen
+      .getByText("Figures and tables")
+      .closest("section");
+    const review = screen
+      .getByText("Deterministic analysis integrity review")
+      .closest("section");
+    expect(structuredResult).not.toBeNull();
+    expect(figuresAndTables).not.toBeNull();
+    expect(review).not.toBeNull();
+    expect(
+      structuredResult!.compareDocumentPosition(figuresAndTables!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      figuresAndTables!.compareDocumentPosition(review!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    const runDetails = screen
+      .getByText("Run and reproducibility record")
+      .closest("details");
+    expect(runDetails).not.toHaveAttribute("open");
+    expect(runDetails).toHaveTextContent("Environment SHA-256");
+
+    const methodDetails = screen
+      .getByText("Method and reproducibility")
+      .closest("details");
+    expect(methodDetails).not.toHaveAttribute("open");
+    expect(methodDetails).toHaveTextContent("Dataset profile");
+    expect(methodDetails).toHaveTextContent("Approved analysis method");
+    await waitFor(() => {
+      expect(screen.getAllByText("treated").length).toBeGreaterThan(0);
+      expect(screen.getByAltText("Analysis figure figure.png")).toHaveAttribute(
+        "src",
+        "blob:verified-figure",
+      );
+      const chartDetails = screen
+        .getByText("Explore this table as a chart")
+        .closest("details");
+      expect(chartDetails).not.toHaveAttribute("open");
+    });
+  });
+
+  it("connects canonical dataset, analysis, results, notebook, and artifact surfaces", async () => {
+    const snapshot = reviewSnapshot();
+    render(
+      <DatasetResearchWorkspace
+        projectTitle="EEG analysis"
+        sources={[READY_DATASET]}
+        snapshot={snapshot}
+        events={[]}
+        mutating={false}
+        importing={false}
+        serviceReady
+        literatureAvailable={false}
+        onImportDatasetRequest={vi.fn()}
+        onOpenWorkflow={vi.fn()}
+        onOpenLiterature={vi.fn()}
+        onRefresh={handlers.onRefresh}
+        onDecision={handlers.onDecideAnalysis}
+        onCancel={handlers.onCancel}
+        onRetry={handlers.onRetry}
+        onResume={handlers.onResume}
+        onAcceptReviewWarnings={handlers.onAcceptReviewWarnings}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Dataset summary" })).toBeInTheDocument();
+    expect(screen.getAllByText("experiment.csv").length).toBeGreaterThan(0);
+    expect(screen.getByText("Dataset profile")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Analysis" }));
+    expect(screen.getByText("Reviewing the run and verified artifacts")).toBeInTheDocument();
+    expect(screen.getByText("Approved analysis method")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Results" }));
+    expect(screen.getByText("Structured statistical results")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("treated").length).toBeGreaterThan(0));
+    expect(screen.getByRole("button", { name: "line" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Notebook" }));
+    await waitFor(() => expect(screen.getByText(/summary = data\.groupby/)).toBeInTheDocument());
+    expect(screen.getByText("Executed · read-only")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Artifacts" }));
+    expect(screen.getByText("Artifact browser (9)")).toBeInTheDocument();
+    expect(screen.getAllByText("Artifact provenance")).toHaveLength(9);
+    await waitFor(() => expect(screen.getByText('{"python":"3.12"}')).toBeInTheDocument());
+  });
+
+  it("links a completed dataset workflow to its project-bound notebook and artifacts", async () => {
+    const reviewing = reviewSnapshot();
+    const completed = {
+      ...reviewing,
+      workflow: {
+        ...reviewing.workflow,
+        status: "completed" as const,
+        currentStepId: null,
+        completedAt: "2026-07-15T00:02:00Z",
+      },
+      allowedActions: [] as const,
+    } as unknown as DatasetAnalysisWorkflowSnapshot;
+
+    render(
+      <DatasetResearchWorkspace
+        projectTitle="EEG analysis"
+        sources={[READY_DATASET]}
+        snapshot={completed}
+        events={[]}
+        mutating={false}
+        importing={false}
+        serviceReady
+        literatureAvailable={false}
+        onImportDatasetRequest={vi.fn()}
+        onOpenWorkflow={vi.fn()}
+        onOpenLiterature={vi.fn()}
+        onRefresh={handlers.onRefresh}
+        onDecision={handlers.onDecideAnalysis}
+        onCancel={handlers.onCancel}
+        onRetry={handlers.onRetry}
+        onResume={handlers.onResume}
+        onAcceptReviewWarnings={handlers.onAcceptReviewWarnings}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Open notebook" })).toHaveAttribute(
+      "href",
+      "/notebooks?projectId=project-1&workflowId=workflow-1",
+    );
+    expect(screen.getByRole("link", { name: "View artifacts" })).toHaveAttribute(
+      "href",
+      "/files?projectId=project-1&workflowId=workflow-1",
+    );
+    expect(screen.getByRole("button", { name: "Results" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(
+      screen.getByRole("heading", { name: "Analysis results" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Structured statistical results")).toBeInTheDocument();
+    const figuresAndTables = screen
+      .getByText("Figures and tables")
+      .closest("section");
+    const review = screen
+      .getByText("Deterministic analysis integrity review")
+      .closest("section");
+    expect(figuresAndTables).not.toBeNull();
+    expect(review).not.toBeNull();
+    expect(
+      figuresAndTables!.compareDocumentPosition(review!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getAllByText("treated").length).toBeGreaterThan(0);
+      expect(screen.getByAltText("Analysis figure figure.png")).toHaveAttribute(
+        "src",
+        "blob:verified-figure",
+      );
+      expect(
+        screen
+          .getByText("Explore this table as a chart")
+          .closest("details"),
+      ).not.toHaveAttribute("open");
+    });
   });
 
   it("labels an unapproved AnalysisSpec as proposed", () => {
@@ -639,6 +1104,7 @@ function recoverySnapshot(
   status: "blocked" | "failed",
   action: "resume" | "retry",
   revision: number,
+  code = `${status}-for-test`,
 ): DatasetAnalysisWorkflowSnapshot {
   const base = datasetSnapshotBase();
   return {
@@ -649,7 +1115,7 @@ function recoverySnapshot(
       revision,
       currentStepId: null,
       blockingReason: {
-        code: `${status}-for-test`,
+        code,
         userMessage: `Dataset workflow ${status}.`,
         retryable: true,
       },

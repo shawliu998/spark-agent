@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "package": "sgmllib3k",
+  "upstreamVersion": "1.0.0",
+  "upstreamSdistUrl": "https://files.pythonhosted.org/packages/source/s/sgmllib3k/sgmllib3k-1.0.0.tar.gz",
+  "upstreamSdistSha256": "7868fb1c8bfa764c1ac563d3cf369c381d1325d36124933a726f29fcdaa812e9",
+  "license": "BSD License",
+  "licenseMaterial": "PKG-INFO",
+  "sourceDateEpoch": 1704067200,
+  "buildBackend": "setuptools==83.0.0; wheel==0.47.0; build==1.5.0",
+  "buildCommand": "SOURCE_DATE_EPOCH=1704067200 python -m build --wheel --no-isolation <extracted-sdist-root>",
+  "reproducibilityNote": "Built twice from the verified upstream sdist in separate temporary directories; both produced byte-identical wheels.",
+  "wheel": "sgmllib3k-1.0.0-py3-none-any.whl",
+  "wheelSha256": "9168d5691956624e3e507aa43ca9d5084385b800afb428d18d1630ca72c22027"
+}

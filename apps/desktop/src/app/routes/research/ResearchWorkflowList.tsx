@@ -2,9 +2,9 @@ import {
   AlertTriangle,
   BarChart3,
   CheckCircle2,
+  FileSearch,
   Loader2,
   Plus,
-  Sparkles,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ResearchWorkflowSnapshot } from "@spark/research-domain";
@@ -16,6 +16,7 @@ export interface ResearchWorkflowListProps {
   loading: boolean;
   disabled: boolean;
   onSelect: (workflowId: string) => void;
+  onOpenReport: (workflowId: string) => void;
   onNew: () => void;
 }
 
@@ -40,13 +41,14 @@ export function ResearchWorkflowList({
   loading,
   disabled,
   onSelect,
+  onOpenReport,
   onNew,
 }: ResearchWorkflowListProps) {
   const { t } = useTranslation("pages");
   return (
     <section className="border-b border-border">
-      <div className="flex items-center justify-between px-4 pb-2 pt-3">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-muted">
+      <div className="flex items-center justify-between px-4 pb-3 pt-4">
+        <span className="text-xs font-medium text-muted">
           {t("research.workflows.heading", { defaultValue: "Research tasks" })}
         </span>
         <div className="flex items-center gap-1">
@@ -55,7 +57,7 @@ export function ResearchWorkflowList({
             type="button"
             onClick={onNew}
             disabled={disabled}
-            className="rounded p-1 text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
+            className="touch-target flex h-10 w-10 items-center justify-center rounded-input text-muted hover:bg-surface-2 hover:text-text disabled:opacity-40"
             aria-label={t("research.workflows.newAria", {
               defaultValue: "Start a new research task",
             })}
@@ -66,7 +68,7 @@ export function ResearchWorkflowList({
       </div>
       <div className="max-h-40 overflow-y-auto px-2 pb-2">
         {!loading && workflows.length === 0 && (
-          <p className="px-2 pb-2 text-[11px] leading-relaxed text-muted">
+          <p className="px-2 pb-4 pt-2 text-xs leading-relaxed text-muted">
             {t("research.workflows.empty", {
               defaultValue: "No saved research tasks yet.",
             })}
@@ -89,52 +91,73 @@ export function ResearchWorkflowList({
               });
           const remoteAssisted =
             item.workflow.generationMode === "remote-model-assisted";
+          const reportReady =
+            item.workflow.status === "completed" &&
+            item.workflow.workflowType === "literature-synthesis" &&
+            item.result !== null;
           return (
-            <button
+            <div
               key={item.workflow.id}
-              type="button"
-              onClick={() => onSelect(item.workflow.id)}
-              disabled={disabled}
               className={cn(
-                "flex w-full items-start gap-2 rounded-input px-2 py-2 text-left hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent",
-                selectedWorkflowId === item.workflow.id && "bg-surface-2",
+                "rounded-input hover:bg-surface-2",
+                selectedWorkflowId === item.workflow.id &&
+                  "bg-surface text-text",
               )}
             >
-              {attention ? (
-                <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
-              ) : item.workflow.status === "completed" ? (
-                <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-ok" />
-              ) : item.workflow.workflowType === "dataset-analysis" ? (
-                <BarChart3 size={13} className="mt-0.5 shrink-0 text-accent" />
-              ) : (
-                <Sparkles size={13} className="mt-0.5 shrink-0 text-accent" />
-              )}
-              <span className="min-w-0 flex-1">
-                <span className="block line-clamp-2 text-[11px] font-medium leading-snug text-text">
-                  {item.workflow.goal}
-                </span>
-                <span className={cn("mt-1 block text-[10px]", statusTone(item))}>
-                  {status}
-                  <span className="text-muted">
-                    {item.workflow.workflowType === null
-                      ? t("research.workflow.listAutoType", {
-                          defaultValue: " · auto research",
-                        })
-                      : item.workflow.workflowType === "dataset-analysis"
-                      ? t("research.workflow.listDatasetType", {
-                          defaultValue: " · dataset analysis · local isolated runtime",
-                        })
-                      : remoteAssisted
-                        ? t("research.workflow.listLiteratureRemoteType", {
-                            defaultValue: " · literature synthesis · model-assisted",
+              <button
+                type="button"
+                onClick={() => onSelect(item.workflow.id)}
+                disabled={disabled}
+                className="flex w-full items-start gap-2 px-2 py-2.5 text-left disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {attention ? (
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0 text-warn" />
+                ) : item.workflow.status === "completed" ? (
+                  <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-ok" />
+                ) : item.workflow.workflowType === "dataset-analysis" ? (
+                  <BarChart3 size={13} className="mt-0.5 shrink-0 text-accent" />
+                ) : (
+                  <FileSearch size={13} className="mt-0.5 shrink-0 text-accent" />
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block line-clamp-2 text-xs font-medium leading-snug text-text">
+                    {item.workflow.goal}
+                  </span>
+                  <span className={cn("mt-1 block text-caption", statusTone(item))}>
+                    {status}
+                    <span className="text-muted">
+                      {item.workflow.workflowType === null
+                        ? t("research.workflow.listAutoType", {
+                            defaultValue: " · auto research",
                           })
-                        : t("research.workflow.listLiteratureLocalType", {
-                            defaultValue: " · literature synthesis · local",
-                          })}
+                        : item.workflow.workflowType === "dataset-analysis"
+                        ? t("research.workflow.listDatasetType", {
+                            defaultValue: " · dataset analysis · local isolated runtime",
+                          })
+                        : remoteAssisted
+                          ? t("research.workflow.listLiteratureRemoteType", {
+                              defaultValue: " · literature synthesis · model-assisted",
+                            })
+                          : t("research.workflow.listLiteratureLocalType", {
+                              defaultValue: " · literature synthesis · local",
+                            })}
+                    </span>
                   </span>
                 </span>
-              </span>
-            </button>
+              </button>
+              {reportReady && (
+                <button
+                  type="button"
+                  onClick={() => onOpenReport(item.workflow.id)}
+                  disabled={disabled}
+                  className="mb-2 ml-7 min-h-8 rounded-input px-2 text-caption font-medium text-link hover:bg-bg disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {t("research.workflows.viewReport", {
+                    defaultValue: "View report",
+                  })}
+                </button>
+              )}
+            </div>
           );
         })}
       </div>

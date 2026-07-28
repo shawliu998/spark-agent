@@ -8,9 +8,11 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from ..db import database_session
-from ..models import ProjectRecord, WorkflowRecord
+from ..models import WorkflowRecord
 from ..workflow.agent_schemas import AgentRunSnapshot
 from ..workflow.agent_service import agent_run_snapshot
+from ..workflow.evidence_coverage import workflow_evidence_coverage
+from ..workflow.evidence_coverage_schemas import EvidenceCoverageOut
 from ..workflow.schemas import (
     AcceptReviewWarningsIn,
     ApprovePlanIn,
@@ -34,6 +36,7 @@ from ..workflow.service import (
     workflow_events,
     workflow_snapshot,
 )
+from .project_access import active_project_or_404, project_or_404
 
 router = APIRouter(tags=["research-workflows"])
 WorkflowSnapshotResponse = ResearchWorkflowSnapshot | AgentRunSnapshot
@@ -41,13 +44,6 @@ WorkflowSnapshotResponse = ResearchWorkflowSnapshot | AgentRunSnapshot
 
 def get_workflow_session() -> Generator[Session, None, None]:
     yield from database_session()
-
-
-def _project_or_404(session: Session, project_id: str) -> ProjectRecord:
-    project = session.get(ProjectRecord, project_id)
-    if project is None:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
 
 
 def _workflow_or_404(session: Session, workflow_id: str) -> WorkflowRecord:
@@ -117,7 +113,7 @@ def create_workflow(
     ),
     session: Session = Depends(get_workflow_session),
 ) -> ResearchWorkflowSnapshot:
-    project = _project_or_404(session, project_id)
+    project = active_project_or_404(session, project_id)
     try:
         workflow = start_workflow(session, project, payload, idempotency_key)
     except WorkflowConflict as error:
@@ -186,7 +182,7 @@ def get_project_workflows(
     limit: int = Query(default=20, ge=1, le=100),
     session: Session = Depends(get_workflow_session),
 ) -> list[ResearchWorkflowSnapshot]:
-    _project_or_404(session, project_id)
+    project_or_404(session, project_id)
     return [
         _fixed_snapshot_or_conflict(session, workflow)
         for workflow in list_workflows(
@@ -210,6 +206,21 @@ def get_workflow(
         session,
         _workflow_or_404(session, workflow_id),
     )
+
+
+@router.get(
+    "/v1/workflows/{workflow_id}/evidence-coverage",
+    response_model=EvidenceCoverageOut,
+)
+def get_workflow_evidence_coverage(
+    workflow_id: str,
+    session: Session = Depends(get_workflow_session),
+) -> EvidenceCoverageOut:
+    workflow = _workflow_or_404(session, workflow_id)
+    try:
+        return workflow_evidence_coverage(session, workflow)
+    except WorkflowConflict as error:
+        _raise_conflict(error)
 
 
 @router.post(

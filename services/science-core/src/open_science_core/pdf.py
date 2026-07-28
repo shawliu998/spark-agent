@@ -73,6 +73,11 @@ class LocatedQuote:
 
 def normalize_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).replace("\u00ad", "")
+    normalized = re.sub(
+        r"(?<=[A-Za-z])-\s*\n\s*(?=[a-z])",
+        "",
+        normalized,
+    )
     return re.sub(r"\s+", " ", normalized).strip().casefold()
 
 
@@ -123,48 +128,84 @@ def locate_quote(quote: str, pages: list[PdfPage]) -> LocatedQuote | None:
     if len(normalized_quote) < 12:
         return None
 
-    best: tuple[float, PdfPage, int, int, str] | None = None
+    best: tuple[
+        float,
+        PdfPage,
+        list[dict[str, Any]],
+        int,
+        int,
+        str,
+    ] | None = None
     for page in pages:
-        stream, spans = _word_stream(page.words)
-        exact = stream.find(normalized_quote)
-        if exact >= 0:
-            end = exact + len(normalized_quote)
-            return LocatedQuote(
-                page_index=page.page_index,
-                page_label=page.page_label,
-                text=_text_for_range(page.words, spans, exact, end),
-                bbox=_bbox_for_range(
-                    page.words, spans, exact, end, page.width, page.height
-                ),
-                confidence=1.0,
-                verified=True,
-            )
+        for words in _ordered_word_groups(page.words):
+            stream, spans = _word_stream(words)
+            exact = stream.find(normalized_quote)
+            if exact >= 0:
+                end = exact + len(normalized_quote)
+                return LocatedQuote(
+                    page_index=page.page_index,
+                    page_label=page.page_label,
+                    text=_text_for_range(words, spans, exact, end),
+                    bbox=_bbox_for_range(
+                        words, spans, exact, end, page.width, page.height
+                    ),
+                    confidence=1.0,
+                    verified=True,
+                )
 
-        # Contextual summaries are not always verbatim. Compare a bounded lead
-        # window and keep it unverified unless similarity is exceptionally high.
-        probe = normalized_quote[:500]
-        if not stream or not probe:
-            continue
-        window_size = min(max(len(probe), 120), len(stream))
-        step = max(20, window_size // 5)
-        for start in range(0, max(1, len(stream) - window_size + 1), step):
-            candidate = stream[start : start + window_size]
-            score = SequenceMatcher(None, probe, candidate).ratio()
-            if best is None or score > best[0]:
-                best = (score, page, start, start + len(candidate), candidate)
+            # Contextual summaries are not always verbatim. Compare a bounded lead
+            # window and keep it unverified unless similarity is exceptionally high.
+            probe = normalized_quote[:500]
+            if not stream or not probe:
+                continue
+            window_size = min(max(len(probe), 120), len(stream))
+            step = max(20, window_size // 5)
+            for start in range(0, max(1, len(stream) - window_size + 1), step):
+                candidate = stream[start : start + window_size]
+                score = SequenceMatcher(None, probe, candidate).ratio()
+                if best is None or score > best[0]:
+                    best = (
+                        score,
+                        page,
+                        words,
+                        start,
+                        start + len(candidate),
+                        candidate,
+                    )
 
     if best is None or best[0] < 0.72:
         return None
-    score, page, start, end, candidate = best
-    _, spans = _word_stream(page.words)
+    score, page, words, start, end, candidate = best
+    _, spans = _word_stream(words)
     return LocatedQuote(
         page_index=page.page_index,
         page_label=page.page_label,
-        text=_text_for_range(page.words, spans, start, end),
-        bbox=_bbox_for_range(page.words, spans, start, end, page.width, page.height),
+        text=_text_for_range(words, spans, start, end),
+        bbox=_bbox_for_range(words, spans, start, end, page.width, page.height),
         confidence=round(score, 4),
         verified=score >= 0.92,
     )
+
+
+def _ordered_word_groups(
+    words: list[dict[str, Any]],
+) -> list[list[dict[str, Any]]]:
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for word in words:
+        raw_block = word.get("block", 0)
+        block = int(raw_block) if isinstance(raw_block, (int, float)) else 0
+        grouped.setdefault(block, []).append(word)
+    return [
+        sorted(
+            group,
+            key=lambda word: (
+                int(word.get("line", 0)),
+                int(word.get("word", 0)),
+                float(word.get("x0", 0)),
+            ),
+        )
+        for group in grouped.values()
+    ]
 
 
 def _word_stream(words: list[dict[str, Any]]) -> tuple[str, list[tuple[int, int]]]:
@@ -175,7 +216,15 @@ def _word_stream(words: list[dict[str, Any]]) -> tuple[str, list[tuple[int, int]
         if not normalized:
             spans.append((len(text), len(text)))
             continue
-        if text:
+        if (
+            text.endswith("-")
+            and normalized[0].islower()
+            and spans
+        ):
+            text = text[:-1]
+            previous_start, _previous_end = spans[-1]
+            spans[-1] = (previous_start, len(text))
+        elif text:
             text += " "
         start = len(text)
         text += normalized
@@ -215,4 +264,12 @@ def _text_for_range(
         for word, span in zip(words, spans, strict=False)
         if span[1] > start and span[0] < end
     ]
-    return " ".join(value for value in selected if value).strip()
+    text = ""
+    for value in selected:
+        if not value:
+            continue
+        if text.endswith("-") and value[0].islower():
+            text = f"{text[:-1]}{value}"
+        else:
+            text = f"{text} {value}".strip()
+    return text

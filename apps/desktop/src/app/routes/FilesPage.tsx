@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ChevronRight,
@@ -16,7 +16,6 @@ import {
 } from "lucide-react";
 import { extOf, extToKind, previewKindForName, type PreviewKind } from "@/lib/artifacts";
 import { listDir, type DirEntry } from "@/lib/artifactFile";
-import { isTauri, workspaceBase } from "@/lib/tauri";
 import { useRuntimeStore } from "@/lib/runtime";
 import { baseName } from "@/components/thread/WorkspaceChip";
 import { NotebookEditor } from "@/components/notebook/NotebookEditor";
@@ -24,6 +23,7 @@ import { FilePreviewInspector } from "@/components/inspector/FilePreviewInspecto
 import { FileContextMenu } from "@/components/files/FileContextMenu";
 import { PaneTitlebarInset } from "@/components/inspector/RightPane";
 import { cn } from "@/lib/cn";
+import { ProjectArtifactContinuity } from "./ProjectArtifactContinuity";
 
 const EXT_LANG: Record<string, string> = {
   py: "python", r: "r", jl: "julia", sh: "bash", tex: "latex", md: "markdown",
@@ -49,121 +49,10 @@ function humanSize(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * GLOBAL file explorer: browses from the base folder (Settings → Workspace),
- * which holds every session's dated folder — not the active session only.
- * Directories are navigable via a breadcrumb; files open in the same viewers
- * used elsewhere (figures, tables, PDF, molecule, genome tracks, notebooks),
- * so all past work is reachable in one place.
- */
+/** Project-bound, read-only artifacts recovered from durable Science Core state. */
 export function FilesPage() {
-  const { t } = useTranslation(["pages", "common"]);
-  const [dir, setDir] = useState(""); // base-relative; "" = the base folder
-  const [entries, setEntries] = useState<DirEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<DirEntry | null>(null);
-  // The base folder's path, for the root crumb (name + full path on hover).
-  const [basePath, setBasePath] = useState<string | null>(null);
-  useEffect(() => {
-    void workspaceBase().then(setBasePath).catch(() => {});
-  }, []);
-
-  const load = useCallback(async (rel: string) => {
-    setEntries(null);
-    setError(null);
-    try {
-      setEntries(await listDir(rel, "base"));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setEntries([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load(dir);
-  }, [dir, load]);
-
-  const open = (entry: DirEntry) => {
-    if (entry.isDir) {
-      setSelected(null);
-      setDir(entry.path);
-    } else {
-      setSelected(entry);
-    }
-  };
-
-  const crumbs = dir ? dir.split("/") : [];
-
-  return (
-    <div className="flex h-full min-h-0">
-      <div className="flex w-72 shrink-0 flex-col border-r border-border">
-        <div className="flex flex-wrap items-center gap-0.5 border-b border-border px-3 py-2.5 text-[13px]">
-          <button
-            className={cn("rounded px-1 hover:bg-surface-2", dir ? "text-link" : "font-medium text-text")}
-            onClick={() => setDir("")}
-            title={basePath ?? undefined}
-          >
-            {baseName(basePath)}
-          </button>
-          {crumbs.map((part, i) => {
-            const to = crumbs.slice(0, i + 1).join("/");
-            const isLast = i === crumbs.length - 1;
-            return (
-              <span key={to} className="flex items-center gap-0.5">
-                <ChevronRight size={13} className="text-muted" />
-                <button
-                  className={cn("rounded px-1 hover:bg-surface-2", isLast ? "font-medium text-text" : "text-link")}
-                  onClick={() => setDir(to)}
-                >
-                  {part}
-                </button>
-              </span>
-            );
-          })}
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto p-2">
-          {entries === null && (
-            <div className="flex items-center gap-2 p-2 text-sm text-muted">
-              <Loader2 size={14} className="animate-spin" /> {t("files.loading")}
-            </div>
-          )}
-          {error && <div className="p-2 text-sm text-error">{error}</div>}
-          {entries && entries.length === 0 && !error && (
-            <div className="p-2 text-sm text-muted">
-              {isTauri ? t("files.folderEmpty") : t("files.explorerUnavailableWeb")}
-            </div>
-          )}
-          {entries?.map((entry) => (
-            <FileContextMenu key={entry.path} entry={entry} root="base">
-              <button
-                onClick={() => open(entry)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-input px-2 py-1.5 text-left text-[13px] hover:bg-surface-2",
-                  selected?.path === entry.path ? "bg-surface-2 text-text" : "text-text/90",
-                )}
-              >
-                {iconFor(entry)}
-                <span className="flex-1 truncate">{entry.name}</span>
-                {!entry.isDir && <span className="shrink-0 text-[11px] text-muted">{humanSize(entry.size)}</span>}
-                {entry.isDir && <ChevronRight size={14} className="shrink-0 text-muted" />}
-              </button>
-            </FileContextMenu>
-          ))}
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1">
-        {selected ? (
-          <FilePreview key={selected.path} entry={selected} root="base" onClose={() => setSelected(null)} />
-        ) : (
-          <div className="flex h-full items-center justify-center p-8 text-center text-sm text-muted">
-            {t("files.selectFilePrompt")}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+  // eslint-disable-next-line i18next/no-literal-string -- internal view discriminant
+  return <ProjectArtifactContinuity mode="artifacts" />;
 }
 
 function FilePreview({

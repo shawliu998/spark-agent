@@ -153,7 +153,10 @@ class IntentDecision(_StrictRouterModel):
         if self.intent in _RESOLVED_WORKFLOW_TYPES:
             if self.proposed_workflow_type != self.intent:
                 raise ValueError("proposed workflow type must match the resolved intent")
-            if not self.selected_source_ids:
+            if (
+                self.intent != "literature-synthesis"
+                and not self.selected_source_ids
+            ):
                 raise ValueError("a resolved intent must select at least one source")
         elif self.proposed_workflow_type is not None:
             raise ValueError("unresolved intents cannot propose a workflow type")
@@ -302,6 +305,19 @@ def validate_intent_decision(
         _validate_source_capability(decision.intent, selected, source_by_id)
 
     canonical_selected_ids = sorted(selected)
+    if decision.intent == "mixed-research":
+        return IntentDecision(
+            intent="clarification-required",
+            confidence=decision.confidence,
+            reasoning_summary=(
+                "The goal combines literature and dataset work. Choose the first "
+                "supported path so Spark can execute it with the existing review "
+                "and approval boundaries."
+            ),
+            selected_source_ids=canonical_selected_ids,
+            missing_inputs=["select-supported-single-workflow"],
+            proposed_workflow_type=None,
+        )
     if decision.confidence < MINIMUM_ROUTING_CONFIDENCE:
         missing_inputs = list(decision.missing_inputs)
         if not missing_inputs:
@@ -427,6 +443,21 @@ async def route_intent(
             parse_result="deterministic-capability-guard",
             validation_errors=capability_gaps,
         )
+
+    answered_workflow = _latest_mixed_path_choice(answered_context)
+    if answered_workflow is not None:
+        decision = deterministic_fallback_decision(
+            normalized_goal,
+            sources,
+            answered_context,
+        )
+        if decision.intent in {"literature-synthesis", "dataset-analysis"}:
+            return _result(
+                decision,
+                input_sha256=input_sha256,
+                parse_result="deterministic-capability-guard",
+                validation_errors=("explicit-user-workflow-choice",),
+            )
 
     if not gateway_configured or gateway is None:
         decision = deterministic_fallback_decision(
@@ -593,6 +624,27 @@ def _latest_single_choice_workflow(
             raw_response = response_mapping.get("value")
         if isinstance(raw_response, str) and raw_response in _RESOLVED_WORKFLOW_TYPES:
             return cast(ResolvedWorkflowType, raw_response)
+    return None
+
+
+def _latest_mixed_path_choice(
+    answered_context: Sequence[Mapping[str, object]],
+) -> ResolvedWorkflowType | None:
+    for answer in reversed(answered_context):
+        raw_options = answer.get("options")
+        if not isinstance(raw_options, list):
+            continue
+        option_values: set[str] = set()
+        for raw_option in cast(list[object], raw_options):
+            if not isinstance(raw_option, Mapping):
+                continue
+            option = cast(Mapping[str, object], raw_option)
+            value = option.get("value")
+            if isinstance(value, str):
+                option_values.add(value)
+        if option_values != {"literature-synthesis", "dataset-analysis"}:
+            continue
+        return _latest_single_choice_workflow((answer,))
     return None
 
 

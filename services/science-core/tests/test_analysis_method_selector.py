@@ -196,6 +196,78 @@ def test_chinese_column_names_are_matched_without_ascii_spacing() -> None:
     assert decision.operation.y_column == "认知得分"
 
 
+def _trend_profile() -> DatasetProfile:
+    return _profile(
+        _column("Year", "integer"),
+        _column("J-D", "number"),
+        _column("site", "string", values=["north", "south"], unique_count=2),
+    )
+
+
+def test_trend_goal_binds_y_over_x_roles() -> None:
+    decision = _select("Analyze the trend of J-D over Year", _trend_profile())
+
+    assert isinstance(decision, AnalysisSpec)
+    assert isinstance(decision.operation, CorrelationOperation)
+    assert decision.operation.x_column == "Year"
+    assert decision.operation.y_column == "J-D"
+    assert decision.operation.method == "auto"
+    assert decision.operation.plot == "scatter"
+
+
+def test_trend_goal_binds_y_versus_x_roles() -> None:
+    decision = _select("Analyze the trend of J-D versus Year", _trend_profile())
+
+    assert isinstance(decision, AnalysisSpec)
+    assert isinstance(decision.operation, CorrelationOperation)
+    assert decision.operation.x_column == "Year"
+    assert decision.operation.y_column == "J-D"
+
+
+def test_chinese_trend_goal_binds_roles() -> None:
+    decision = _select("分析 J-D 随 Year 的趋势。", _trend_profile())
+
+    assert isinstance(decision, AnalysisSpec)
+    assert isinstance(decision.operation, CorrelationOperation)
+    assert decision.operation.x_column == "Year"
+    assert decision.operation.y_column == "J-D"
+
+
+def test_compound_distribution_and_trend_goal_requires_clarification() -> None:
+    decision = _select(
+        "Describe the distribution and trend of J-D over Year.",
+        _trend_profile(),
+    )
+
+    assert isinstance(decision, ClarificationProposal)
+    assert _clarification_types(decision) == {"analysis-objective"}
+
+
+def test_non_trend_correlation_keeps_positional_column_order() -> None:
+    decision = _select("Check whether J-D and Year are correlated.", _trend_profile())
+
+    assert isinstance(decision, AnalysisSpec)
+    assert isinstance(decision.operation, CorrelationOperation)
+    assert decision.operation.x_column == "J-D"
+    assert decision.operation.y_column == "Year"
+
+
+def test_answered_columns_override_trend_role_wording() -> None:
+    decision = _select(
+        "Analyze the trend of J-D over Year",
+        _trend_profile(),
+        answered_context=[
+            {"type": "x-column", "response": "J-D"},
+            {"type": "y-column", "response": "Year"},
+        ],
+    )
+
+    assert isinstance(decision, AnalysisSpec)
+    assert isinstance(decision.operation, CorrelationOperation)
+    assert decision.operation.x_column == "J-D"
+    assert decision.operation.y_column == "Year"
+
+
 def test_ambiguous_two_group_goal_asks_for_group_and_outcome() -> None:
     profile = _profile(
         _column("group", "string", values=["treatment", "control"], unique_count=2),

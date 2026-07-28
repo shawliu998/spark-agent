@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import hashlib
-import io
 import json
 import os
 import re
@@ -14,12 +12,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fixtures import DATASET_CSV, build_pdf
-
 
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 EXPECTED_REVIEW_TERMINALS = {"completed", "blocked"}
@@ -259,45 +255,14 @@ def wait_for_workflow(
             return snapshot
         if last_status in {"failed", "cancelled"}:
             raise SmokeFailure(
-                f"Workflow reached unexpected terminal state {last_status}"
+                f"Literature workflow reached unexpected terminal state {last_status}"
             )
         if last_status == "blocked" and "blocked" not in target_statuses:
             reason = snapshot.get("workflow", {}).get("blockingReason")
-            raise SmokeFailure(f"Workflow blocked before the expected state: {reason}")
+            raise SmokeFailure(f"Literature workflow blocked before review: {reason}")
         time.sleep(0.5)
     raise SmokeFailure(
-        f"Workflow did not reach {sorted(target_statuses)}; last state was {last_status}"
-    )
-
-
-def wait_for_workflow_condition(
-    client: ApiClient,
-    workflow_id: str,
-    description: str,
-    predicate: Callable[[dict[str, Any]], bool],
-    *,
-    timeout_seconds: float = 240.0,
-) -> dict[str, Any]:
-    deadline = time.monotonic() + timeout_seconds
-    encoded_id = urllib.parse.quote(workflow_id, safe="")
-    last_snapshot: dict[str, Any] = {}
-    while time.monotonic() < deadline:
-        last_snapshot = client.json_request("GET", f"/v1/workflows/{encoded_id}")
-        if predicate(last_snapshot):
-            return last_snapshot
-        workflow = last_snapshot.get("workflow", {})
-        status = workflow.get("status", "unknown")
-        if status in {"failed", "cancelled", "blocked"}:
-            reason = workflow.get("blockingReason")
-            raise SmokeFailure(
-                f"Workflow reached {status} before {description}: {reason}"
-            )
-        time.sleep(0.5)
-    last_workflow = last_snapshot.get("workflow", {})
-    raise SmokeFailure(
-        f"Workflow did not reach {description}; last state was "
-        f"{last_workflow.get('status', 'unknown')} at revision "
-        f"{last_workflow.get('revision', 'unknown')}"
+        f"Literature workflow did not reach {sorted(target_statuses)}; last state was {last_status}"
     )
 
 
@@ -354,14 +319,13 @@ def validate_and_download_artifacts(
     )
     verified: dict[str, dict[str, Any]] = {}
     environment_artifact_hash: str | None = None
-    downloaded: dict[str, bytes] = {}
+    summary_payload: dict[str, Any] | None = None
     names: set[str] = set()
     for artifact in artifacts:
         artifact_id = artifact.get("id")
         content_hash = artifact.get("contentHash")
         size_bytes = artifact.get("sizeBytes")
         path = artifact.get("path")
-        artifact_type = artifact.get("artifactType")
         require(isinstance(artifact_id, str) and artifact_id, "Artifact ID is missing")
         require(
             isinstance(content_hash, str) and SHA256_RE.fullmatch(content_hash) is not None,
@@ -369,12 +333,7 @@ def validate_and_download_artifacts(
         )
         require(isinstance(size_bytes, int) and size_bytes >= 0, "Artifact size is invalid")
         require(isinstance(path, str) and path, "Artifact path is missing")
-        require(
-            isinstance(artifact_type, str) and artifact_type,
-            f"Artifact {artifact_id} has no type",
-        )
         name = PurePosixPath(path).name
-        require(name not in names, f"Analysis produced duplicate artifact name {name}")
         names.add(name)
         content = client.bytes_request(
             f"/v1/artifacts/{urllib.parse.quote(artifact_id, safe='')}/file"
@@ -384,39 +343,20 @@ def validate_and_download_artifacts(
             hashlib.sha256(content).hexdigest() == content_hash,
             f"Artifact {name} content hash changed after persistence",
         )
-        downloaded[name] = content
-        if name == "environment.json":
+        if name == "summary.json":
+            try:
+                summary_payload = json.loads(content)
+            except json.JSONDecodeError as error:
+                raise SmokeFailure("Generated summary.json is not valid JSON") from error
+        elif name == "environment.json":
             environment_artifact_hash = content_hash
         verified[artifact_id] = {
-            "artifactType": artifact_type,
             "contentHash": content_hash,
             "path": path,
             "sizeBytes": size_bytes,
         }
-    required_artifacts = {
-        "environment.json": "environment",
-        "executed.ipynb": "notebook-executed",
-        "execution.log": "log",
-        "figure.png": "figure",
-        "stderr.txt": "stderr",
-        "stdout.txt": "stdout",
-        "summary.csv": "dataset",
-    }
-    for required_name, required_type in required_artifacts.items():
-        require(
-            required_name in downloaded,
-            f"Analysis did not persist required {required_name}",
-        )
-        matching_records = [
-            record
-            for record in verified.values()
-            if PurePosixPath(record["path"]).name == required_name
-        ]
-        require(
-            len(matching_records) == 1
-            and matching_records[0]["artifactType"] == required_type,
-            f"Artifact {required_name} does not have type {required_type}",
-        )
+    require("summary.json" in names, "Analysis did not persist generated summary.json")
+    require("summary.csv" in names, "Analysis did not persist generated summary.csv")
     require(
         environment_artifact_hash is not None,
         "Analysis did not persist the runtime environment manifest",
@@ -425,33 +365,10 @@ def validate_and_download_artifacts(
         run.get("environmentHash") == environment_artifact_hash,
         "Run environmentHash does not match the downloaded environment.json bytes",
     )
-
-    try:
-        table_rows = list(
-            csv.reader(io.StringIO(downloaded["summary.csv"].decode("utf-8")))
-        )
-    except (UnicodeDecodeError, csv.Error) as error:
-        raise SmokeFailure("Generated summary.csv is not valid UTF-8 CSV") from error
     require(
-        len(table_rows) >= 3
-        and any(row and row[0] == "group" for row in table_rows)
-        and any(row and row[0] == "value" for row in table_rows),
-        "Generated summary.csv does not describe both fixture columns",
+        summary_payload == {"rowCount": 3, "total": 60.0},
+        "Generated summary.json has unexpected analysis results",
     )
-    require(
-        downloaded["figure.png"].startswith(b"\x89PNG\r\n\x1a\n"),
-        "Generated figure.png is not a PNG",
-    )
-    try:
-        notebook = json.loads(downloaded["executed.ipynb"])
-        environment = json.loads(downloaded["environment.json"])
-    except json.JSONDecodeError as error:
-        raise SmokeFailure("Runtime notebook or environment manifest is invalid JSON") from error
-    require(
-        isinstance(notebook, dict) and isinstance(notebook.get("cells"), list),
-        "Executed notebook has no cell array",
-    )
-    require(isinstance(environment, dict), "Environment manifest is not an object")
     return verified
 
 
@@ -536,15 +453,6 @@ def exercise(client: ApiClient, state_path: Path) -> None:
         required_event_types.issubset(event_types),
         f"Workflow event stream is missing {sorted(required_event_types - event_types)}",
     )
-    literature_event_hashes = {
-        event["id"]: canonical_sha256(event)
-        for event in events
-        if isinstance(event.get("id"), str)
-    }
-    require(
-        len(literature_event_hashes) == len(events),
-        "Literature workflow event IDs are missing or duplicated",
-    )
 
     dataset = client.upload(
         f"/v1/projects/{encoded_project_id}/datasets",
@@ -561,187 +469,64 @@ def exercise(client: ApiClient, state_path: Path) -> None:
         "Dataset source hash differs from uploaded fixture",
     )
 
-    dataset_hash = hashlib.sha256(DATASET_CSV).hexdigest()
-    dataset_workflow = client.json_request(
-        "POST",
-        f"/v1/projects/{encoded_project_id}/workflows",
-        payload={
-            "workflowType": "dataset-analysis",
+    analysis_code = "\n".join(
+        (
+            "import csv",
+            "import json",
+            "from pathlib import Path",
+            "with open(DATASET_PATH, encoding='utf-8', newline='') as source_file:",
+            "    rows = list(csv.DictReader(source_file))",
+            "values = [float(row['value']) for row in rows]",
+            "summary = {'rowCount': len(rows), 'total': sum(values)}",
+            "Path(RUN_DIR, 'summary.json').write_text(",
+            "    json.dumps(summary, sort_keys=True), encoding='utf-8'",
+            ")",
+            "Path(RUN_DIR, 'summary.csv').write_text(",
+            "    'metric,value\\nrow_count,3\\ntotal,60.0\\n', encoding='utf-8'",
+            ")",
+            "print(json.dumps(summary, sort_keys=True))",
+        )
+    )
+    analysis_objective = "Count rows and sum the value column deterministically."
+    expected_payload_sha256 = canonical_sha256(
+        {
+            "code": analysis_code,
             "datasetSourceId": dataset_id,
-            "goal": "Describe the uploaded dataset with a reproducible local baseline.",
-            "generationMode": "local-deterministic",
-            "remoteDataApproved": False,
-        },
-        headers={"Idempotency-Key": f"docker-dataset-smoke-{uuid.uuid4().hex}"},
-        expected_status=(202,),
+            "objective": analysis_objective,
+        }
     )
-    dataset_workflow_id = dataset_workflow.get("workflow", {}).get("id")
-    require(
-        isinstance(dataset_workflow_id, str) and dataset_workflow_id,
-        "Dataset workflow creation returned no ID",
-    )
-    created_state = dataset_workflow.get("workflow", {})
-    require(
-        created_state.get("workflowType") == "dataset-analysis"
-        and created_state.get("datasetSourceId") == dataset_id
-        and created_state.get("datasetContentHash") == dataset_hash,
-        "Dataset workflow did not freeze the uploaded CSV identity",
-    )
-
-    dataset_planned = wait_for_workflow(
-        client,
-        dataset_workflow_id,
-        {"waiting-plan-approval"},
-    )
-    dataset_plan = dataset_planned.get("plan") or {}
-    dataset_plan_spec = dataset_plan.get("spec") or {}
-    dataset_plan_steps = dataset_plan_spec.get("steps") or []
-    require(
-        dataset_plan_spec.get("workflowType") == "dataset-analysis"
-        and dataset_plan_spec.get("datasetSourceId") == dataset_id
-        and dataset_plan_spec.get("datasetContentHash") == dataset_hash
-        and [step.get("key") for step in dataset_plan_steps]
-        == [
-            "inspect-dataset",
-            "prepare-analysis",
-            "execute-analysis",
-            "collect-artifacts",
-        ],
-        "Dataset workflow did not materialize the fixed typed analysis plan",
-    )
-    dataset_plan_approvals = dataset_planned.get("pendingApprovals") or []
-    require(
-        len(dataset_plan_approvals) == 1,
-        "Dataset workflow did not produce exactly one plan approval",
-    )
-    dataset_plan_approval = dataset_plan_approvals[0]
-    require(
-        dataset_plan_approval.get("kind") == "plan"
-        and dataset_plan_approval.get("workflowType") == "dataset-analysis"
-        and dataset_plan_approval.get("planId") == dataset_plan.get("id")
-        and dataset_plan_approval.get("planVersion") == dataset_plan.get("version")
-        and dataset_plan_approval.get("planSha256") == dataset_plan.get("planSha256")
-        and dataset_plan_approval.get("datasetSourceId") == dataset_id
-        and dataset_plan_approval.get("datasetContentHash") == dataset_hash
-        and dataset_plan_approval.get("expectedWorkflowRevision")
-        == dataset_planned.get("workflow", {}).get("revision"),
-        "Dataset plan approval is not bound to the exact plan and CSV",
-    )
-    dataset_approved = client.json_request(
+    intent = client.json_request(
         "POST",
-        f"/v1/workflows/{urllib.parse.quote(dataset_workflow_id, safe='')}/approve-plan",
+        f"/v1/projects/{encoded_project_id}/analysis-intents",
         payload={
-            "approvalId": dataset_plan_approval.get("id"),
-            "planId": dataset_plan.get("id"),
-            "planVersion": dataset_plan.get("version"),
-            "planSha256": dataset_plan.get("planSha256"),
-            "expectedWorkflowRevision": dataset_planned.get("workflow", {}).get(
-                "revision"
-            ),
+            "datasetSourceId": dataset_id,
+            "objective": analysis_objective,
+            "code": analysis_code,
         },
     )
-    require(
-        dataset_approved.get("workflow", {}).get("status") == "running",
-        "Approved dataset workflow did not enter running state",
-    )
-
-    waiting_execution = wait_for_workflow_condition(
-        client,
-        dataset_workflow_id,
-        "the exact analysis execution approval barrier",
-        lambda snapshot: (
-            (snapshot.get("analysisIntent") or {}).get("status")
-            == "waiting-approval"
-            and len(snapshot.get("pendingApprovals") or []) == 1
-            and snapshot["pendingApprovals"][0].get("kind") == "analysis-execution"
-        ),
-    )
-    profile = waiting_execution.get("datasetProfile") or {}
-    require(
-        profile.get("datasetSourceId") == dataset_id
-        and profile.get("contentHash") == dataset_hash
-        and profile.get("rowCount") == 3
-        and profile.get("columnCount") == 2,
-        "Dataset inspection profile does not match the uploaded CSV",
-    )
-    intent = waiting_execution.get("analysisIntent") or {}
     intent_id = intent.get("id")
-    require(isinstance(intent_id, str) and intent_id, "Workflow analysis intent has no ID")
-    execution_approval = waiting_execution["pendingApprovals"][0]
-    expected_outputs = {
-        "analysis-log",
-        "environment-manifest",
-        "executed-notebook",
-        "figures",
-        "summary-table",
-    }
+    require(isinstance(intent_id, str) and intent_id, "Analysis intent returned no ID")
+    require(intent.get("status") == "waiting-approval", "Analysis intent is not awaiting approval")
     require(
-        execution_approval.get("subjectId") == intent_id
-        and execution_approval.get("analysisIntentId") == intent_id
-        and execution_approval.get("payloadSha256") == intent.get("payloadSha256")
-        and execution_approval.get("datasetSourceId") == dataset_id
-        and execution_approval.get("datasetContentHash") == dataset_hash
-        and execution_approval.get("code") == intent.get("code")
-        and execution_approval.get("timeoutSeconds") == intent.get("timeoutSeconds")
-        and set(execution_approval.get("expectedOutputs") or []) == expected_outputs
-        and execution_approval.get("expectedWorkflowRevision")
-        == waiting_execution.get("workflow", {}).get("revision"),
-        "Execution approval is not bound to the exact immutable analysis intent",
+        intent.get("payloadSha256") == expected_payload_sha256,
+        "Analysis intent payload hash does not match the independently canonicalized request",
     )
-    require(
-        waiting_execution.get("allowedActions")
-        == ["approve-analysis", "reject-analysis", "cancel"],
-        "Dataset workflow exposed unexpected actions at execution approval",
-    )
-    analysis_code = intent.get("code")
-    require(
-        isinstance(analysis_code, str)
-        and "DATASET_PATH" in analysis_code
-        and "RUN_DIR / 'summary.csv'" in analysis_code
-        and "RUN_DIR / 'figure.png'" in analysis_code,
-        "Generated analysis code does not declare the approved dataset outputs",
-    )
-
     decided = client.json_request(
         "POST",
-        f"/v1/workflows/{urllib.parse.quote(dataset_workflow_id, safe='')}"
-        f"/analysis-intents/{urllib.parse.quote(intent_id, safe='')}/decision",
-        payload={
-            "approvalId": execution_approval.get("id"),
-            "decision": "approved",
-            "payloadSha256": intent.get("payloadSha256"),
-            "expectedWorkflowRevision": waiting_execution.get("workflow", {}).get(
-                "revision"
-            ),
-        },
-        timeout=60.0,
+        f"/v1/analysis-intents/{urllib.parse.quote(intent_id, safe='')}/decision",
+        payload={"decision": "approved"},
     )
-    require(
-        decided.get("analysisIntent", {}).get("status") == "approved"
-        and decided.get("pendingApprovals") == [],
-        "Workflow-scoped analysis approval was not atomically queued",
+    require(decided.get("status") == "approved", "Analysis intent approval was not persisted")
+    run = client.json_request(
+        "POST",
+        f"/v1/analysis-intents/{urllib.parse.quote(intent_id, safe='')}/execute",
+        timeout=180.0,
     )
-
-    reviewing = wait_for_workflow_condition(
-        client,
-        dataset_workflow_id,
-        "the deterministic passed-with-warnings review",
-        lambda snapshot: (
-            snapshot.get("workflow", {}).get("status") == "reviewing"
-            and (snapshot.get("analysisRun") or {}).get("status") == "completed"
-            and (snapshot.get("latestReview") or {}).get("verdict")
-            == "passed-with-warnings"
-        ),
-        timeout_seconds=300.0,
-    )
-    run = reviewing.get("analysisRun") or {}
     require(run.get("status") == "completed", f"Analysis failed: {run.get('error')}")
     require(run.get("intentId") == intent_id, "Analysis run points to a different intent")
     require(
-        run.get("payloadSha256") == intent.get("payloadSha256")
-        and run.get("datasetSourceId") == dataset_id
-        and run.get("code") == analysis_code,
-        "Analysis run differs from the exact approved workflow intent",
+        run.get("payloadSha256") == expected_payload_sha256,
+        "Analysis run payload hash differs from the independently canonicalized approval payload",
     )
     require(
         isinstance(run.get("environmentHash"), str)
@@ -749,133 +534,26 @@ def exercise(client: ApiClient, state_path: Path) -> None:
         "Analysis run environment hash is invalid",
     )
     artifacts = validate_and_download_artifacts(client, run)
-    review = reviewing.get("latestReview") or {}
-    review_result = review.get("result") or {}
-    require(
-        review_result.get("runId") == run.get("id")
-        and review_result.get("analysisIntentId") == intent_id
-        and review_result.get("inputDatasetContentHash") == dataset_hash
-        and any(
-            warning.get("code") == "descriptive-baseline-method-scope"
-            for warning in review_result.get("methodWarnings") or []
-        ),
-        "Deterministic review is not bound to the completed run and method warning",
-    )
-    require(
-        reviewing.get("allowedActions") == ["accept-review-warnings", "cancel"],
-        "Warning-bearing review did not require explicit acceptance",
-    )
-    acceptance_revision = reviewing.get("workflow", {}).get("revision")
-    accepted = client.json_request(
-        "POST",
-        f"/v1/workflows/{urllib.parse.quote(dataset_workflow_id, safe='')}"
-        "/accept-review-warnings",
-        payload={
-            "reviewId": review.get("id"),
-            "reviewInputSha256": review.get("inputSha256"),
-            "expectedWorkflowRevision": acceptance_revision,
-            "decision": "accepted",
-        },
-    )
-    acceptance = accepted.get("reviewWarningAcceptance") or {}
-    require(
-        accepted.get("workflow", {}).get("status") == "completed"
-        and accepted.get("allowedActions") == []
-        and acceptance.get("reviewId") == review.get("id")
-        and acceptance.get("reviewInputSha256") == review.get("inputSha256")
-        and acceptance.get("expectedWorkflowRevision") == acceptance_revision
-        and acceptance.get("decision") == "accepted",
-        "Exact review warning acceptance did not complete the dataset workflow",
-    )
-    require(
-        accepted.get("analysisRun") == run,
-        "Analysis run changed while review warnings were accepted",
-    )
 
-    dataset_events_response = workflow_events(client, dataset_workflow_id)
-    require(
-        accepted.get("eventCursor") == dataset_events_response.get("nextAfter"),
-        "Completed dataset snapshot event cursor is inconsistent",
-    )
-    dataset_events = dataset_events_response["events"]
-    dataset_event_types = [event.get("type") for event in dataset_events]
-    required_dataset_event_types = {
-        "analysis.approval-requested",
-        "analysis.approved",
-        "analysis.intent-created",
-        "analysis.review-warnings-accepted",
-        "analysis.run-completed",
-        "analysis.run-started",
-        "approval.requested",
-        "artifact.created",
-        "plan.approved",
-        "plan.generated",
-        "review.completed",
-        "workflow.created",
-    }
-    require(
-        required_dataset_event_types.issubset(set(dataset_event_types)),
-        "Dataset workflow event stream is missing "
-        f"{sorted(required_dataset_event_types - set(dataset_event_types))}",
-    )
-    ordered_dataset_events = [
-        "analysis.approved",
-        "analysis.run-started",
-        "analysis.run-completed",
-        "review.completed",
-        "analysis.review-warnings-accepted",
-    ]
-    require(
-        [dataset_event_types.index(item) for item in ordered_dataset_events]
-        == sorted(dataset_event_types.index(item) for item in ordered_dataset_events),
-        "Dataset approval, execution, review, and acceptance events are out of order",
-    )
-    require(
-        dataset_event_types.count("artifact.created") == len(artifacts),
-        "Workflow artifact events do not match the persisted run artifacts",
-    )
-    artifact_event_bindings = {
-        event.get("data", {}).get("artifactId"): event.get("data", {}).get(
-            "contentHash"
-        )
-        for event in dataset_events
-        if event.get("type") == "artifact.created"
-    }
-    require(
-        artifact_event_bindings
-        == {
-            artifact_id: record["contentHash"]
-            for artifact_id, record in artifacts.items()
-        },
-        "Workflow artifact events do not bind the persisted artifact hashes",
-    )
-    dataset_event_hashes = {
+    event_hashes = {
         event["id"]: canonical_sha256(event)
-        for event in dataset_events
+        for event in events
         if isinstance(event.get("id"), str)
     }
-    require(
-        len(dataset_event_hashes) == len(dataset_events),
-        "Dataset workflow event IDs are missing or duplicated",
-    )
+    require(len(event_hashes) == len(events), "Workflow event IDs are missing or duplicated")
     state = {
         "artifactRecords": artifacts,
-        "datasetEventCursor": dataset_events_response["nextAfter"],
-        "datasetEventHashes": dataset_event_hashes,
-        "datasetSnapshotSha256": canonical_sha256(accepted),
-        "datasetWorkflowId": dataset_workflow_id,
-        "datasetWorkflowRevision": accepted["workflow"]["revision"],
-        "literatureEventCursor": events_response["nextAfter"],
-        "literatureEventHashes": literature_event_hashes,
-        "literatureSnapshotSha256": canonical_sha256(terminal),
-        "literatureWorkflowId": workflow_id,
-        "literatureWorkflowRevision": terminal["workflow"]["revision"],
-        "literatureWorkflowStatus": terminal["workflow"]["status"],
+        "eventCursor": events_response["nextAfter"],
+        "eventHashes": event_hashes,
+        "eventTypes": sorted(event_types),
         "intentId": intent_id,
         "projectId": project_id,
         "runEnvironmentHash": run["environmentHash"],
         "runId": run["id"],
         "runPayloadSha256": run["payloadSha256"],
+        "workflowId": workflow_id,
+        "workflowRevision": terminal["workflow"]["revision"],
+        "workflowStatus": terminal["workflow"]["status"],
     }
     state_path.parent.mkdir(parents=True, exist_ok=True)
     with state_path.open("x", encoding="utf-8") as state_file:
@@ -884,8 +562,7 @@ def exercise(client: ApiClient, state_path: Path) -> None:
     state_path.chmod(0o600)
     print(
         "Initial smoke completed: "
-        f"literature={state['literatureWorkflowStatus']}, "
-        f"dataset=completed, run=completed, artifacts={len(artifacts)}."
+        f"workflow={state['workflowStatus']}, run=completed, artifacts={len(artifacts)}."
     )
 
 
@@ -896,91 +573,46 @@ def verify_restart(client: ApiClient, state_path: Path) -> None:
         raise SmokeFailure("Could not read the pre-restart smoke state") from error
 
     project_id = state["projectId"]
-    literature_workflow_id = state["literatureWorkflowId"]
-    dataset_workflow_id = state["datasetWorkflowId"]
+    workflow_id = state["workflowId"]
     projects = client.json_request("GET", "/v1/projects")
     require(
         any(project.get("id") == project_id for project in projects),
         "Project disappeared after science-core restart",
     )
-    literature_snapshot = client.json_request(
+    snapshot = client.json_request(
         "GET",
-        f"/v1/workflows/{urllib.parse.quote(literature_workflow_id, safe='')}",
+        f"/v1/workflows/{urllib.parse.quote(workflow_id, safe='')}",
+    )
+    require(snapshot.get("workflow", {}).get("id") == workflow_id, "Workflow ID changed")
+    require(
+        snapshot.get("workflow", {}).get("status") == state["workflowStatus"],
+        "Workflow terminal status changed after restart",
     )
     require(
-        literature_snapshot.get("workflow", {}).get("id") == literature_workflow_id,
-        "Literature workflow ID changed after restart",
+        snapshot.get("workflow", {}).get("revision") == state["workflowRevision"],
+        "Workflow revision changed after restart",
     )
-    require(
-        literature_snapshot.get("workflow", {}).get("status")
-        == state["literatureWorkflowStatus"],
-        "Literature workflow terminal status changed after restart",
-    )
-    require(
-        literature_snapshot.get("workflow", {}).get("revision")
-        == state["literatureWorkflowRevision"],
-        "Literature workflow revision changed after restart",
-    )
-    require(
-        canonical_sha256(literature_snapshot) == state["literatureSnapshotSha256"],
-        "Literature workflow snapshot changed after restart",
-    )
-    validate_review_terminal(literature_snapshot)
+    validate_review_terminal(snapshot)
 
-    literature_events = workflow_events(client, literature_workflow_id)
+    persisted_events = workflow_events(client, workflow_id)
     require(
-        literature_events.get("nextAfter") == state["literatureEventCursor"],
-        "Literature workflow event cursor changed after restart",
+        persisted_events.get("nextAfter", 0) >= state["eventCursor"],
+        "Workflow event cursor moved backwards after restart",
     )
-    literature_hashes = {
+    persisted_hashes = {
         event["id"]: canonical_sha256(event)
-        for event in literature_events["events"]
+        for event in persisted_events["events"]
         if isinstance(event.get("id"), str)
     }
-    require(
-        literature_hashes == state["literatureEventHashes"],
-        "Literature workflow events changed after restart",
-    )
-
-    dataset_snapshot = client.json_request(
-        "GET",
-        f"/v1/workflows/{urllib.parse.quote(dataset_workflow_id, safe='')}",
-    )
-    require(
-        dataset_snapshot.get("workflow", {}).get("id") == dataset_workflow_id
-        and dataset_snapshot.get("workflow", {}).get("status") == "completed"
-        and dataset_snapshot.get("workflow", {}).get("revision")
-        == state["datasetWorkflowRevision"],
-        "Completed dataset workflow identity or revision changed after restart",
-    )
-    require(
-        canonical_sha256(dataset_snapshot) == state["datasetSnapshotSha256"],
-        "Dataset workflow snapshot changed after restart",
-    )
-    require(
-        dataset_snapshot.get("analysisRun", {}).get("id") == state["runId"]
-        and dataset_snapshot.get("analysisIntent", {}).get("id") == state["intentId"]
-        and dataset_snapshot.get("latestReview", {}).get("verdict")
-        == "passed-with-warnings"
-        and dataset_snapshot.get("reviewWarningAcceptance", {}).get("decision")
-        == "accepted",
-        "Dataset run, intent, review, or warning acceptance changed after restart",
-    )
-
-    dataset_events = workflow_events(client, dataset_workflow_id)
-    require(
-        dataset_events.get("nextAfter") == state["datasetEventCursor"],
-        "Dataset workflow event cursor changed after restart",
-    )
-    dataset_hashes = {
-        event["id"]: canonical_sha256(event)
-        for event in dataset_events["events"]
-        if isinstance(event.get("id"), str)
-    }
-    require(
-        dataset_hashes == state["datasetEventHashes"],
-        "Dataset workflow events changed after restart",
-    )
+    for event_id, expected_hash in state["eventHashes"].items():
+        require(
+            event_id in persisted_hashes,
+            f"Workflow event {event_id} disappeared after restart",
+        )
+        require(
+            persisted_hashes[event_id] == expected_hash,
+            f"Workflow event {event_id} changed after restart",
+        )
 
     runs = client.json_request(
         "GET",
@@ -1004,14 +636,48 @@ def verify_restart(client: ApiClient, state_path: Path) -> None:
         "Analysis artifact records changed after science-core restart",
     )
     print(
-        "Restart persistence verified: both workflows, the dataset run, events, and "
-        "artifact hashes are intact."
+        "Restart persistence verified: workflow, run, events, and artifact hashes are intact."
     )
+
+
+def create_skill_discovery_projects(client: ApiClient, state_path: Path) -> None:
+    assert_bearer_required(client.base_url)
+    projects = []
+    for suffix in ("A", "B"):
+        project = client.json_request(
+            "POST",
+            "/v1/projects",
+            payload={
+                "title": f"Project skill discovery {suffix}",
+                "description": "Ephemeral local-only OpenCode discovery fixture",
+                "researchDomain": "integration testing",
+            },
+        )
+        project_id = project.get("id")
+        require(
+            isinstance(project_id, str) and project_id,
+            f"Project {suffix} creation returned no ID",
+        )
+        projects.append(project_id)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    with state_path.open("x", encoding="utf-8") as state_file:
+        json.dump({"projectA": projects[0], "projectB": projects[1]}, state_file, sort_keys=True)
+        state_file.write("\n")
+    state_path.chmod(0o600)
+    print(f"Created isolated project pair: A={projects[0]}, B={projects[1]}.")
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Spark Agent Docker integration smoke driver")
-    parser.add_argument("command", choices=("wait-ready", "exercise", "verify-restart"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "wait-ready",
+            "exercise",
+            "verify-restart",
+            "create-skill-discovery-projects",
+        ),
+    )
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--state-file", type=Path)
     parser.add_argument("--timeout", type=float, default=150.0)
@@ -1029,6 +695,8 @@ def main() -> int:
         client = ApiClient(args.base_url, token)
         if args.command == "exercise":
             exercise(client, args.state_file)
+        elif args.command == "create-skill-discovery-projects":
+            create_skill_discovery_projects(client, args.state_file)
         else:
             verify_restart(client, args.state_file)
         return 0

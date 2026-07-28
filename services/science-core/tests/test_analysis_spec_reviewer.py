@@ -443,3 +443,73 @@ def test_descriptive_summary_row_order_does_not_change_consistency() -> None:
 
     assert review.verdict == "passed"
     assert "score: n=3, missing=0" in review.conclusion
+
+
+def test_descriptive_summary_accepts_integral_csv_float_rendering() -> None:
+    spec = AnalysisSpec.model_validate(
+        {
+            "schemaVersion": "1",
+            "objective": "Summarize score.",
+            "datasetSourceId": "dataset-1",
+            "datasetContentHash": DATASET_HASH,
+            "datasetProfileHash": PROFILE_HASH,
+            "operation": {
+                "type": "descriptive",
+                "columns": ["score"],
+                "statistics": ["count", "missing", "mean"],
+                "plot": "none",
+            },
+            "missingValuePolicy": "drop-per-operation",
+            "confidenceLevel": 0.95,
+            "randomSeed": 42,
+            "assumptions": [],
+            "limitations": [],
+        }
+    )
+    result = StructuredAnalysisResult.model_validate(
+        {
+            "schemaVersion": "1",
+            "objective": "Summarize score.",
+            "operationType": "descriptive",
+            "datasetSourceId": "dataset-1",
+            "datasetContentHash": DATASET_HASH,
+            "datasetProfileHash": PROFILE_HASH,
+            "requestedMethod": "descriptive",
+            "resolvedMethod": "descriptive",
+            "methodSelectionReason": "Descriptive statistics were requested.",
+            "sampleSummary": {"totalRows": 3, "analyzedRows": 3, "missingRows": 0},
+            "result": {
+                "type": "descriptive",
+                "columns": [
+                    {
+                        "column": "score",
+                        "sampleSize": 3,
+                        "missingCount": 0,
+                        "statistics": {"count": 3, "missing": 0, "mean": 2.0},
+                    }
+                ],
+            },
+            "warnings": [],
+            "limitations": [],
+        }
+    )
+    identity = _identity(spec)
+
+    review = review_analysis_spec_outputs(
+        analysis_spec_json=canonical_model_json_bytes(spec),
+        results_json=canonical_model_json_bytes(result),
+        summary_csv=(
+            b"column,statistic,value\nscore,count,3.0\nscore,missing,0.0\nscore,mean,2.0\n"
+        ),
+        executed_notebook_json=_notebook(),
+        approved_code=APPROVED_CODE,
+        approved_identity=identity,
+        observed_identity=identity,
+        expected_result_sha256=hashlib.sha256(canonical_model_json_bytes(result)).hexdigest(),
+        figure_lineage=None,
+    )
+
+    assert review.verdict == "passed"
+    assert next(
+        check for check in review.checks if check.code == "summary-matches-results"
+    ).status == "passed"

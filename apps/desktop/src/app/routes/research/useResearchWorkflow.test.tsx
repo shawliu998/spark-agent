@@ -16,6 +16,7 @@ const core = vi.hoisted(() => ({
   createWorkflow: vi.fn(),
   createAgentRun: vi.fn(),
   respondToInteraction: vi.fn(),
+  resolveAgentDecision: vi.fn(),
   approveWorkflowPlan: vi.fn(),
   decideWorkflowAnalysisIntent: vi.fn(),
   acceptWorkflowReviewWarnings: vi.fn(),
@@ -114,6 +115,7 @@ function pendingAgentSnapshot(): AgentResearchWorkflowSnapshot {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   core.listWorkflows.mockResolvedValue([]);
   core.listAgentRuns.mockResolvedValue([]);
   core.getWorkflow.mockResolvedValue(snapshot());
@@ -213,6 +215,34 @@ describe("useResearchWorkflow", () => {
     unmount();
   });
 
+  it("restores a valid saved workflow instead of replacing it with the newest item", async () => {
+    const older = snapshot("completed", { workflowId: "workflow-older" });
+    const newer = snapshot("completed", { workflowId: "workflow-newer" });
+    newer.workflow.updatedAt = "2026-07-15T08:00:00Z";
+    window.localStorage.setItem("spark.research.lastWorkflowId", "workflow-older");
+    core.listWorkflows.mockResolvedValue([newer, older]);
+    core.getWorkflow.mockImplementation(async (workflowId: string) =>
+      workflowId === "workflow-older" ? older : newer,
+    );
+
+    const { result, unmount } = renderHook(() => useResearchWorkflow("project-1"));
+    await waitFor(() => expect(result.current.selectedWorkflowId).toBe("workflow-older"));
+    expect(window.localStorage.getItem("spark.research.lastWorkflowId")).toBe("workflow-older");
+    unmount();
+  });
+
+  it("falls back to the newest valid workflow when the saved id no longer exists", async () => {
+    const current = snapshot("completed", { workflowId: "workflow-current" });
+    window.localStorage.setItem("spark.research.lastWorkflowId", "workflow-deleted");
+    core.listWorkflows.mockResolvedValue([current]);
+    core.getWorkflow.mockResolvedValue(current);
+
+    const { result, unmount } = renderHook(() => useResearchWorkflow("project-1"));
+    await waitFor(() => expect(result.current.selectedWorkflowId).toBe("workflow-current"));
+    await waitFor(() => expect(window.localStorage.getItem("spark.research.lastWorkflowId")).toBe("workflow-current"));
+    unmount();
+  });
+
   it("creates Auto research from a canonical set of selected source IDs", async () => {
     const agent = pendingAgentSnapshot();
     core.createAgentRun.mockResolvedValue(agent);
@@ -306,6 +336,64 @@ describe("useResearchWorkflow", () => {
         idempotencyKey: expect.any(String),
         signal: expect.any(AbortSignal),
       }),
+    );
+    unmount();
+  });
+
+  it("binds method revision approval to the exact pending decision", async () => {
+    const base = pendingAgentSnapshot();
+    const pendingDecision = {
+      id: "decision-1",
+      status: "waiting-user-confirmation" as const,
+      requiresUserConfirmation: true,
+      outputSha256: "d".repeat(64),
+    };
+    const agent = {
+      ...base,
+      workflow: {
+        ...base.workflow,
+        workflowType: "dataset-analysis",
+        status: "failed",
+        revision: 8,
+      },
+      intentDecision: {
+        ...base.intentDecision,
+        intent: "dataset-analysis",
+        proposedWorkflowType: "dataset-analysis",
+        selectedSourceIds: ["dataset-1"],
+      },
+      pendingDecision,
+      allowedActions: [
+        "approve-agent-decision",
+        "reject-agent-decision",
+        "cancel",
+      ],
+    } as unknown as AgentResearchWorkflowSnapshot;
+    core.listAgentRuns.mockResolvedValue([agent]);
+    core.getAgentRun.mockResolvedValue(agent);
+    core.resolveAgentDecision.mockResolvedValue({
+      ...agent,
+      pendingDecision: { ...pendingDecision, status: "proposed" },
+      allowedActions: ["cancel"],
+    });
+    const { result, unmount } = renderHook(() =>
+      useResearchWorkflow("project-1"),
+    );
+    await waitFor(() => expect(result.current.snapshot?.workflow.id).toBe("agent-run-1"));
+
+    await act(async () => {
+      await result.current.resolveAgentDecision("approved");
+    });
+
+    expect(core.resolveAgentDecision).toHaveBeenCalledWith(
+      "agent-run-1",
+      "decision-1",
+      {
+        decision: "approved",
+        decisionOutputSha256: "d".repeat(64),
+        expectedWorkflowRevision: 8,
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     unmount();
   });

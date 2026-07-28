@@ -14,7 +14,7 @@ OUT_DIR="$ROOT/apps/desktop/src-tauri/binaries"
 # archive and digest together from the single release manifest.
 TRIPLE="${1:-$(rustc -Vv | sed -n 's/host: //p')}"
 RESOLVED_SIDECAR="$(resolve_sidecar opencode "$OPENCODE_VERSION" "$TRIPLE")"
-IFS='|' read -r ASSET EXPECTED_SHA256 <<<"$RESOLVED_SIDECAR"
+IFS='|' read -r ASSET EXPECTED_SHA256 EXPECTED_BINARY_SHA256 <<<"$RESOLVED_SIDECAR"
 
 URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${ASSET}"
 TMP="$(mktemp -d)"
@@ -42,5 +42,6 @@ else
   [ -n "$BIN" ] || { echo "No opencode binary in archive" >&2; exit 1; }
   DESTINATION="$OUT_DIR/opencode-$TRIPLE"
 fi
+verify_sha256 "$BIN" "$EXPECTED_BINARY_SHA256"
 install_sidecar_atomically "$BIN" "$DESTINATION"
 echo "Placed sidecar for $TRIPLE in $OUT_DIR"
