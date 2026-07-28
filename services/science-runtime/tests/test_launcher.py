@@ -36,7 +36,7 @@ def test_socket_watchdog_requires_group_traverse_layout() -> None:
         socket_path = socket_parent / "runtime.sock"
         listener, identity = _bind_listener(socket_path)
         try:
-            assert identity[2] == 0o666
+            assert identity[3] == 0o666
             assert _socket_layout_matches(socket_path, identity)
             sibling = socket_parent / "unexpected"
             sibling.write_text("unexpected", encoding="utf-8")

@@ -620,10 +620,10 @@ fn sanitize_message(value: &str) -> String {
 }
 
 impl CredentialProvider for MacKeychainCredential {
-    fn model_secret(&self, model: &ModelConfig) -> Result<Option<Vec<u8>>, String> {
+    fn model_secret(&self, _model: &ModelConfig) -> Result<Option<Vec<u8>>, String> {
         #[cfg(target_os = "macos")]
         {
-            let Some(account) = model_credential_account(model) else {
+            let Some(account) = model_credential_account(_model) else {
                 return Ok(None);
             };
             let status = CommandSpec {

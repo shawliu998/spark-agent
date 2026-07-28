@@ -148,7 +148,7 @@ turn the workflow into a guessing exercise.
 ## What I led
 
 I led the product definition and orchestration of Spark Agent: positioning,
-competitor research, the agent-native operating model, workflow scope,
+research-product analysis, the agent-native operating model, workflow scope,
 information architecture, interaction trade-offs, acceptance criteria, and
 coordination across multiple models.
 
@@ -185,22 +185,13 @@ implementation. It is not a claim that I manually wrote every line of code.
 - Screening judgments, evidence interpretation, and scientific conclusions remain
   human decisions.
 
-## What it is not
-
-- Not a chat-first research assistant.
-- Not a general coding agent or terminal.
-- Not an autonomous scientist.
-- Not a system that silently broadens a research question or source boundary.
-- Not a claim that citation structure proves scientific correctness.
-- Not a hosted document repository; the primary workspace lives on the local Mac.
-
 ## Download
 
-Download the current macOS preview from
+Download Spark Agent v0.2.0 from
 [GitHub Releases](https://github.com/shawliu998/spark-agent/releases/latest).
 Spark Agent requires macOS 13 or newer and a running Docker Desktop or
-OrbStack installation. The preview is not yet Apple-notarized, so macOS may ask
-you to confirm that you trust the downloaded application.
+OrbStack installation. This build is distributed without Apple notarization;
+macOS may ask you to confirm that you trust the downloaded application.
 
 Model credentials are optional. Crossref/OpenAlex discovery, local PDF
 evidence, deterministic CSV analysis, and approval-gated workflows work without
@@ -287,9 +278,9 @@ contracts live behind the research SDK and Science Core; model providers, Skills
 and MCP servers remain replaceable.
 
 <details>
-<summary><strong>Verification</strong></summary>
+<summary><strong>Quality</strong></summary>
 
-The interview-grade Research Agent story currently passes:
+The Research Agent workflow is covered by:
 
 - 3 focused backend acceptance tests;
 - 138 focused frontend contract tests;
@@ -304,35 +295,18 @@ Run the same focused evidence:
 bash scripts/quality/validate-agent-interview-story.sh
 ```
 
-This is an honest cross-layer acceptance bundle, not one packaged end-to-end run.
-The complete local quality gate remains:
+Run the complete local quality gate with:
 
 ```bash
 pnpm install --frozen-lockfile
 python3.12 -m venv .venv
 source .venv/bin/activate
+python -m pip install \
+  './services/science-core/vendor/paper-search-mcp/paper_search_mcp-0.1.4+spark.3-py3-none-any.whl'
 python -m pip install -e './services/science-core[literature,dev]' \
   -e './services/science-runtime[dev]'
 pnpm quality
 ```
-
-</details>
-
-<details>
-<summary><strong>Current release boundary</strong></summary>
-
-Spark is an internal macOS release candidate. Earlier arm64 snapshots passed
-packaged workflow and restart QA; the latest source changes still need a new
-sealed package. Public distribution additionally needs a clean source baseline,
-Apple Developer ID signing, and notarization.
-
-Crossref and OpenAlex relevance discovery are enabled. arXiv and PubMed remain
-disabled until their connectors preserve the same explicit failure and
-unknown-outcome semantics. Discovery does not automatically download PDFs.
-
-The reviewer verifies result materialization, citation links, local quote
-location, and source-file/page fingerprints. It does not establish scientific
-correctness, methodological quality, entailment, or generalizability.
 
 </details>
 

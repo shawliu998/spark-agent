@@ -14,7 +14,7 @@ import uvicorn
 
 from .config import configured_socket_path
 
-_SocketIdentity = tuple[int, int, int]
+_SocketIdentity = tuple[int, int, int, int]
 
 
 def _prepare_socket_path(socket_path: Path) -> None:
@@ -71,7 +71,12 @@ def _socket_identity(socket_path: Path) -> _SocketIdentity:
     socket_stat = socket_path.lstat()
     if not stat.S_ISSOCK(socket_stat.st_mode):
         raise RuntimeError("Runtime UDS path is not a socket")
-    return socket_stat.st_dev, socket_stat.st_ino, stat.S_IMODE(socket_stat.st_mode)
+    return (
+        socket_stat.st_dev,
+        socket_stat.st_ino,
+        socket_stat.st_mtime_ns,
+        stat.S_IMODE(socket_stat.st_mode),
+    )
 
 
 def _bind_listener(socket_path: Path) -> tuple[socket.socket, _SocketIdentity]:
@@ -82,7 +87,7 @@ def _bind_listener(socket_path: Path) -> tuple[socket.socket, _SocketIdentity]:
         listener.set_inheritable(True)
         socket_path.chmod(0o666)
         identity = _socket_identity(socket_path)
-        if identity[2] != 0o666:
+        if identity[3] != 0o666:
             raise RuntimeError("Runtime UDS permissions changed while binding")
     except Exception:
         listener.close()
