@@ -1,5 +1,9 @@
 # Public milestones
 
+2026-07-30 19:24 · fix(science-core-test-typing): restored strict Pyright compatibility for the test-only typed HTTP client adapters without changing production behavior or test execution semantics.
+
+2026-07-30 17:01 · fix(v0.2.1-runtime-compatibility): prepared a release-only hotfix from v0.2.0 that binds both archive-derived OCI config and manifest digests, injects the actually verified Docker image IDs into Compose, upgrades the runtime/SBOM resource contract to schema v2, and keeps strict fail-closed validation across classic and containerd Docker image stores.
+
 2026-07-28 14:15 · docs(public-repository): reduced public project history to shipped product milestones and removed internal design materials.
 
 2026-07-28 13:33 · release(v0.2.0): published the first public Spark Agent release with Apple Silicon and Intel macOS DMGs, Windows EXE/MSI installers, Linux DEB/RPM packages, verified SHA-256 asset digests, and green desktop, Rust, Python, migration, and Docker quality gates.

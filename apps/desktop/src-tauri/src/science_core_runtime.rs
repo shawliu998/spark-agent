@@ -28,9 +28,9 @@ const COMPOSE_FILE: &str = "compose.yaml";
 const MANIFEST_FILE: &str = "manifest.json";
 const CORE_ARCHIVE: &str = "science-core.oci.tar";
 const RUNTIME_ARCHIVE: &str = "science-runtime.oci.tar";
-const CORE_IMAGE: &str = "io.github.shawliu998.sparkagent/science-core:0.2.0";
-const RUNTIME_IMAGE: &str = "io.github.shawliu998.sparkagent/science-runtime:0.2.0";
-const MANIFEST_SCHEMA_VERSION: u32 = 1;
+const CORE_IMAGE: &str = "io.github.shawliu998.sparkagent/science-core:0.2.1";
+const RUNTIME_IMAGE: &str = "io.github.shawliu998.sparkagent/science-runtime:0.2.1";
+const MANIFEST_SCHEMA_VERSION: u32 = 2;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES: usize = 64 * 1024;
 const DOCKER_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(15);
@@ -44,7 +44,7 @@ const KEYCHAIN_TIMEOUT: Duration = Duration::from_secs(15);
 const HEALTH_ATTEMPTS: usize = 30;
 const HEALTH_INTERVAL: Duration = Duration::from_millis(500);
 const EXIT_WORKER_WAIT_TIMEOUT: Duration = Duration::from_secs(240);
-const EXPECTED_CORE_VERSION: &str = "0.2.0";
+const EXPECTED_CORE_VERSION: &str = "0.2.1";
 const KEYCHAIN_SERVICE: &str = "io.github.shawliu998.sparkagent.model-api-key";
 const KEYCHAIN_ACCOUNT: &str = "openai-compatible";
 const MODEL_CONFIG_FILE: &str = "model-config.json";
@@ -430,7 +430,7 @@ struct BundledResources {
 struct BundledImage {
     archive: PathBuf,
     image: String,
-    image_id: String,
+    image_ids: Vec<String>,
     archive_sha256: String,
     source: File,
 }
@@ -438,7 +438,7 @@ struct BundledImage {
 #[derive(Debug)]
 struct PreparedImage {
     image: String,
-    image_id: String,
+    image_ids: Vec<String>,
     snapshot: File,
 }
 
@@ -460,7 +460,7 @@ struct ResourceManifest {
 struct ImageManifest {
     archive: String,
     image: String,
-    image_id: String,
+    image_ids: Vec<String>,
     sha256: String,
 }
 
@@ -581,18 +581,26 @@ fn expected_docker_architecture() -> Result<&'static str, String> {
 
 fn validate_inspected_image(
     output: &str,
-    expected_image_id: &str,
+    expected_image_ids: &[String],
     expected_architecture: &str,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let line = output.strip_suffix('\n').unwrap_or(output);
     if line.contains('\r') || line.contains('\n') {
         return Err("Docker returned invalid Science Core image metadata".into());
     }
     let fields = line.split('\t').collect::<Vec<_>>();
-    if fields.as_slice() != [expected_image_id, "linux", expected_architecture] {
+    let [image_id, os, architecture] = fields.as_slice() else {
+        return Err("Docker returned invalid Science Core image metadata".into());
+    };
+    if *os != "linux"
+        || *architecture != expected_architecture
+        || !expected_image_ids
+            .iter()
+            .any(|expected| expected == image_id)
+    {
         return Err("Docker loaded an unexpected Science Core image".into());
     }
-    Ok(())
+    Ok((*image_id).to_string())
 }
 
 fn validate_session_token(token: &str) -> Result<(), String> {
@@ -780,7 +788,7 @@ fn validate_bundled_resources(resources: &Path) -> Result<BundledResources, Stri
         images.push(BundledImage {
             archive: path,
             image: entry.image.clone(),
-            image_id: entry.image_id.clone(),
+            image_ids: entry.image_ids.clone(),
             archive_sha256: entry.sha256.clone(),
             source,
         });
@@ -811,7 +819,13 @@ fn validate_manifest(manifest: &ResourceManifest) -> Result<(), String> {
         || !is_sha256(&manifest.compose_sha256)
         || manifest.images.iter().any(|entry| {
             !is_sha256(&entry.sha256)
-                || !is_image_id(&entry.image_id)
+                || entry.image_ids.is_empty()
+                || entry.image_ids.len() > 2
+                || entry
+                    .image_ids
+                    .iter()
+                    .any(|image_id| !is_image_id(image_id))
+                || entry.image_ids.iter().collect::<BTreeSet<_>>().len() != entry.image_ids.len()
                 || !matches!(
                     (entry.archive.as_str(), entry.image.as_str()),
                     (CORE_ARCHIVE, CORE_IMAGE) | (RUNTIME_ARCHIVE, RUNTIME_IMAGE)
@@ -832,9 +846,14 @@ fn validate_manifest(manifest: &ResourceManifest) -> Result<(), String> {
     let image_ids = manifest
         .images
         .iter()
-        .map(|entry| entry.image_id.as_str())
+        .flat_map(|entry| entry.image_ids.iter().map(String::as_str))
         .collect::<BTreeSet<_>>();
-    if image_ids.len() != manifest.images.len() {
+    let declared_image_id_count = manifest
+        .images
+        .iter()
+        .map(|entry| entry.image_ids.len())
+        .sum::<usize>();
+    if image_ids.len() != declared_image_id_count {
         return Err("Science Core runtime manifest contains duplicate image IDs".into());
     }
     Ok(())
@@ -1792,7 +1811,7 @@ fn snapshot_bundled_image(
 
     Ok(PreparedImage {
         image: image.image,
-        image_id: image.image_id,
+        image_ids: image.image_ids,
         snapshot,
     })
 }
@@ -1852,7 +1871,7 @@ fn load_verified_image_set_with<R: CommandRunner>(
         }
         let load_spec = fixed_image_load_spec();
         let inspect_spec = fixed_image_inspect_spec(&image);
-        let image_id = image.image_id;
+        let image_ids = image.image_ids;
         runner
             .run_with_stdin(&load_spec, image.snapshot, IMAGE_LOAD_TIMEOUT)
             .map_err(|_| {
@@ -1869,13 +1888,14 @@ fn load_verified_image_set_with<R: CommandRunner>(
                     verified_ids.len()
                 )
             })?;
-        validate_inspected_image(&inspected, &image_id, architecture).map_err(|_| {
-            format!(
-                "Science Core image verification failed after {} of 2 images were verified; a loaded image may remain in Docker",
-                verified_ids.len()
-            )
-        })?;
-        verified_ids.push(image_id);
+        let verified_id =
+            validate_inspected_image(&inspected, &image_ids, architecture).map_err(|_| {
+                format!(
+                    "Science Core image verification failed after {} of 2 images were verified; a loaded image may remain in Docker",
+                    verified_ids.len()
+                )
+            })?;
+        verified_ids.push(verified_id);
         if cancelled.is_some_and(|cancelled| cancelled.load(Ordering::Acquire)) {
             return Err("Science Core startup was cancelled".into());
         }
@@ -1940,11 +1960,16 @@ fn start_lifecycle_cancellable_with<
         let secret_path = paths.session.join("model-secret");
         let secret = credential.model_secret(&model)?.unwrap_or_default();
         write_private_new(&secret_path, &secret, "Science Core model credential")?;
-        let image_ids = [
-            bundled.images[0].image_id.clone(),
-            bundled.images[1].image_id.clone(),
-        ];
-        let env_bytes = render_session_env(&image_ids, &token, &paths.data, &secret_path, &model)?;
+
+        let loaded =
+            load_verified_image_set_with(bundled.images, &paths.staging, runner, Some(cancelled))?;
+        docker_ready = true;
+        if cancelled.load(Ordering::Acquire) {
+            return Err("Science Core startup was cancelled".into());
+        }
+
+        let env_bytes =
+            render_session_env(&loaded.image_ids, &token, &paths.data, &secret_path, &model)?;
         let env_file = paths.session.join("session.env");
         write_private_new(&env_file, &env_bytes, "Science Core session environment")?;
         let mut active = ActiveRuntime {
@@ -1957,12 +1982,6 @@ fn start_lifecycle_cancellable_with<
         };
         cleanup_context = Some(active.clone());
         on_context(active.clone());
-        if cancelled.load(Ordering::Acquire) {
-            return Err("Science Core startup was cancelled".into());
-        }
-
-        load_verified_image_set_with(bundled.images, &paths.staging, runner, Some(cancelled))?;
-        docker_ready = true;
         if cancelled.load(Ordering::Acquire) {
             return Err("Science Core startup was cancelled".into());
         }
@@ -2578,13 +2597,19 @@ mod tests {
                         {
                             "archive": CORE_ARCHIVE,
                             "image": CORE_IMAGE,
-                            "imageId": format!("sha256:{}", "1".repeat(64)),
+                            "imageIds": [
+                                format!("sha256:{}", "1".repeat(64)),
+                                format!("sha256:{}", "3".repeat(64))
+                            ],
                             "sha256": digest_path(&self.root.join(CORE_ARCHIVE)),
                         },
                         {
                             "archive": RUNTIME_ARCHIVE,
                             "image": RUNTIME_IMAGE,
-                            "imageId": format!("sha256:{}", "2".repeat(64)),
+                            "imageIds": [
+                                format!("sha256:{}", "2".repeat(64)),
+                                format!("sha256:{}", "4".repeat(64))
+                            ],
                             "sha256": digest_path(&self.root.join(RUNTIME_ARCHIVE)),
                         }
                     ]
@@ -2694,8 +2719,11 @@ mod tests {
         assert_eq!(bundled.images[0].archive, fixture.root.join(CORE_ARCHIVE));
         assert_eq!(bundled.images[0].image, CORE_IMAGE);
         assert_eq!(
-            bundled.images[0].image_id,
-            format!("sha256:{}", "1".repeat(64))
+            bundled.images[0].image_ids,
+            [
+                format!("sha256:{}", "1".repeat(64)),
+                format!("sha256:{}", "3".repeat(64))
+            ]
         );
         assert_eq!(
             bundled.images[0].archive_sha256,
@@ -2758,19 +2786,19 @@ mod tests {
                 "unexpected": true,
             }),
             serde_json::json!({
-                "schemaVersion": 1,
+                "schemaVersion": MANIFEST_SCHEMA_VERSION,
                 "composeSha256": "NOT-A-SHA",
                 "images": [
-                    {"archive": CORE_ARCHIVE, "image": CORE_IMAGE, "imageId": format!("sha256:{}", "1".repeat(64)), "sha256": "0".repeat(64)},
-                    {"archive": RUNTIME_ARCHIVE, "image": RUNTIME_IMAGE, "imageId": format!("sha256:{}", "2".repeat(64)), "sha256": "0".repeat(64)}
+                    {"archive": CORE_ARCHIVE, "image": CORE_IMAGE, "imageIds": [format!("sha256:{}", "1".repeat(64))], "sha256": "0".repeat(64)},
+                    {"archive": RUNTIME_ARCHIVE, "image": RUNTIME_IMAGE, "imageIds": [format!("sha256:{}", "2".repeat(64))], "sha256": "0".repeat(64)}
                 ]
             }),
             serde_json::json!({
-                "schemaVersion": 1,
+                "schemaVersion": MANIFEST_SCHEMA_VERSION,
                 "composeSha256": "0".repeat(64),
                 "images": [
-                    {"archive": CORE_ARCHIVE, "image": "attacker/latest:latest", "imageId": format!("sha256:{}", "1".repeat(64)), "sha256": "0".repeat(64)},
-                    {"archive": RUNTIME_ARCHIVE, "image": RUNTIME_IMAGE, "imageId": format!("sha256:{}", "2".repeat(64)), "sha256": "0".repeat(64)}
+                    {"archive": CORE_ARCHIVE, "image": "attacker/latest:latest", "imageIds": [format!("sha256:{}", "1".repeat(64))], "sha256": "0".repeat(64)},
+                    {"archive": RUNTIME_ARCHIVE, "image": RUNTIME_IMAGE, "imageIds": [format!("sha256:{}", "2".repeat(64))], "sha256": "0".repeat(64)}
                 ]
             }),
         ];
@@ -2791,13 +2819,13 @@ mod tests {
                 {
                     "archive": CORE_ARCHIVE,
                     "image": CORE_IMAGE,
-                    "imageId": format!("sha256:{}", "1".repeat(64)),
+                    "imageIds": [format!("sha256:{}", "1".repeat(64))],
                     "sha256": digest_path(&fixture.root.join(CORE_ARCHIVE)),
                 },
                 {
                     "archive": RUNTIME_ARCHIVE,
                     "image": RUNTIME_IMAGE,
-                    "imageId": format!("sha256:{}", "2".repeat(64)),
+                    "imageIds": [format!("sha256:{}", "2".repeat(64))],
                     "sha256": digest_path(&fixture.root.join(RUNTIME_ARCHIVE)),
                 }
             ]
@@ -2807,17 +2835,38 @@ mod tests {
         missing["images"][0]
             .as_object_mut()
             .unwrap()
-            .remove("imageId");
+            .remove("imageIds");
         let mut uppercase = valid.clone();
-        uppercase["images"][0]["imageId"] =
+        uppercase["images"][0]["imageIds"][0] =
             serde_json::Value::String(format!("sha256:{}", "A".repeat(64)));
         let mut bad_prefix = valid.clone();
-        bad_prefix["images"][0]["imageId"] =
+        bad_prefix["images"][0]["imageIds"][0] =
             serde_json::Value::String(format!("sha512:{}", "1".repeat(64)));
+        let mut empty = valid.clone();
+        empty["images"][0]["imageIds"] = serde_json::json!([]);
+        let mut too_many = valid.clone();
+        too_many["images"][0]["imageIds"] = serde_json::json!([
+            format!("sha256:{}", "1".repeat(64)),
+            format!("sha256:{}", "3".repeat(64)),
+            format!("sha256:{}", "5".repeat(64))
+        ]);
+        let mut duplicate_in_entry = valid.clone();
+        duplicate_in_entry["images"][0]["imageIds"] = serde_json::json!([
+            format!("sha256:{}", "1".repeat(64)),
+            format!("sha256:{}", "1".repeat(64))
+        ]);
         let mut duplicate = valid.clone();
-        duplicate["images"][1]["imageId"] = duplicate["images"][0]["imageId"].clone();
+        duplicate["images"][1]["imageIds"][0] = duplicate["images"][0]["imageIds"][0].clone();
 
-        for manifest in [missing, uppercase, bad_prefix, duplicate] {
+        for manifest in [
+            missing,
+            uppercase,
+            bad_prefix,
+            empty,
+            too_many,
+            duplicate_in_entry,
+            duplicate,
+        ] {
             fixture.write_manifest(Some(manifest));
             assert!(validate_bundled_resources(&fixture.resources).is_err());
         }
@@ -3134,7 +3183,7 @@ mod tests {
         assert!(error.message.contains("preflight failed"));
         assert!(!error.message.contains("raw docker secret"));
         assert!(!staging.exists());
-        assert_eq!(runner.calls.into_inner().unwrap().len(), 2);
+        assert_eq!(runner.calls.into_inner().unwrap().len(), 1);
 
         let app_data = fixture.outer.join("health-failure-data");
         let staging = app_data.join("science-core-runtime/staging");
@@ -3265,7 +3314,7 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_start_always_runs_fixed_cleanup_without_loading_images() {
+    fn cancelled_start_makes_no_docker_calls_before_loading_images() {
         let fixture = Fixture::new();
         let app_data = fixture.outer.join("cancelled-data");
         let staging = app_data.join("science-core-runtime/staging");
@@ -3285,15 +3334,7 @@ mod tests {
         assert!(error.cleanup.is_none());
         assert!(!staging.exists());
         let calls = runner.calls.into_inner().unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0].0.args[0..3],
-            ["compose", "--project-name", PROJECT_NAME]
-        );
-        assert_eq!(
-            &calls[0].0.args[7..],
-            ["down", "--timeout", "10", "--volumes", "--remove-orphans"]
-        );
+        assert!(calls.is_empty());
     }
 
     #[test]
@@ -3339,8 +3380,8 @@ mod tests {
     fn offline_loader_uses_exact_preflight_load_and_inspect_sequence() {
         let fixture = Fixture::new();
         let architecture = expected_docker_architecture().unwrap();
-        let core_id = format!("sha256:{}", "1".repeat(64));
-        let runtime_id = format!("sha256:{}", "2".repeat(64));
+        let core_id = format!("sha256:{}", "3".repeat(64));
+        let runtime_id = format!("sha256:{}", "4".repeat(64));
         let runner = ScriptedRunner::new(
             &fixture.staging,
             vec![

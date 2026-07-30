@@ -435,7 +435,7 @@ def runtime_subjects(runtime_dir: Path, expected_arch: str) -> list[dict[str, An
         {"schemaVersion", "composeSha256", "images"},
         "runtime manifest",
     )
-    if runtime_manifest.get("schemaVersion") != 1:
+    if runtime_manifest.get("schemaVersion") != 2:
         fail("runtime manifest schema version differs")
     compose_sha = runtime_manifest.get("composeSha256")
     if compose_sha != sha256_bytes(read_regular(runtime_dir / "compose.yaml")):
@@ -451,25 +451,31 @@ def runtime_subjects(runtime_dir: Path, expected_arch: str) -> list[dict[str, An
     subjects: list[dict[str, Any]] = []
     for service in SERVICES:
         item = by_archive[service.archive]
-        exact_keys(item, {"archive", "image", "imageId", "sha256"}, service.key)
+        exact_keys(item, {"archive", "image", "imageIds", "sha256"}, service.key)
         archive_path = runtime_dir / service.archive
         archive_sha = sha256_regular(archive_path)
         if item.get("sha256") != archive_sha:
             fail(f"runtime archive hash differs: {service.key}")
         image = item.get("image")
-        image_id = item.get("imageId")
+        image_ids = item.get("imageIds")
         expected_image = (
-            f"io.github.shawliu998.sparkagent/{service.key}:0.2.0"
+            f"io.github.shawliu998.sparkagent/{service.key}:0.2.1"
         )
         if (
             image != expected_image
-            or not isinstance(image_id, str)
-            or IMAGE_ID.fullmatch(image_id) is None
+            or not isinstance(image_ids, list)
+            or not 1 <= len(image_ids) <= 2
+            or any(
+                not isinstance(image_id, str)
+                or IMAGE_ID.fullmatch(image_id) is None
+                for image_id in image_ids
+            )
+            or len(set(image_ids)) != len(image_ids)
         ):
             fail(f"runtime image subject is invalid: {service.key}")
         accepted_ids, archive_identity = docker_archive_subject(archive_path, image)
         architecture, parsed_archive_sha = archive_identity.split(":", 1)
-        if parsed_archive_sha != archive_sha or image_id not in accepted_ids:
+        if parsed_archive_sha != archive_sha or set(image_ids) != accepted_ids:
             fail(f"runtime image ID is not bound to its archive: {service.key}")
         if architecture != expected_arch:
             fail(f"runtime archive architecture differs: {service.key}")
@@ -477,7 +483,7 @@ def runtime_subjects(runtime_dir: Path, expected_arch: str) -> list[dict[str, An
             {
                 "service": service,
                 "image": image,
-                "imageId": image_id,
+                "imageId": image_ids[0],
                 "archiveSha256": archive_sha,
             }
         )
@@ -710,7 +716,7 @@ def make_runtime_fixture(root: Path, architecture: str) -> Path:
     (runtime / "compose.yaml").write_bytes(compose)
     images = []
     for service in SERVICES:
-        tag = f"io.github.shawliu998.sparkagent/{service.key}:0.2.0"
+        tag = f"io.github.shawliu998.sparkagent/{service.key}:0.2.1"
         image_id, archive_sha = write_fixture_archive(
             runtime / service.archive, tag, architecture
         )
@@ -718,14 +724,14 @@ def make_runtime_fixture(root: Path, architecture: str) -> Path:
             {
                 "archive": service.archive,
                 "image": tag,
-                "imageId": image_id,
+                "imageIds": [image_id],
                 "sha256": archive_sha,
             }
         )
     (runtime / "manifest.json").write_bytes(
         canonical_json(
             {
-                "schemaVersion": 1,
+                "schemaVersion": 2,
                 "composeSha256": sha256_bytes(compose),
                 "images": images,
             }
@@ -896,7 +902,7 @@ def run_fixtures(root: Path) -> None:
         image_id_manifest = json_object(
             image_id_manifest_path.read_bytes(), "image ID fixture"
         )
-        image_id_manifest["images"][0]["imageId"] = "sha256:" + "e" * 64
+        image_id_manifest["images"][0]["imageIds"][0] = "sha256:" + "e" * 64
         image_id_manifest_path.write_bytes(canonical_json(image_id_manifest))
         expect_failure(
             "runtime image ID tamper",
