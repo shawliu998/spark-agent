@@ -51,28 +51,18 @@ local workspace + SQLite + JSONL provenance.
 
 For product, UX, Figma, visual, interaction, or frontend design work, read
 `PRODUCT.md` before planning or editing. `PRODUCT.md` defines the current product
-positioning, information architecture, competitor hierarchy, anti-references, and
-active design phase. When a general roadmap document conflicts with its current
+positioning, information architecture, interaction principles, and active design
+phase. When a general roadmap document conflicts with its current
 design phase, follow `PRODUCT.md` for design sequencing while preserving the
 architecture and safety contracts in this file.
 
-### Competitor-first design guardrails
+### Product design guardrails
 
-- The active design goal is to reproduce proven research-product interface
-  capabilities before inventing new product structure. Elicit is the primary
-  reference; Consensus and SciSpace are secondary references for the specific
-  surfaces named in `PRODUCT.md`.
-- Every new Figma screen must name one primary captured competitor screen or stable
-  node as its visual and interaction target. No visual target means no new screen.
-- Reproduce layout, hierarchy, density, controls, interaction states, and content
-  behavior first. Replace competitor branding and proprietary content with Spark
-  branding and neutral research examples; do not redesign during the reproduction
-  pass.
-- Use one primary competitor per screen. Combining patterns from multiple products
-  requires an explicit rationale and user approval.
-- Do not invent product requirements to make a screen look complete. A visible
-  feature must be grounded in a captured competitor capability, an implemented
-  Spark capability, or an explicit user request.
+- Every visible feature must be grounded in an implemented Spark capability or an
+  explicit user requirement.
+- Preserve the approved information architecture, content hierarchy, density,
+  controls, interaction states, and long-content behavior when refining a screen.
+- Use Spark branding and neutral research examples in product designs and tests.
 - Do not continue the Project → Sources → Plan → Execution → Evidence → Results →
   Review sequence as permanent navigation or automatically create its next screen.
   It is an internal workflow lifecycle and may only appear as compact contextual
@@ -81,14 +71,14 @@ architecture and safety contracts in this file.
   remain non-negotiable system boundaries. Keep them progressively disclosed in
   settings, inspectors, execution approval, source details, and export metadata;
   do not make them the default page hierarchy or repeat them on every object.
-- Do not implement React from an unapproved exploratory Figma screen. Complete the
-  named competitor capture, reproduce one screen, show the visual result, and stop
-  for user confirmation before moving to the next capability group.
+- Do not implement React from an unapproved exploratory Figma screen. Complete one
+  bounded screen, show the visual result, and stop for user confirmation before
+  moving to the next capability group.
 - A generic request such as “continue” means continue the currently approved
   screen or audit only. It does not authorize selecting the next workflow, creating
   a new screen, changing information architecture, or starting code implementation.
-- New competitor research and captures are read-only. Do not upload private project
-  data; use public papers, synthetic datasets, or disposable test content.
+- Do not upload private project data into design tools; use public papers,
+  synthetic datasets, or disposable test content.
 
 ## Repository map
 

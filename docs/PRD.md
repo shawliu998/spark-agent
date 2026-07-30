@@ -312,10 +312,9 @@ tool results, evidence, artifacts, and review states. Spark must not add a separ
 Agent destination, multi-agent persona UI, chat-first shell, or chain-of-thought
 transcript.
 
-The interface should remain dense, calm, and research-oriented. Elicit is the primary
-reference for literature workflows, Consensus for question-first search and answer
-synthesis, SciSpace for source-in-context reading, and Spark-owned patterns for local
-analysis and artifact continuity.
+The interface should remain dense, calm, and research-oriented. Literature
+discovery, answer synthesis, source-in-context reading, local analysis, and artifact
+continuity should share one coherent Spark interaction language.
 
 ## 8. Trust and Technical Invariants
 
