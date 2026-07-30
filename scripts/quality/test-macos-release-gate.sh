@@ -139,7 +139,7 @@ import sys
 
 path = Path(sys.argv[1])
 value = json.loads(path.read_text())
-value["images"][0]["imageId"] = "sha256:" + "f" * 64
+value["images"][0]["imageIds"][0] = "sha256:" + "f" * 64
 path.write_text(json.dumps(value, ensure_ascii=True, indent=2, sort_keys=True) + "\n")
 PY
 expect_fail verify

@@ -1,6 +1,6 @@
 [package]
 name = "ai4s-workbench"
-version = "0.2.0"
+version = "0.2.1"
 description = "Spark Agent desktop research workbench"
 authors = ["Spark Agent contributors", "AI4S Workbench contributors"]
 edition = "2021"

@@ -4,8 +4,8 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CORE_TAG='io.github.shawliu998.sparkagent/science-core:0.2.0'
-RUNTIME_TAG='io.github.shawliu998.sparkagent/science-runtime:0.2.0'
+CORE_TAG='io.github.shawliu998.sparkagent/science-core:0.2.1'
+RUNTIME_TAG='io.github.shawliu998.sparkagent/science-runtime:0.2.1'
 COMPOSE_SOURCE="$ROOT/services/compose.production.yaml"
 SBOM_TOOL="$ROOT/scripts/release/science-sbom.py"
 MIN_FREE_BYTES=$((8 * 1024 * 1024 * 1024))
@@ -68,6 +68,8 @@ fixture_root=''
 complete=0
 CORE_ID=''
 RUNTIME_ID=''
+CORE_IDS=''
+RUNTIME_IDS=''
 
 run_bounded() {
   local seconds="$1"
@@ -509,7 +511,13 @@ build_one() {
       "$id" \
       -c 'import open_science_runtime.launcher'
   fi
-  if [[ "$name" == science-core ]]; then CORE_ID="$id"; else RUNTIME_ID="$id"; fi
+  if [[ "$name" == science-core ]]; then
+    CORE_ID="$id"
+    CORE_IDS="$archive_ids"
+  else
+    RUNTIME_ID="$id"
+    RUNTIME_IDS="$archive_ids"
+  fi
 }
 
 if [[ "$verify_fixtures" == 1 ]]; then
@@ -560,27 +568,27 @@ core_sha="$(sha256_file "$core_archive")"
 runtime_sha="$(sha256_file "$runtime_archive")"
 
 python3 - "$staging/manifest.json" "$compose_sha" \
-  "$CORE_TAG" "$CORE_ID" "$core_sha" \
-  "$RUNTIME_TAG" "$RUNTIME_ID" "$runtime_sha" <<'PY'
+  "$CORE_TAG" "$CORE_IDS" "$core_sha" \
+  "$RUNTIME_TAG" "$RUNTIME_IDS" "$runtime_sha" <<'PY'
 import json
 import os
 import sys
 
-path, compose_sha, core_tag, core_id, core_sha, runtime_tag, runtime_id, runtime_sha = sys.argv[1:]
+path, compose_sha, core_tag, core_ids, core_sha, runtime_tag, runtime_ids, runtime_sha = sys.argv[1:]
 manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "composeSha256": compose_sha,
     "images": [
         {
             "archive": "science-core.oci.tar",
             "image": core_tag,
-            "imageId": core_id,
+            "imageIds": core_ids.splitlines(),
             "sha256": core_sha,
         },
         {
             "archive": "science-runtime.oci.tar",
             "image": runtime_tag,
-            "imageId": runtime_id,
+            "imageIds": runtime_ids.splitlines(),
             "sha256": runtime_sha,
         },
     ],

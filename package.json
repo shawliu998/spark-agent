@@ -1,6 +1,6 @@
 {
   "name": "spark-agent",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Spark Agent — a local-first, evidence-first research agent for macOS.",
   "license": "MIT",

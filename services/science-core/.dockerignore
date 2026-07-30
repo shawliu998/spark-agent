@@ -3,7 +3,7 @@
 !requirements.lock
 !vendor/
 !vendor/paper-search-mcp/
-!vendor/paper-search-mcp/paper_search_mcp-0.1.4+spark.2-py3-none-any.whl
+!vendor/paper-search-mcp/paper_search_mcp-0.1.4+spark.3-py3-none-any.whl
 !vendor/sgmllib3k/
 !vendor/sgmllib3k/sgmllib3k-1.0.0-py3-none-any.whl
 !src/
