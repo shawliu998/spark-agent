@@ -30,13 +30,13 @@ _close_test_client = cast(Callable[[TestClient], None], getattr(TestClient, "clo
 
 
 class TypedTestClient(TestClient):
-    def get(self, url: str, **kwargs: Any) -> Response:
+    def get(self, url: str, **kwargs: Any) -> Response:  # pyright: ignore[reportIncompatibleMethodOverride]
         return cast(_RequestClient, self).request("GET", url, **kwargs)
 
-    def post(self, url: str, **kwargs: Any) -> Response:
+    def post(self, url: str, **kwargs: Any) -> Response:  # pyright: ignore[reportIncompatibleMethodOverride]
         return cast(_RequestClient, self).request("POST", url, **kwargs)
 
-    def patch(self, url: str, **kwargs: Any) -> Response:
+    def patch(self, url: str, **kwargs: Any) -> Response:  # pyright: ignore[reportIncompatibleMethodOverride]
         return cast(_RequestClient, self).request("PATCH", url, **kwargs)
 
     def close(self) -> None:

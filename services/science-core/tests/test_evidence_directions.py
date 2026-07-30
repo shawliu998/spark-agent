@@ -23,10 +23,10 @@ class _RequestClient(Protocol):
 
 
 class TypedTestClient(TestClient):
-    def get(self, url: str, **kwargs: Any) -> Response:
+    def get(self, url: str, **kwargs: Any) -> Response:  # pyright: ignore[reportIncompatibleMethodOverride]
         return cast(_RequestClient, self).request("GET", url, **kwargs)
 
-    def put(self, url: str, **kwargs: Any) -> Response:
+    def put(self, url: str, **kwargs: Any) -> Response:  # pyright: ignore[reportIncompatibleMethodOverride]
         return cast(_RequestClient, self).request("PUT", url, **kwargs)
 
 
